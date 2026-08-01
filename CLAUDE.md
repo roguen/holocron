@@ -45,7 +45,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.1.4`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.1.5`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
@@ -267,5 +267,12 @@ Ninja 1.13.2. **No C++ compiler yet** — MSVC Build Tools needs an elevated ins
   system ANSI codepage and re-encodes as UTF-8, **double-encoding every non-ASCII
   character** and adding a BOM. Every `—` and `§` in these docs is a casualty, and
   **CI does not catch it** (see #33) — the result is still valid UTF-8, just wrong.
-  Use a real editing tool, or `-Encoding utf8NoBOM` on PowerShell 7+. This bit once
-  already, on `Home.md`, and was caught only by inspecting the bytes.
+  Use a real editing tool, or `-Encoding utf8NoBOM` on PowerShell 7+.
+
+  This has now bitten **twice** — `Home.md`, then `CLAUDE.md` itself, the second
+  time within an hour of writing this warning. Both were caught only by counting
+  `0xC3 0xA2` bytes afterwards. The tell is a one-line edit that produces a diff
+  touching every line in the file. **Check the byte count, not the diff summary**,
+  because a mojibake diff looks plausible at a glance. `-Encoding ascii` is safe
+  for pure-ASCII files like `vcpkg.json` and `CMakeLists.txt`; anything with prose
+  in it needs a real editor.
