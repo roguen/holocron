@@ -106,11 +106,17 @@ time/frequency tradeoff. It is documented here so nobody designs a crystal whose
 effect depends on band 2 and band 5 being independent, then spends an evening
 wondering why the bottom of the spectrum looks like one fat blob.
 
-If it becomes a problem, raising `kFftSize` to 4096 moves the limit to 54 Hz
-(bands 0–2 correlated). The update rate is unchanged because it is set by the hop,
+If it becomes a problem, raising `kFftSize` to 4096 moves the limit to 54.05 Hz
+(bands 0–3 correlated). The update rate is unchanged because it is set by the hop,
 not the window; the cost is ~21 ms more time smearing, which shows up as slightly
 mushier transients on fast percussion. **Not doing this by default** — the current
 setting favours transient response, which is what a music visualizer lives on.
+
+> This figure read "bands 0–2" until it was checked in code. Band 3 clears the
+> threshold by **0.0013 Hz — about 0.011% of a bin** — so the boundary falls almost
+> exactly on a band edge and the count is unstable under any change to the band
+> edges or `kBands`. `tests/test_analysis_constants.cpp` pins both the count and
+> the margin, so the next edit that flips it fails a test rather than drifting.
 
 Coarse aggregate crossovers, all gatekeeper-configurable:
 
