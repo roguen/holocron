@@ -91,10 +91,8 @@ jobs:
         include:
           - name: Windows
             os: windows-latest
-            preset: windows-ci
           - name: Linux
             os: ubuntu-latest
-            preset: linux
 
     steps:
       - uses: actions/checkout@v4
@@ -130,24 +128,44 @@ jobs:
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-${{ runner.os }}-
 
-      - name: Configure
-        env:
-          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
-        run: cmake --preset ${{ matrix.preset }}
+      # Windows needs the MSVC environment before Ninja can find cl.exe, and
+      # there is no generator shortcut: the runner has no Visual Studio instance
+      # CMake's VS generator can locate. So vcvars is found through vswhere and
+      # everything runs inside that one shell.
+      #
+      # Two traps, both hit for real during development:
+      #   * vcvars64.bat OVERWRITES VCPKG_ROOT with Visual Studio's own bundled
+      #     vcpkg, so it has to be set again afterwards or the manifest resolves
+      #     against the wrong tree.
+      #   * appending to %PATH% after vcvars in the same cmd line expands the
+      #     PRE-vcvars value and wipes the compiler paths.
+      - name: Configure, build and test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * `
+                      -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+                      -property installationPath
+          if (-not $vsPath) { throw "No MSVC toolset found on this runner." }
+          $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
+          Write-Host "Using $vcvars"
+          $vcpkg = "${{ github.workspace }}\vcpkg"
+          cmd /c "call `"$vcvars`" >nul && set VCPKG_ROOT=$vcpkg&& cmake --preset windows && cmake --build --preset windows && ctest --preset windows"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build
+      # Warnings are errors in both toolchains, so a green build also means the
+      # tree is clean under /W4 on MSVC and -Wall -Wextra -Wconversion on gcc.
+      # Those two disagree about enough that running only one would miss things
+      # -- which is exactly what produced D-018.
+      - name: Configure, build and test (Linux)
+        if: runner.os == 'Linux'
         env:
           VCPKG_ROOT: ${{ github.workspace }}/vcpkg
-        run: cmake --build --preset ${{ matrix.preset }}
-
-      # Warnings are errors in both toolchains, so a green build here also means
-      # the tree is clean under /W4 on MSVC and -Wall -Wextra -Wconversion on
-      # gcc. Those two disagree about enough that running only one would miss
-      # things -- which is exactly what produced D-018.
-      - name: Test
-        env:
-          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
-        run: ctest --preset ${{ matrix.preset }}
+        run: |
+          cmake --preset linux
+          cmake --build --preset linux
+          ctest --preset linux
 
   hygiene:
     name: Repo hygiene (case + line endings)

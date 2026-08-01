@@ -41,22 +41,6 @@
       }
     },
     {
-      "name": "windows-ci",
-      "displayName": "Windows / MSVC / Visual Studio generator",
-      "description": "For CI. Uses the Visual Studio generator rather than Ninja so no vcvars environment has to be arranged first. Locally, prefer the ninja-based 'windows' preset -- it is faster.",
-      "inherits": "base",
-      "generator": "Visual Studio 17 2022",
-      "architecture": "x64",
-      "cacheVariables": {
-        "VCPKG_TARGET_TRIPLET": "x64-windows"
-      },
-      "condition": {
-        "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
-      }
-    },
-    {
       "name": "linux",
       "displayName": "Linux / CI",
       "description": "Not a deployment target. A free second compiler, and the only case-sensitive surface the project has.",
@@ -76,20 +60,12 @@
   "buildPresets": [
     { "name": "windows", "configurePreset": "windows" },
     { "name": "windows-release", "configurePreset": "windows-release" },
-    { "name": "windows-ci", "configurePreset": "windows-ci", "configuration": "Debug" },
     { "name": "linux", "configurePreset": "linux" }
   ],
   "testPresets": [
     {
       "name": "windows",
       "configurePreset": "windows",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error", "stopOnFailure": false }
-    },
-    {
-      "name": "windows-ci",
-      "configurePreset": "windows-ci",
-      "configuration": "Debug",
       "output": { "outputOnFailure": true },
       "execution": { "noTestsAction": "error", "stopOnFailure": false }
     },
