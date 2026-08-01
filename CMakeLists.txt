@@ -86,6 +86,11 @@ target_compile_features(holocron_contract INTERFACE cxx_std_20)
 
 find_path(POCKETFFT_INCLUDE_DIRS "pocketfft_hdronly.h" REQUIRED)
 
+# libebur128 ships no CMake config -- only a header, a library and a .pc file --
+# so it is located directly rather than through find_package.
+find_path(EBUR128_INCLUDE_DIR "ebur128.h" REQUIRED)
+find_library(EBUR128_LIBRARY NAMES ebur128 REQUIRED)
+
 add_library(holocron_analysis STATIC
     src/analysis/analysis.cpp
 )
@@ -94,8 +99,12 @@ add_library(holocron::analysis ALIAS holocron_analysis)
 target_link_libraries(holocron_analysis
     PUBLIC  holocron::contract
     PRIVATE holocron::warnings
+            ${EBUR128_LIBRARY}
 )
-target_include_directories(holocron_analysis SYSTEM PRIVATE ${POCKETFFT_INCLUDE_DIRS})
+target_include_directories(holocron_analysis SYSTEM PRIVATE
+    ${POCKETFFT_INCLUDE_DIRS}
+    ${EBUR128_INCLUDE_DIR}
+)
 
 # ---------------------------------------------------------------------------
 

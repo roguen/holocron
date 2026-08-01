@@ -12,6 +12,7 @@ add_executable(holocron_tests
     test_audio_frame_contract.cpp
     test_analysis_constants.cpp
     test_analysis_stage.cpp
+    test_rhythm_and_loudness.cpp
     test_audio_sink.cpp
 )
 
