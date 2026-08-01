@@ -89,13 +89,16 @@ Everything that exists today:
 ```
 include/holocron/audio_frame.hpp    the crystal-facing audio contract (std-only)
 include/holocron/track_context.hpp  the non-audio half: metadata, art, palette (needs glm)
-docs/audio-frame.md                 the reasoning, and the open decisions
+docs/audio-frame.md                 the reasoning, and the signed-off §9 decisions
 ```
 
-What works today, stated precisely: `audio_frame.hpp` compiles standalone under
-C++20 (`clang++ -std=c++20 -fsyntax-only`), and its `static_assert`s pass.
-`track_context.hpp` compiles once glm is on the include path. Nothing runs, on any
-platform, because there is nothing to run.
+What works today, stated precisely: CI compiles `audio_frame.hpp` under C++20 through
+a generated TU that *includes* it — never directly, since GCC rejects
+`#pragma once in main file` under `-Werror` — under both `g++` and `clang++` at
+`-Wall -Wextra -Werror`, its `static_assert`s pass, and `sizeof(AudioFrame)` is
+pinned at 10768. `track_context.hpp` compiles once glm is on the include path.
+Nothing runs, because there is nothing to run, and no C++ compiler is installed on
+the target machine yet.
 
 **The `AudioFrame` contract is signed off** (2026-08-01). Section 9 of
 [`docs/audio-frame.md`](docs/audio-frame.md) records the decisions behind it — the
@@ -206,7 +209,7 @@ rates outright in exclusive mode, so the bit-perfect-at-native-rate promise in �
 carries a platform qualifier. On a measured endpoint here, 88.2 and 176.4 kHz were
 both refused while 44.1, 48, 96 and 192 were accepted. Either fall back to shared
 mode, or resample and stop calling it bit-perfect —
-[#3](https://github.com/roguen/holocron/issues/3) has the numbers and the choice.
+[#32](https://github.com/roguen/holocron/issues/32) has the numbers and the choice.
 Note that the measurement above came from an S/PDIF endpoint, **not** the theater
 HDMI path, which still has exclusive mode disabled and is therefore unprobed.
 
