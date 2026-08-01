@@ -10,6 +10,8 @@
 
 #include <pocketfft_hdronly.h>
 
+#include <ebur128.h>
+
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -69,8 +71,41 @@ struct AnalysisStage::Impl {
         scratch_out.resize(std::size_t(kFftSize) / 2 + 1);
 
         previous_magnitude.fill(0.0f);
+
+        odf_history.assign(
+            std::max<std::size_t>(64, std::size_t(cfg.tempo_history_seconds * kFrameRateHz)),
+            0.0f);
+        onset_window.assign(
+            std::max<std::size_t>(8, std::size_t(cfg.onset_window_seconds * kFrameRateHz)),
+            0.0f);
+
+        ebur_staging.reserve(std::size_t(kHopSize) * 2);
+        open_loudness();
+
         reset_state();
         build_band_bins();
+    }
+
+    ~Impl()
+    {
+        if (loudness != nullptr) {
+            ebur128_destroy(&loudness);
+        }
+    }
+
+    Impl(const Impl&)            = delete;
+    Impl& operator=(const Impl&) = delete;
+
+    void open_loudness()
+    {
+        if (loudness != nullptr) {
+            ebur128_destroy(&loudness);
+            loudness = nullptr;
+        }
+        // Stereo at the fixed analysis rate. EBUR128_MODE_S is the 3-second
+        // short-term window, which is exactly what loudness_short is specified
+        // as in docs/audio-frame.md section 6.
+        loudness = ebur128_init(2, static_cast<unsigned long>(kAnalysisRate), EBUR128_MODE_S);
     }
 
     void reset_state()
@@ -88,6 +123,26 @@ struct AnalysisStage::Impl {
         band_max.fill(0.0f);
         aggregate_env.fill(0.0f);
         aggregate_max.fill(0.0f);
+
+        std::fill(odf_history.begin(), odf_history.end(), 0.0f);
+        std::fill(onset_window.begin(), onset_window.end(), 0.0f);
+        odf_pos          = 0;
+        onset_window_pos = 0;
+        odf_filled       = 0;
+        previous_odf     = 0.0f;
+        onset_strength   = 0.0f;
+        onset_max        = 0.0f;
+        frames_since_onset = 1u << 30;
+
+        bpm             = 0.0f;
+        bpm_confidence  = 0.0f;
+        beat_phase      = 0.0f;
+        beat_count      = 0;
+        onset_count     = 0;
+        frames_since_tempo = 0;
+
+        ebur_staging.clear();
+        open_loudness();
     }
 
     // Which bins each band covers. Bands narrower than one bin (0..6 with the
@@ -178,11 +233,229 @@ struct AnalysisStage::Impl {
     std::array<float, 3> aggregate_env{};  // bass, mid, treble
     std::array<float, 3> aggregate_max{};
 
+    // -- rhythm --------------------------------------------------------------
+    std::vector<float> odf_history;    // onset detection function, for tempo
+    std::vector<float> onset_window;   // shorter window, for the adaptive threshold
+    std::size_t        odf_pos          = 0;
+    std::size_t        onset_window_pos = 0;
+    std::size_t        odf_filled       = 0;
+    float              previous_odf     = 0.0f;
+    float              onset_strength   = 0.0f;
+    float              onset_max        = 0.0f;
+    std::uint32_t      frames_since_onset = 0;
+    std::uint32_t      frames_since_tempo = 0;
+
+    float         bpm            = 0.0f;
+    float         bpm_confidence = 0.0f;
+    float         beat_phase     = 0.0f;
+    std::uint32_t beat_count     = 0;
+    std::uint32_t onset_count    = 0;
+
+    // -- loudness ------------------------------------------------------------
+    ebur128_state*     loudness = nullptr;
+    std::vector<float> ebur_staging;
+
+    void  update_rhythm(AudioFrame& f, float raw_flux);
+    void  estimate_tempo();
+    float short_term_loudness() const;
+
     std::uint64_t frame_index      = 0;
     std::uint32_t source_rate      = 48000;
     double        track_position   = 0.0;
     double        track_duration   = 0.0;
 };
+
+// ---------------------------------------------------------------------------
+// Tempo, by autocorrelation of the onset detection function.
+//
+// The search is deliberately bounded to a musically plausible BPM range.
+// Outside it the autocorrelation reliably locks onto half- and double-time and
+// reports them with high confidence, which is worse than not answering.
+// ---------------------------------------------------------------------------
+
+void AnalysisStage::Impl::estimate_tempo()
+{
+    const std::size_t n = odf_history.size();
+    if (odf_filled < n) {
+        return;  // not enough history yet
+    }
+
+    const int min_lag = std::max(2, int(60.0f / (config.tempo_max_bpm * kHopSeconds)));
+    const int max_lag = std::min(int(n) - 1, int(60.0f / (config.tempo_min_bpm * kHopSeconds)));
+    if (max_lag <= min_lag) {
+        return;
+    }
+
+    // Mean-removed, so a loud constant floor does not dominate the correlation.
+    float mean = 0.0f;
+    for (float v : odf_history) {
+        mean += v;
+    }
+    mean /= float(n);
+
+    auto at = [&](std::size_t i) { return odf_history[(odf_pos + i) % n] - mean; };
+
+    // Autocorrelation at zero lag: the signal's variance, and the value a
+    // perfectly periodic signal would reach at its true period. Normalising by
+    // it makes confidence bounded and meaningful.
+    //
+    // Do NOT normalise by the mean correlation across lags instead. The series
+    // is mean-removed, so that mean sits near zero and can be negative, and the
+    // ratio is then either meaningless or divides by ~0. That was the first
+    // implementation, and it reported confidence 0.0 while recovering 119.7 BPM
+    // from a 120 BPM click track -- correct answer, useless confidence.
+    float r0 = 0.0f;
+    for (std::size_t i = 0; i < n; ++i) {
+        r0 += at(i) * at(i);
+    }
+    r0 /= float(n);
+
+    float best_score = 0.0f;
+    int   best_lag   = 0;
+
+    for (int lag = min_lag; lag <= max_lag; ++lag) {
+        float sum = 0.0f;
+        for (std::size_t i = std::size_t(lag); i < n; ++i) {
+            sum += at(i) * at(i - std::size_t(lag));
+        }
+        sum /= float(n - std::size_t(lag));
+
+        if (sum > best_score) {
+            best_score = sum;
+            best_lag   = lag;
+        }
+    }
+
+    if (best_lag == 0 || r0 <= kEpsilon) {
+        return;
+    }
+
+    const float confidence = std::clamp(best_score / r0, 0.0f, 1.0f);
+
+    const float candidate = 60.0f / (float(best_lag) * kHopSeconds);
+
+    bpm_confidence = confidence;
+    // Hold the last good value rather than jumping around, per section 6.
+    if (confidence >= config.tempo_confidence_floor || bpm == 0.0f) {
+        bpm = candidate;
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+void AnalysisStage::Impl::update_rhythm(AudioFrame& f, float raw_flux)
+{
+    // -- adaptive threshold --------------------------------------------------
+    float window_mean = 0.0f;
+    for (float v : onset_window) {
+        window_mean += v;
+    }
+    window_mean /= float(onset_window.size());
+
+    const float threshold = window_mean * config.onset_threshold_scale + config.onset_threshold_delta;
+
+    const auto refractory_frames =
+        std::uint32_t(std::max(1.0f, config.onset_refractory_seconds * kFrameRateHz));
+
+    const bool is_peak    = raw_flux > previous_odf;
+    const bool over       = raw_flux > threshold;
+    const bool clear      = frames_since_onset >= refractory_frames;
+    const bool fired      = is_peak && over && clear;
+
+    if (fired) {
+        ++onset_count;
+        frames_since_onset = 0;
+    } else if (frames_since_onset < (1u << 30)) {
+        ++frames_since_onset;
+    }
+
+    f.onset       = fired;
+    f.onset_count = onset_count;
+
+    // onset_strength is the auto-gained detection function under a fast-attack
+    // slow-decay envelope. Section 5 points crystals here rather than at the
+    // boolean, because it has no edge semantics and cannot be missed by a
+    // render thread running at an unrelated rate.
+    const float normalized = auto_gain(raw_flux, onset_max);
+    onset_strength =
+        envelope_step(onset_strength, normalized, config.onset_attack, config.onset_decay);
+    f.onset_strength = std::clamp(onset_strength, 0.0f, 1.0f);
+
+    // -- history -------------------------------------------------------------
+    onset_window[onset_window_pos] = raw_flux;
+    onset_window_pos               = (onset_window_pos + 1) % onset_window.size();
+
+    odf_history[odf_pos] = raw_flux;
+    odf_pos              = (odf_pos + 1) % odf_history.size();
+    if (odf_filled < odf_history.size()) {
+        ++odf_filled;
+    }
+    previous_odf = raw_flux;
+
+    // -- tempo ---------------------------------------------------------------
+    // Recomputed periodically rather than every frame; the answer cannot change
+    // meaningfully in 10 ms and the autocorrelation is the expensive part.
+    if (frames_since_tempo == 0) {
+        estimate_tempo();
+    }
+    frames_since_tempo = (frames_since_tempo + 1) % 16;
+
+    f.bpm            = bpm;
+    f.bpm_confidence = bpm_confidence;
+
+    // -- beat phase ----------------------------------------------------------
+    // Free-runs from the current tempo estimate so it is always safe to read,
+    // and is nudged toward zero by detected onsets -- a phase-locked loop. When
+    // confidence is lost it keeps running at the last known bpm rather than
+    // stalling, which is what section 6 promises.
+    if (bpm > 1.0f) {
+        const float beat_seconds = 60.0f / bpm;
+        beat_phase += kHopSeconds / beat_seconds;
+
+        if (fired) {
+            // Pull toward the nearest beat boundary.
+            const float error = (beat_phase - std::floor(beat_phase) < 0.5f)
+                                    ? -(beat_phase - std::floor(beat_phase))
+                                    : (1.0f - (beat_phase - std::floor(beat_phase)));
+            beat_phase += error * config.beat_phase_correction;
+        }
+
+        while (beat_phase >= 1.0f) {
+            beat_phase -= 1.0f;
+            ++beat_count;
+        }
+        if (beat_phase < 0.0f) {
+            beat_phase = 0.0f;
+        }
+    }
+
+    f.beat_phase = std::clamp(beat_phase, 0.0f, 1.0f);
+    f.beat_count = beat_count;
+
+    const int bpb = std::max(1, config.beats_per_bar);
+    f.bar_phase   = (float(beat_count % std::uint32_t(bpb)) + f.beat_phase) / float(bpb);
+    f.bar_phase   = std::clamp(f.bar_phase, 0.0f, 1.0f);
+}
+
+// ---------------------------------------------------------------------------
+
+float AnalysisStage::Impl::short_term_loudness() const
+{
+    if (loudness == nullptr) {
+        return -70.0f;
+    }
+    double lufs = 0.0;
+    if (ebur128_loudness_shortterm(loudness, &lufs) != EBUR128_SUCCESS) {
+        return -70.0f;
+    }
+    // libebur128 reports -HUGE_VAL for silence and before the 3-second window
+    // has filled. The contract specifies -70 as the silence floor, so that is
+    // what callers see -- a shader bound to this must never receive -inf.
+    if (!std::isfinite(lufs) || lufs < -70.0) {
+        return -70.0f;
+    }
+    return float(lufs);
+}
 
 // ---------------------------------------------------------------------------
 
@@ -222,6 +495,12 @@ void AnalysisStage::Impl::compute_frame(AudioFrame& f)
     }
     f.spectral_flux = std::clamp(flux_positive / (magnitude_sum + kEpsilon), 0.0f, 1.0f);
     previous_magnitude = f.fft_magnitude;
+
+    // The onset detector wants the RAW rectified flux, not the normalized
+    // field. spectral_flux is divided by the spectrum sum so it stays in 0..1
+    // for shader binding, and that division removes exactly the loudness
+    // information an onset is a change in.
+    const float raw_flux = flux_positive;
 
     // fft_smoothed is a per-bin envelope. Seeded on the first frame so it does
     // not ramp up from zero over the first second of a track.
@@ -336,6 +615,10 @@ void AnalysisStage::Impl::compute_frame(AudioFrame& f)
         f.waveform[i] = ring_mono[idx];
     }
 
+    // -- rhythm and loudness -------------------------------------------------
+    update_rhythm(f, raw_flux);
+    f.loudness_short = short_term_loudness();
+
     // -- identity and time ---------------------------------------------------
     f.frame_index = frame_index;
     // Analysis-stamped, per O-005. The render thread overwrites this in its own
@@ -384,11 +667,24 @@ std::size_t AnalysisStage::push(const float*  interleaved,
         s.ring_right[s.write_pos] = r;
         s.ring_mono[s.write_pos]  = 0.5f * (l + r);
 
+        // Staged rather than fed per sample: libebur128 is happiest with
+        // batches, and flushing on the hop boundary keeps the loudness window
+        // aligned with the frames that report it.
+        s.ebur_staging.push_back(l);
+        s.ebur_staging.push_back(r);
+
         s.write_pos = (s.write_pos + 1) % n;
         ++s.samples_since_hop;
 
         if (s.samples_since_hop >= std::size_t(kHopSize)) {
             s.samples_since_hop = 0;
+
+            if (s.loudness != nullptr && !s.ebur_staging.empty()) {
+                ebur128_add_frames_float(s.loudness, s.ebur_staging.data(),
+                                         s.ebur_staging.size() / 2);
+                s.ebur_staging.clear();
+            }
+
             s.compute_frame(frame);
             ++emitted;
             if (on_frame != nullptr) {

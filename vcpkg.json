@@ -11,11 +11,13 @@
   "$dependency-notes": {
     "glm": "MIT. Required by track_context.hpp.",
     "pocketfft": "BSD-3-Clause, header-only. FFT for the analysis stage (#9). The implementation SciPy uses. FFTW was available under D-010 but rejected: a 2048-point real FFT at 93.75 Hz does not justify the weight.",
+    "libebur128": "MIT. ITU-R BS.1770-4 loudness for AudioFrame::loudness_short (#9, D-024). Hand-rolling the K-weighting filter and gating would produce a number that looks plausible and is not comparable across tracks, which would destroy the only reason D-007 leaves the field un-normalized.",
     "catch2": "BSL-1.0, GPL-compatible. Test-only, hence the feature."
   },
 
   "dependencies": [
     "glm",
+    "libebur128",
     "pocketfft"
   ],
 
