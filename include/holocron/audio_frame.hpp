@@ -73,10 +73,19 @@ struct AudioFrame {
     // analysis, neither rate divides the other and both cases happen constantly.
     std::uint64_t frame_index;
 
-    // Wall clock since app start, seconds. WRITTEN BY THE RENDER THREAD at the
-    // moment it takes the frame, not by the analysis thread. It is therefore
-    // exactly this render frame's timestamp: strictly increasing, never repeated,
-    // free of analysis-hop jitter. Safe to drive continuous animation from.
+    // Wall clock since app start, seconds. THE RENDER THREAD STAMPS ITS OWN
+    // PRIVATE COPY of this field after taking the frame from the triple buffer.
+    // It never writes the shared slot -- doing so would race the analysis
+    // thread's next write into it. In that private copy the value is exactly
+    // this render frame's timestamp: strictly increasing, never repeated, free
+    // of analysis-hop jitter. Safe to drive continuous animation from.
+    //
+    // In the PUBLISHED slot the analysis thread writes the analysis-side
+    // timestamp of that frame. That is a defined value, not a placeholder: it is
+    // what an offline harness with no render thread reads, which is what makes
+    // dumped frames deterministic and diffable against a golden file. Reading
+    // this field off the shared slot instead of a private copy is a bug. See
+    // docs/audio-frame.md section 9 item 9 and Decision-Log O-005.
     double time_seconds;
 
     // Position and length of the current track, seconds. Stamped by the analysis
@@ -87,8 +96,8 @@ struct AudioFrame {
     double track_duration;
 
     // Sample rate of the SOURCE FILE, Hz. Informational -- for on-screen display
-    // and for logging what the ALSA device was opened at. Every array below is at
-    // kAnalysisRate regardless of this value. See the note above.
+    // and for logging what the output device was opened at. Every array below is
+    // at kAnalysisRate regardless of this value. See the note above.
     std::uint32_t sample_rate;
 
     // -- Spectrum ------------------------------------------------------------
@@ -112,13 +121,20 @@ struct AudioFrame {
 
     // -- Log-spaced bands ----------------------------------------------------
     //
-    // kBands bands geometrically spaced across [band_low_hz, band_high_hz]
-    // (gatekeeper defaults 30 Hz .. 16 kHz), each band the mean magnitude of the
-    // bins it covers. Band 0 is the lowest. This is the workhorse array for
+    // kBands bands geometrically spaced across [band_low_hz, band_high_hz],
+    // FIXED at 30 Hz .. 16 kHz, each band the mean magnitude of the bins it
+    // covers. Band 0 is the lowest. This is the workhorse array for
     // spectrum-reactive geometry.
     //
+    // The edges are constexpr, NOT gatekeeper-configurable. They were briefly
+    // configurable, which silently voided the guarantee this contract exists to
+    // provide: band[5] must mean the same span on every install, or a crystal
+    // binding that index means something different per machine with no error and
+    // no way to detect it. Same reasoning as kAnalysisRate being fixed. See
+    // docs/audio-frame.md section 9 item 8 and Decision-Log O-004.
+    //
     // Resolution caveat, stated plainly: at kBinHz = 23.4 Hz, a band is narrower
-    // than one FFT bin below ~108 Hz. With the default edges that is bands 0..6 --
+    // than one FFT bin below ~108 Hz. With these edges that is bands 0..6 --
     // they are interpolated from the same two or three bins and move together.
     // They are not wrong, they are just correlated; do not design a crystal that
     // depends on band 2 and band 5 being independent. Raising kFftSize to 4096

@@ -71,8 +71,8 @@ what blend modes and parameter overrides. An archive is a look you can name, kee
 and come back to.
 
 **Gatekeeper** — `gatekeeper.toml`, the single configuration file: audio device
-selection and latency trim, analysis tuning (band edges, envelope time constants,
-auto-gain window), paths to the vault and to MilkDrop preset packs, and Plex
+selection and latency trim, analysis tuning (envelope time constants, auto-gain
+window), paths to the vault and to MilkDrop preset packs, and Plex
 network settings. Because that last part means server addresses and tokens, a real
 `gatekeeper.toml` is never committed — a redacted `gatekeeper.example.toml`
 template will land with M1, when there is a loader to describe.

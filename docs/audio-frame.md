@@ -89,8 +89,12 @@ Bin `i` is centred at `bin_to_hz(i)`. Bin 1023 is 23.98 kHz.
 
 ## 3. Bands, and what they can actually resolve
 
-32 geometrically spaced bands over `[band_low_hz, band_high_hz]`, gatekeeper
-defaults **30 Hz to 16 kHz**. Ratio 1.2168 per band, 0.283 octave each.
+32 geometrically spaced bands over `[band_low_hz, band_high_hz]`, **fixed at
+30 Hz to 16 kHz**. Ratio 1.2168 per band, 0.283 octave each.
+
+The edges are `constexpr`, not gatekeeper-configurable — see §9 item 8. Everything
+below is therefore a permanent property of the contract rather than a description
+of one configuration.
 
 A band is narrower than one FFT bin whenever `f · (r−1) < kBinHz`, i.e. below
 **108 Hz**. With the default edges that is **bands 0–6**: seven bands drawing on
