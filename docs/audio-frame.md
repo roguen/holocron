@@ -63,7 +63,15 @@ constants:
 | `kSpectrumBins` | 1024 | published bins, Nyquist bin dropped |
 | `kBinHz` | 23.4375 Hz | bin spacing |
 | `kFrameRateHz` | 93.75 Hz | analysis frames per second |
+| `kHopSeconds` | 10.67 ms | time between analysis frames |
 | `kWindowSeconds` | 42.67 ms | time span of one window |
+| `kWaveformLen` | 512 | samples in `waveform` |
+| `AudioFrame::kBands` | 32 | log-spaced bands |
+
+`kBands` is the odd one out: it is a static member of `AudioFrame` rather than a
+namespace-scope `inline constexpr` like the rest. That is an inconsistency the
+manifest binding layer will have to work around — see
+[#17](https://github.com/roguen/holocron/issues/17).
 
 Bin `i` is centred at `bin_to_hz(i)`. Bin 1023 is 23.98 kHz.
 
@@ -101,8 +109,14 @@ Coarse aggregate crossovers, all gatekeeper-configurable:
 
 ## 4. The three variants, and which one to use
 
-Nearly every spectral quantity comes in three forms. Choosing wrong is the most
-common way for a crystal to look bad, so:
+**Two** quantities come in all three forms: the `band` array, and the
+bass/mid/treble triple. Everything else has exactly one form — `rms`, `peak`,
+`spectral_flux`, `spectral_centroid`, `spectral_rolloff`, `onset_strength` and the
+stereo fields have no `_env` or `_norm` variant, and the spectrum arrays have
+`fft_smoothed` (an envelope by another name) but no normalized form.
+
+For the two that do, choosing wrong is the most common way for a crystal to look
+bad, so:
 
 | Suffix | Behaviour | Use for |
 |---|---|---|
@@ -183,7 +197,33 @@ TrackContext is updated on the render thread and is therefore seen exactly once.
 
 ## 6. Fields that are not 0..1
 
-Two deliberate exceptions, both flagged in the header:
+Most of the struct is 0..1, which is what makes it safe to bind a field to a shader
+uniform without thinking. These are the fields that are **not**. Binding one of
+them to a uniform that expects 0..1 fails *silently* — no error, no warning, just a
+saturated or dead-looking crystal — so this list is exhaustive on purpose.
+
+| Field | Range | Unit |
+|---|---|---|
+| `loudness_short` | −70 .. −5 | LUFS (negative dB) |
+| `bpm` | 0 .. ~250 | beats per minute |
+| `stereo_correlation` | −1 .. +1 | correlation coefficient |
+| `waveform[]` | −1 .. +1 | raw sample amplitude |
+| `time_seconds` | unbounded, increasing | seconds |
+| `track_position`, `track_duration` | unbounded | seconds |
+| `sample_rate` | 44100 .. 192000 | Hz |
+| `frame_index` | unbounded, increasing | count |
+| `onset_count`, `beat_count` | unbounded, increasing | count |
+| `onset` | `true` / `false` | — |
+
+Everything not listed here is 0..1. `spectral_centroid`, `spectral_flux` and
+`spectral_rolloff` in particular **are** 0..1 — they are discussed below because
+their *mapping* is surprising, not because their range is.
+
+Whether the manifest binding layer should clamp, rescale, or reject an out-of-range
+source is an open question — see
+[#17](https://github.com/roguen/holocron/issues/17).
+
+The three that need explanation:
 
 **`loudness_short`** is **LUFS** (ITU-R BS.1770-4, 3 s window): negative dB,
 typically −40 to −5, silence −70. Normalizing it would discard the only absolute,
@@ -269,3 +309,28 @@ expensive later. Flagging them explicitly rather than burying them:
 7. **`TextureHandle = uint32_t` instead of `GLuint`** in `track_context.hpp`, so
    the metadata and Plex layers can include it without pulling in a GL loader.
    OpenGL specifies GLuint as 32-bit unsigned, so this is exact, not approximate.
+
+The first seven are choices already made in the header, listed so they can be
+overturned cheaply. The last two are **genuinely unresolved** and have no answer in
+the code yet:
+
+8. **Band indices do not currently have a fixed meaning.**
+   ([#15](https://github.com/roguen/holocron/issues/15)) §3 describes the band range
+   as gatekeeper-configurable. If a user widens it, `band[5]` covers a different
+   frequency span, and every crystal binding that index means something different on
+   that machine — with no error and no way for the crystal to detect it. That
+   partially voids the one-definition-everywhere guarantee this whole contract is
+   built on. Either the edges get fixed as `constexpr` alongside `kBands`, or they
+   stay configurable and crystals are told to prefer `bass`/`mid`/`treble` over
+   individual indices.
+
+9. **`time_seconds` has no defined owner.**
+   ([#16](https://github.com/roguen/holocron/issues/16)) §7 says the render thread
+   stamps it, but the struct is published by the analysis thread — so it is
+   undefined what the analysis thread writes there, and stamping the *shared* slot
+   rather than a private copy would be a data race. It also means an offline
+   analysis harness with no render thread produces frames whose `time_seconds` is
+   meaningless and cannot be diffed against a golden file, which is exactly the
+   workflow that would make the analysis testable. Resolve by stamping a private
+   copy after the triple-buffer read, or by moving wall clock off `AudioFrame`
+   entirely and passing it to facets alongside `dt`.

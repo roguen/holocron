@@ -218,13 +218,14 @@ None of these are wired up yet; there is no build system and nothing is vendored
 | spdlog | logging | MIT |
 | libprojectM 4.x | MilkDrop preset rendering | M4. LGPL-2.1, **dynamically linked** |
 
-An FFT and a loudness meter are still to be chosen. The obvious candidates for
-both are GPL (FFTW is GPL-2.0+, aubio is GPL-3.0, Essentia is AGPL-3.0), which
-would relicense the whole distributed binary — so the intended policy is
-permissive-only: KissFFT or PFFFT for the transform, libebur128 (MIT) for
-BS.1770 loudness, and spectral-flux onset detection written in-tree, since
-`AudioFrame`'s counter semantics are not something an off-the-shelf library
-provides anyway.
+An FFT and a loudness meter are still to be chosen ([#9](https://github.com/roguen/holocron/issues/9)).
+Because Holocron is GPL-3.0-or-later, **GPL dependencies are compatible** — FFTW
+(GPL-2.0+) and aubio (GPL-3.0) are both usable, so that choice comes down to
+technical merit rather than licence. Two constraints survive: AGPL-3.0 (Essentia)
+warrants care because of its network clause, and `--enable-nonfree` FFmpeg stays
+excluded because it is non-redistributable under any licence. Whichever library
+wins, onset detection is written in-tree regardless — `AudioFrame`'s counter
+semantics are not something an off-the-shelf library provides.
 
 ---
 
