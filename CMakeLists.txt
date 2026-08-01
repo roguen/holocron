@@ -77,6 +77,27 @@ target_include_directories(holocron_contract INTERFACE
 target_compile_features(holocron_contract INTERFACE cxx_std_20)
 
 # ---------------------------------------------------------------------------
+# Analysis stage
+#
+# pocketfft is header-only and ships no CMake config, so it is located by header
+# rather than by package. It is PRIVATE: nothing above this library should know
+# which FFT is in use, which is what keeps #9 a contained decision.
+# ---------------------------------------------------------------------------
+
+find_path(POCKETFFT_INCLUDE_DIRS "pocketfft_hdronly.h" REQUIRED)
+
+add_library(holocron_analysis STATIC
+    src/analysis/analysis.cpp
+)
+add_library(holocron::analysis ALIAS holocron_analysis)
+
+target_link_libraries(holocron_analysis
+    PUBLIC  holocron::contract
+    PRIVATE holocron::warnings
+)
+target_include_directories(holocron_analysis SYSTEM PRIVATE ${POCKETFFT_INCLUDE_DIRS})
+
+# ---------------------------------------------------------------------------
 
 if(HOLOCRON_BUILD_TESTS)
     enable_testing()

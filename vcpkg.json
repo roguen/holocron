@@ -10,11 +10,13 @@
   "$licence-note": "Holocron is GPL-3.0-or-later (D-010), so GPL dependencies are compatible. What is NOT acceptable is anything non-redistributable: --enable-nonfree FFmpeg stays excluded under any licence. libprojectM at M4 must stay dynamically linked through its C API to keep the LGPL boundary intact (D-012), so it may not simply be added here.",
   "$dependency-notes": {
     "glm": "MIT. Required by track_context.hpp.",
+    "pocketfft": "BSD-3-Clause, header-only. FFT for the analysis stage (#9). The implementation SciPy uses. FFTW was available under D-010 but rejected: a 2048-point real FFT at 93.75 Hz does not justify the weight.",
     "catch2": "BSL-1.0, GPL-compatible. Test-only, hence the feature."
   },
 
   "dependencies": [
-    "glm"
+    "glm",
+    "pocketfft"
   ],
 
   "features": {
