@@ -97,12 +97,14 @@ C++20 (`clang++ -std=c++20 -fsyntax-only`), and its `static_assert`s pass.
 `track_context.hpp` compiles once glm is on the include path. Nothing runs, on any
 platform, because there is nothing to run.
 
-**The `AudioFrame` contract is awaiting sign-off.** Section 9 of
-[`docs/audio-frame.md`](docs/audio-frame.md) lists the open decisions — the fixed
-48 kHz analysis rate, normalized rather than Hz-valued spectral descriptors,
-LUFS for `loudness_short`, the discrete-event counters, the 2048-sample FFT — each
-of which is a one-line change now and a vault-wide migration later. They are meant
-to be argued about before M1 starts, not after.
+**The `AudioFrame` contract is signed off** (2026-08-01). Section 9 of
+[`docs/audio-frame.md`](docs/audio-frame.md) records the decisions behind it — the
+fixed 48 kHz analysis rate, normalized rather than Hz-valued spectral descriptors,
+LUFS for `loudness_short`, the discrete-event counters, the 2048-sample FFT, fixed
+band edges, and who owns `time_seconds`. Each was a one-line change then and a
+vault-wide migration later, which is why they were argued out before M1 rather than
+after. Fields may still be **added**; the meaning, units or range of an existing
+field may not change.
 
 **Licensed [GPL-3.0-or-later](LICENSE).** See [Licensing](#licensing).
 
@@ -112,7 +114,7 @@ to be argued about before M1 starts, not after.
 
 | | Milestone | Scope | Status |
 |---|---|---|---|
-| **M1** | **Spine and audio** | CMake, SDL3 window, GL 4.5 core context, FFmpeg decode, `AudioSink` + `AlsaSink`, the analysis stage that fills `AudioFrame`, the lock-free triple buffer, and a debug facet that draws every field so the numbers can be trusted before anything is built on them. | **next** |
+| **M1** | **Spine and audio** | CMake, SDL3 window, GL 4.5 core context, FFmpeg decode, `AudioSink` + `WasapiSink`, the analysis stage that fills `AudioFrame`, the lock-free triple buffer, and a debug facet that draws every field so the numbers can be trusted before anything is built on them. | **next** |
 | M2 | Crystals | Vault loading, the `.frag` + `.toml` crystal format, manifest uniform binding against the contract, hot reload. | planned |
 | M3 | Compositor | The facet stack: layering, blend modes, transitions, archives. | planned |
 | M4 | projectM | libprojectM 4.x driven as a facet source, reading MilkDrop presets from a user-supplied path. | planned |
@@ -120,8 +122,9 @@ to be argued about before M1 starts, not after.
 | M6 | On-screen UI | Now-playing, library browsing, and facet control rendered in-app. | planned |
 | M7 | eISCP receiver control | Power, input, and volume control of the receiver over the network. | planned |
 
-M1 does not start until the contract is signed off, because every milestone after
-it reads from that struct.
+The contract is signed off. M1 now waits only on the shape of `AudioSink`
+([#1](https://github.com/roguen/holocron/issues/1)), because the analysis tap's
+placement and the latency trim both encode the answer.
 
 ---
 
@@ -152,18 +155,29 @@ of crystals that all quietly look wrong.
 
 | Platform | Role | State today |
 |---|---|---|
-| **Linux x86-64 + discrete GPU** | Primary target | Nothing runs yet. `AlsaSink` is the M1 audio path. |
-| **macOS arm64 (Apple clang)** | Development host | Headers compile. No ALSA, so no audio output path — see the open question below. |
-| **Windows** | Future | Not started. A `WasapiSink` (exclusive mode) is planned behind the same interface. |
+| **Windows x86-64 + discrete GPU** | The target, and the machine the work happens on | Nothing runs yet. `WasapiSink` is the M1 audio path. |
+| **Linux** | CI only | Builds and hygiene checks run here. Not a deployment target. |
+| **macOS** | Not supported | Was the development host until 2026-08-01. No longer in the project. |
 
-Audio output sits behind an `AudioSink` interface. `AlsaSink` will be the only
+The target is a dedicated Windows box in a home-theater rack, HDMI to an Onkyo
+receiver. Verified on that machine: GL **4.6 core** on a Radeon RX 6800 — the
+project targets 4.5 — and an HDMI audio endpoint whose connected-display EDID
+reads `ONK` / `AV Receiver`.
+
+Audio output sits behind an `AudioSink` interface. `WasapiSink` will be the only
 implementation for a long time, and that is exactly why nothing above the sink may
-assume ALSA — device enumeration, format negotiation, and latency reporting all
-belong to the interface. Keeping that boundary honest from M1 is what keeps the
-Windows door open.
+assume WASAPI — device enumeration, format negotiation, and latency reporting all
+belong to the interface. That boundary is not about portability for its own sake:
+it is what lets the sink's own contribution to latency stay a *measurable
+constant*, which is the premise the analysis tap depends on.
 
-**Open question 1 — the shape of `AudioSink`, and it needs settling before
-`AlsaSink` is written.** The sketched interface is a blocking push:
+Linux CI is kept deliberately even though Linux is not a target. It is a free
+second compiler, and it is the only thing that sees filename-case and line-ending
+faults, which are invisible on Windows' case-insensitive filesystem exactly as
+they were on macOS'.
+
+**Open question 1 — the shape of `AudioSink`, and it needs settling before any
+sink is written.** The sketched interface is a blocking push:
 `size_t write(const float* interleaved, size_t frames)`. WASAPI exclusive mode
 cannot implement that. It is an event-driven *pull* model
 (`AUDCLNT_STREAMFLAGS_EVENTCALLBACK` + `SetEventHandle`, then
@@ -173,30 +187,38 @@ it in a `write()` forces an internal thread and an interposed ring buffer whose
 fill level varies — which breaks the central premise in
 [`docs/audio-frame.md`](docs/audio-frame.md) §1, where the analysis tap reads at
 "the playback point minus output device latency" and treats that latency as a
-measurable constant to be trimmed once in `gatekeeper.toml`. On Windows it would
-not be constant, and no hand-trim can fix drift that moves.
+measurable constant to be trimmed once in `gatekeeper.toml`. Wrapped, it would not
+be constant, and no hand-trim can fix drift that moves.
 
-A pull/callback interface is first-class on ALSA, WASAPI, CoreAudio and SDL3
-alike; a push interface is first-class on none of them. Related: `latency_seconds()`
-flattens what both platforms natively expose as a correlated (frame-position,
-timestamp) pair — `snd_pcm_htimestamp` and `IAudioClock::GetPosition` — and a
-`bool` return from `open()` cannot distinguish "device busy" from "format
-unsupported" from "44.1 kHz unavailable on this endpoint", which are three
-different recoveries. Since SDL3 is already a dependency and is natively pull-based,
-an `SdlSink` written first is the cheapest possible proof that the abstraction is
-not merely ALSA-shaped.
+**Since WASAPI is now the only backend, this is a constraint rather than a
+preference.** A pull/callback interface is first-class on WASAPI and SDL3 alike; a
+push interface is first-class on neither. Related: `latency_seconds()` flattens what
+the platform natively exposes as a correlated (frame-position, timestamp) pair —
+`IAudioClock::GetPosition` — and a `bool` return from `open()` cannot distinguish
+"device busy" from "format unsupported" from "this rate unavailable on this
+endpoint", which are three different recoveries and the third is real on this
+hardware. Since SDL3 is already a dependency and is natively pull-based, an
+`SdlSink` written first is the cheapest possible proof that the abstraction is not
+merely WASAPI-shaped.
 
-One consequence to face rather than discover later: many Windows HDMI and onboard
-endpoints offer only 48/96/192 kHz in exclusive mode, so the unconditional
-bit-perfect-at-native-rate promise in §2 is not keepable there for a 44.1 kHz rip.
-Either fall back to shared mode, or resample and stop calling it bit-perfect.
+One consequence to face rather than discover later: Windows endpoints may refuse
+rates outright in exclusive mode, so the bit-perfect-at-native-rate promise in §2
+carries a platform qualifier. On a measured endpoint here, 88.2 and 176.4 kHz were
+both refused while 44.1, 48, 96 and 192 were accepted. Either fall back to shared
+mode, or resample and stop calling it bit-perfect —
+[#3](https://github.com/roguen/holocron/issues/3) has the numbers and the choice.
+Note that the measurement above came from an S/PDIF endpoint, **not** the theater
+HDMI path, which still has exclusive mode disabled and is therefore unprobed.
 
-**Open question 2 — M1 cannot be verified on the only machine that exists.** The
-debug facet exists to prove the analysis numbers are trustworthy, but it cannot
-verify anything on a host with no audio path. Three ways out: a `NullSink` plus a
-PCM-dump sink so the analysis stage runs headless against a fixture on any
-platform (which also makes it unit-testable), a `CoreAudioSink`, or committing to
-Linux hardware from M1 onward. The first is cheapest and keeps CI honest.
+**Open question 2 — the analysis stage needs an offline, deterministic harness.**
+The debug facet exists to prove the analysis numbers are trustworthy, but a
+renderer is a poor place to establish trust in a number. A `NullSink` plus a
+PCM-dump sink lets the analysis stage run headless against a fixture with no window
+and no audio device, which makes it genuinely unit-testable — a known-frequency
+tone lands in a known bin, a known-tempo loop produces a known `bpm` — and lets
+`AudioFrame` output be diffed against a golden file in CI. The `time_seconds`
+sign-off makes that concrete: with no render thread, every dumped frame carries the
+analysis-stamped value and is reproducible.
 
 ---
 
@@ -206,12 +228,12 @@ None of these are wired up yet; there is no build system and nothing is vendored
 
 | Dependency | For | Notes |
 |---|---|---|
-| C++20 toolchain | everything | Apple clang today, GCC/clang on Linux |
-| CMake | build | arrives with M1 |
+| C++20 toolchain | everything | MSVC Build Tools on the target; GCC/clang on Linux CI |
+| CMake + Ninja | build | arrives with M1; dependencies via vcpkg manifest mode |
 | SDL3 | window, input, event loop | zlib licence |
 | OpenGL 4.5 core | rendering | plus a loader; the headers deliberately avoid depending on one |
 | FFmpeg | decode | LGPL build only — see below |
-| ALSA (`libasound`) | Linux audio output | Linux only, behind `AudioSink`. LGPL-2.1+ |
+| WASAPI | audio output | part of the Win32 SDK, nothing to acquire. Behind `AudioSink`. |
 | glm | vector and matrix types | already required by `track_context.hpp` |
 | toml++ | `gatekeeper.toml`, crystal manifests, archives | MIT |
 | nlohmann/json | Plex API | M5. MIT |
@@ -251,7 +273,8 @@ on how M4 is built, not an implementation detail to be optimized away later: the
 LGPL boundary stays at the shared library, and the C API (`projectM.h`,
 `playlist.h`) is the one to bind against — binding the C++ headers risks their
 inline functions and templates making the calling object file a derivative work,
-and the C ABI is what keeps the Windows door open across MSVC and clang.
+and the C ABI is what makes the boundary hold across MSVC and clang, which is a
+present requirement on the Windows target rather than future-proofing.
 
 One thing to confirm at M4 rather than assume: whether the shipped `COPYING`
 says LGPL-2.1-**only** or LGPL-2.1-**or-later**. Combined with a GPL-3.0 work
