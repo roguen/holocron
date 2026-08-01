@@ -31,7 +31,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.1.1`. `main` is stable and CI is green.
+Current version `v0.1.3`. `main` is stable and CI is green.
 
 ---
 
