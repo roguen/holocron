@@ -11,21 +11,20 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: pre-M1, deliberately blocked
+## Status: pre-M1, one blocker left
 
 Nothing runs. There is no build system, no `main()`, no executable. What exists is
 the `AudioFrame` contract, its documentation, and the repo scaffolding around them.
 
-**Do not start M1 until the blockers below are resolved by the project owner.** They
-are decisions, not code, and every milestone after M1 reads from the struct they
-concern.
+Three of the four M1 blockers were resolved on 2026-08-01 (session 2). **One
+remains, and it is the one that shapes the audio spine:**
 
-| | Blocker |
-|---|---|
-| [#2](https://github.com/roguen/holocron/issues/2) | Sign off the `AudioFrame` contract. The two genuinely unresolved items — [#15](https://github.com/roguen/holocron/issues/15) and [#16](https://github.com/roguen/holocron/issues/16) — **were signed off 2026-08-01**; the other seven stand unless overturned |
-| [#1](https://github.com/roguen/holocron/issues/1) | `AudioSink`'s shape. The sketched blocking-write interface cannot implement WASAPI exclusive mode — and under D-022 WASAPI is the **only** backend, so this is now forced rather than preferred |
-| [#12](https://github.com/roguen/holocron/issues/12) | Which OpenGL version to target. Narrowed to **4.5 vs 4.6 core**: the macOS 4.1 cap that made this a blocker is gone, and the rack GPU was measured at 4.6 core |
-| [#13](https://github.com/roguen/holocron/issues/13) | Build system and how ten dependencies are acquired |
+| | Blocker | State |
+|---|---|---|
+| [#1](https://github.com/roguen/holocron/issues/1) | `AudioSink`'s shape | **OPEN — blocks M1.** The sketched blocking-write interface cannot implement WASAPI exclusive mode. Under D-022 WASAPI is the *only* backend, so a pull/callback interface is now **forced**, not merely preferred. Settle before any sink is written. |
+| [#2](https://github.com/roguen/holocron/issues/2) | `AudioFrame` contract sign-off | **CLOSED.** [#15](https://github.com/roguen/holocron/issues/15) and [#16](https://github.com/roguen/holocron/issues/16) signed off; the other seven §9 items stand unless overturned. |
+| [#12](https://github.com/roguen/holocron/issues/12) | OpenGL version | **DECIDED: 4.5 core.** The macOS 4.1 cap is gone with the dev host; the rack GPU measured 4.6 core with DSA, compute, SSBO and `KHR_debug` all present. |
+| [#13](https://github.com/roguen/holocron/issues/13) | Build system and dependencies | **DECIDED: MSVC + CMake + Ninja + vcpkg manifest mode** (D-023). FFmpeg's licence configuration and libprojectM's dynamic-link boundary still need deliberate handling. |
 
 **The target platform is Windows** (Decision-Log D-022). The rack machine runs
 Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuilding
