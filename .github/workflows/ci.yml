@@ -36,23 +36,28 @@ jobs:
       - name: Install glm (required by track_context.hpp)
         run: sudo apt-get update && sudo apt-get install -y libglm-dev
 
+      # Headers are checked via a TU that INCLUDES them, not by compiling the
+      # header directly: GCC rejects `#pragma once in main file` under -Werror,
+      # and compiling a header as the main file is not what we want to prove
+      # anyway. Including it twice additionally verifies the include guard.
+      #
       # audio_frame.hpp is deliberately std-only, so it must compile with no
       # third-party include path at all. If that ever stops being true, the
       # contract has grown a dependency it was designed not to have.
-      - name: audio_frame.hpp is dependency-free
+      - name: audio_frame.hpp is self-contained and dependency-free
         run: |
+          printf '#include "holocron/audio_frame.hpp"\n#include "holocron/audio_frame.hpp"\n' > /tmp/tu_audio.cpp
           for cxx in g++ clang++; do
             echo "--- $cxx ---"
-            $cxx -std=c++20 -Wall -Wextra -Werror -fsyntax-only \
-                 -Iinclude include/holocron/audio_frame.hpp
+            $cxx -std=c++20 -Wall -Wextra -Werror -fsyntax-only -Iinclude /tmp/tu_audio.cpp
           done
 
-      - name: track_context.hpp compiles against glm
+      - name: track_context.hpp is self-contained against glm
         run: |
+          printf '#include "holocron/track_context.hpp"\n#include "holocron/track_context.hpp"\n' > /tmp/tu_track.cpp
           for cxx in g++ clang++; do
             echo "--- $cxx ---"
-            $cxx -std=c++20 -Wall -Wextra -Werror -fsyntax-only \
-                 -Iinclude include/holocron/track_context.hpp
+            $cxx -std=c++20 -Wall -Wextra -Werror -fsyntax-only -Iinclude /tmp/tu_track.cpp
           done
 
       # The static_asserts guarantee AudioFrame can cross the analysis/render
