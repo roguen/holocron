@@ -11,12 +11,14 @@ find_package(Catch2 3 REQUIRED)
 add_executable(holocron_tests
     test_audio_frame_contract.cpp
     test_analysis_constants.cpp
+    test_analysis_stage.cpp
     test_audio_sink.cpp
 )
 
 target_link_libraries(holocron_tests
     PRIVATE
         holocron::contract
+        holocron::analysis
         holocron::warnings
         Catch2::Catch2WithMain
 )
