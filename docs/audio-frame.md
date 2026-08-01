@@ -25,7 +25,8 @@ redefining "bass" — there is only a vault of crystals that all quietly look wr
   device latency**, so features describe what the listener is hearing *now*, not
   what was most recently written into the buffer. This offset is reported by the
   `AudioSink` and trimmed by hand in `gatekeeper.toml`. The sink is the platform
-  boundary — ALSA, WASAPI or SDL3 — and the tap does not know which it is.
+  boundary — WASAPI on the target (D-022), SDL3 for a portable stand-in — and the
+  tap does not know which it is.
 - Publication is a **lock-free triple buffer**. The analysis thread writes into a
   spare slot and atomically swaps; the render thread takes the newest complete
   frame and never blocks, never tears, and never waits on audio.
@@ -50,7 +51,7 @@ fixed 48 kHz.**
 > not a guarantee of this contract. On Windows exclusive mode an endpoint may
 > refuse some rates outright — 88.2 and 176.4 kHz were both refused on measured
 > hardware — in which case the output path falls back rather than failing. How it
-> falls back is still open ([#3](https://github.com/roguen/holocron/issues/3) and
+> falls back is still open ([#32](https://github.com/roguen/holocron/issues/32) and
 > Decision-Log O-003). **None of this reaches the visuals:** the tap is resampled
 > to 48 kHz regardless, so a crystal behaves identically either way.
 
@@ -97,7 +98,7 @@ below is therefore a permanent property of the contract rather than a descriptio
 of one configuration.
 
 A band is narrower than one FFT bin whenever `f · (r−1) < kBinHz`, i.e. below
-**108 Hz**. With the default edges that is **bands 0–6**: seven bands drawing on
+**108 Hz**. With these edges that is **bands 0–6**: seven bands drawing on
 the same two or three bins. They move together.
 
 This is not a bug and it is not fixable by better interpolation — it is the
@@ -272,9 +273,13 @@ which is what would happen if publication stopped and the render thread kept
 re-reading a stale frame forever. There is deliberately no `playing` flag on
 `AudioFrame`; transport state is `TrackContext::playing`.
 
-`time_seconds` is also **stamped by the render thread**, not the analysis thread.
-It is that render frame's own wall clock: strictly increasing, never repeated, free
-of analysis-hop jitter, and safe to drive continuous animation from.
+`time_seconds` is **stamped by the render thread into its own private copy** after
+the triple-buffer read; the render thread never writes the shared slot. In that
+private copy it is that render frame's own wall clock: strictly increasing, never
+repeated, free of analysis-hop jitter, and safe to drive continuous animation from.
+In the *published* slot the analysis thread writes the analysis-side timestamp of
+that frame — a defined value, not a placeholder, and the one an offline harness
+reads. See §9 item 9 and Decision-Log O-005.
 `track_position` is analysis-stamped and *does* repeat — fine for a progress
 readout, wrong for animation.
 
@@ -297,7 +302,7 @@ Adding is safe: old crystals ignore new fields. Changing is not.
 
 ---
 
-## 9. Open decisions for sign-off
+## 9. Decisions taken at sign-off
 
 These are choices made in the header that are cheap to reverse **now** and
 expensive later. Flagging them explicitly rather than burying them:

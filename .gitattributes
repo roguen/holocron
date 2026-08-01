@@ -63,7 +63,7 @@ CMakePresets.json       text
 #
 # Crystal source is forced to LF for a different reason: a crystal is a .frag
 # plus its .toml manifest, and any shader cache keyed on source content must
-# produce the same key on macOS, Linux, and Windows. Both halves are pinned --
+# produce the same key on the Windows target and on Linux CI. Both halves are pinned --
 # pinning only the shader would still let an identical crystal hash differently
 # across platforms.
 # ---------------------------------------------------------------------------
