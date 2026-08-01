@@ -8,6 +8,7 @@
   "builtin-baseline": "39344dff01c5a5a0134caf2624cdd492f05d30ea",
 
   "$licence-note": "Holocron is GPL-3.0-or-later (D-010), so GPL dependencies are compatible. What is NOT acceptable is anything non-redistributable: --enable-nonfree FFmpeg stays excluded under any licence. libprojectM at M4 must stay dynamically linked through its C API to keep the LGPL boundary intact (D-012), so it may not simply be added here.",
+  "$ffmpeg-note": "default-features is FALSE deliberately, and the feature list is explicit. The port's 'gpl' and 'nonfree' features are not in its defaults today, but relying on that is relying on an upstream default we do not control - and 'nonfree' produces libraries that are unredistributable under ANY licence, which would be unfixable after the fact. Listing features also drops avdevice, avfilter and swscale, none of which an audio decoder uses.",
   "$dependency-notes": {
     "glm": "MIT. Required by track_context.hpp.",
     "pocketfft": "BSD-3-Clause, header-only. FFT for the analysis stage (#9). The implementation SciPy uses. FFTW was available under D-010 but rejected: a 2048-point real FFT at 93.75 Hz does not justify the weight.",
@@ -16,6 +17,15 @@
   },
 
   "dependencies": [
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "avformat",
+        "swresample"
+      ]
+    },
     "glm",
     "libebur128",
     "pocketfft"

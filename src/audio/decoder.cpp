@@ -1,0 +1,418 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Roguen Keller
+//
+// FFmpeg-backed decoding. See include/holocron/decoder.hpp for the contract.
+//
+// FFmpeg is reached through this translation unit and nowhere else, so the
+// rest of the project never sees an AVFrame.
+
+#include <holocron/decoder.hpp>
+
+#include <holocron/audio_frame.hpp>
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/mathematics.h>
+#include <libavutil/opt.h>
+#include <libswresample/swresample.h>
+}
+
+#include <algorithm>
+#include <cerrno>
+#include <cstring>
+#include <string>
+#include <vector>
+
+namespace holocron {
+namespace {
+
+bool codec_is_lossless(AVCodecID id)
+{
+    switch (id) {
+    case AV_CODEC_ID_FLAC:
+    case AV_CODEC_ID_ALAC:
+    case AV_CODEC_ID_APE:
+    case AV_CODEC_ID_WAVPACK:
+    case AV_CODEC_ID_TTA:
+    case AV_CODEC_ID_TRUEHD:
+    case AV_CODEC_ID_MLP:
+    case AV_CODEC_ID_PCM_S16LE:
+    case AV_CODEC_ID_PCM_S24LE:
+    case AV_CODEC_ID_PCM_S32LE:
+    case AV_CODEC_ID_PCM_F32LE:
+        return true;
+    default:
+        return false;
+    }
+}
+
+}  // namespace
+
+// ===========================================================================
+// Decoder
+// ===========================================================================
+
+struct Decoder::Impl {
+    ~Impl() { teardown(); }
+
+    void teardown()
+    {
+        if (swr != nullptr) {
+            swr_free(&swr);
+        }
+        if (frame != nullptr) {
+            av_frame_free(&frame);
+        }
+        if (packet != nullptr) {
+            av_packet_free(&packet);
+        }
+        if (codec_ctx != nullptr) {
+            avcodec_free_context(&codec_ctx);
+        }
+        if (format_ctx != nullptr) {
+            avformat_close_input(&format_ctx);
+        }
+        pending.clear();
+        pending_pos = 0;
+        eof         = false;
+        drained     = false;
+        open_       = false;
+    }
+
+    // Pull one decoded AVFrame into `pending` as interleaved float.
+    // Returns false when the stream is exhausted.
+    bool decode_more();
+
+    AVFormatContext* format_ctx = nullptr;
+    AVCodecContext*  codec_ctx  = nullptr;
+    AVPacket*        packet     = nullptr;
+    AVFrame*         frame      = nullptr;
+    SwrContext*      swr        = nullptr;  // format normalisation only, NOT rate conversion
+
+    int  stream_index = -1;
+    bool open_        = false;
+    bool eof          = false;   // no more packets to read
+    bool drained      = false;   // decoder flushed
+
+    SourceInfo  info{};
+    std::string codec_name_storage;
+
+    std::vector<float> pending;
+    std::size_t        pending_pos = 0;
+};
+
+bool Decoder::Impl::decode_more()
+{
+    while (true) {
+        int ret = avcodec_receive_frame(codec_ctx, frame);
+
+        if (ret == 0) {
+            const int in_samples = frame->nb_samples;
+            const int channels   = codec_ctx->ch_layout.nb_channels;
+            if (in_samples <= 0 || channels <= 0) {
+                continue;
+            }
+
+            const std::size_t base = pending.size();
+            pending.resize(base + std::size_t(in_samples) * std::size_t(channels));
+
+            auto*     dst      = reinterpret_cast<std::uint8_t*>(pending.data() + base);
+            const int produced = swr_convert(swr, &dst, in_samples,
+                                             const_cast<const std::uint8_t**>(frame->extended_data),
+                                             in_samples);
+            if (produced < 0) {
+                pending.resize(base);
+                return false;
+            }
+            pending.resize(base + std::size_t(produced) * std::size_t(channels));
+            av_frame_unref(frame);
+            return true;
+        }
+
+        if (ret == AVERROR_EOF) {
+            return false;
+        }
+
+        if (ret != AVERROR(EAGAIN)) {
+            return false;  // genuine decode error
+        }
+
+        // Decoder wants more input.
+        if (eof) {
+            if (drained) {
+                return false;
+            }
+            avcodec_send_packet(codec_ctx, nullptr);  // flush
+            drained = true;
+            continue;
+        }
+
+        const int read_ret = av_read_frame(format_ctx, packet);
+        if (read_ret < 0) {
+            eof = true;
+            continue;
+        }
+
+        if (packet->stream_index != stream_index) {
+            av_packet_unref(packet);
+            continue;
+        }
+
+        const int send_ret = avcodec_send_packet(codec_ctx, packet);
+        av_packet_unref(packet);
+        if (send_ret < 0 && send_ret != AVERROR(EAGAIN)) {
+            return false;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+Decoder::Decoder() : impl_(std::make_unique<Impl>()) {}
+Decoder::~Decoder() = default;
+
+DecoderError Decoder::open(const char* path)
+{
+    if (path == nullptr) {
+        return DecoderError::kFileNotFound;
+    }
+    if (impl_->open_) {
+        return DecoderError::kAlreadyOpen;
+    }
+
+    Impl& d = *impl_;
+
+    int ret = avformat_open_input(&d.format_ctx, path, nullptr, nullptr);
+    if (ret < 0) {
+        d.teardown();
+        // Map FFmpeg's reason rather than collapsing every failure into
+        // "file not found". A caller needs to tell "no such file" from "that is
+        // not a media file" -- they are different messages to a user, and
+        // distinguishing them is the entire reason this returns an enum.
+        if (ret == AVERROR(ENOENT)) {
+            return DecoderError::kFileNotFound;
+        }
+        if (ret == AVERROR_INVALIDDATA) {
+            return DecoderError::kNotAudio;
+        }
+        return DecoderError::kBackendFailure;
+    }
+
+    if (avformat_find_stream_info(d.format_ctx, nullptr) < 0) {
+        d.teardown();
+        return DecoderError::kCorruptStream;
+    }
+
+    d.stream_index = av_find_best_stream(d.format_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    if (d.stream_index < 0) {
+        d.teardown();
+        return DecoderError::kNotAudio;
+    }
+
+    AVStream* stream = d.format_ctx->streams[d.stream_index];
+    const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
+    if (codec == nullptr) {
+        d.teardown();
+        return DecoderError::kUnsupportedCodec;
+    }
+
+    d.codec_ctx = avcodec_alloc_context3(codec);
+    if (d.codec_ctx == nullptr) {
+        d.teardown();
+        return DecoderError::kBackendFailure;
+    }
+    if (avcodec_parameters_to_context(d.codec_ctx, stream->codecpar) < 0) {
+        d.teardown();
+        return DecoderError::kBackendFailure;
+    }
+    if (avcodec_open2(d.codec_ctx, codec, nullptr) < 0) {
+        d.teardown();
+        return DecoderError::kUnsupportedCodec;
+    }
+
+    const int channels = d.codec_ctx->ch_layout.nb_channels;
+    if (channels <= 0 || d.codec_ctx->sample_rate <= 0) {
+        d.teardown();
+        return DecoderError::kCorruptStream;
+    }
+
+    // Normalise sample FORMAT only -- same rate, same channel count. Planar
+    // and integer formats become interleaved float; nothing is resampled here,
+    // because the output path must stay at the native rate.
+    ret = swr_alloc_set_opts2(&d.swr,
+                              &d.codec_ctx->ch_layout, AV_SAMPLE_FMT_FLT, d.codec_ctx->sample_rate,
+                              &d.codec_ctx->ch_layout, d.codec_ctx->sample_fmt, d.codec_ctx->sample_rate,
+                              0, nullptr);
+    if (ret < 0 || swr_init(d.swr) < 0) {
+        d.teardown();
+        return DecoderError::kBackendFailure;
+    }
+
+    d.packet = av_packet_alloc();
+    d.frame  = av_frame_alloc();
+    if (d.packet == nullptr || d.frame == nullptr) {
+        d.teardown();
+        return DecoderError::kBackendFailure;
+    }
+
+    d.codec_name_storage = (codec->name != nullptr) ? codec->name : "";
+
+    d.info.sample_rate = std::uint32_t(d.codec_ctx->sample_rate);
+    d.info.channels    = std::uint16_t(channels);
+    d.info.codec_name  = d.codec_name_storage.c_str();
+    d.info.is_lossless = codec_is_lossless(stream->codecpar->codec_id);
+    d.info.duration_seconds =
+        (d.format_ctx->duration > 0)
+            ? double(d.format_ctx->duration) / double(AV_TIME_BASE)
+            : 0.0;
+
+    d.open_ = true;
+    return DecoderError::kOk;
+}
+
+void Decoder::close() { impl_->teardown(); }
+
+bool Decoder::is_open() const { return impl_->open_; }
+
+SourceInfo Decoder::info() const { return impl_->info; }
+
+bool Decoder::at_end() const
+{
+    const Impl& d = *impl_;
+    return d.open_ && d.eof && d.drained && d.pending_pos >= d.pending.size();
+}
+
+std::size_t Decoder::read(float* out, std::size_t max_frames)
+{
+    Impl& d = *impl_;
+    if (!d.open_ || out == nullptr || max_frames == 0) {
+        return 0;
+    }
+
+    const std::size_t channels = std::size_t(d.info.channels);
+    std::size_t       written  = 0;
+
+    while (written < max_frames) {
+        if (d.pending_pos >= d.pending.size()) {
+            d.pending.clear();
+            d.pending_pos = 0;
+            if (!d.decode_more()) {
+                break;
+            }
+            continue;
+        }
+
+        const std::size_t available = (d.pending.size() - d.pending_pos) / channels;
+        const std::size_t take      = std::min(available, max_frames - written);
+        if (take == 0) {
+            break;
+        }
+
+        std::memcpy(out + written * channels,
+                    d.pending.data() + d.pending_pos,
+                    take * channels * sizeof(float));
+
+        d.pending_pos += take * channels;
+        written += take;
+    }
+
+    return written;
+}
+
+// ===========================================================================
+// Resampler
+// ===========================================================================
+
+struct Resampler::Impl {
+    ~Impl()
+    {
+        if (swr != nullptr) {
+            swr_free(&swr);
+        }
+    }
+
+    SwrContext*   swr             = nullptr;
+    std::uint32_t source_rate     = 0;
+    std::uint16_t source_channels = 0;
+};
+
+Resampler::Resampler() : impl_(std::make_unique<Impl>()) {}
+Resampler::~Resampler() = default;
+
+DecoderError Resampler::configure(std::uint32_t source_rate, std::uint16_t source_channels)
+{
+    Impl& r = *impl_;
+
+    if (source_rate == 0 || source_channels == 0) {
+        return DecoderError::kBackendFailure;
+    }
+
+    if (r.swr != nullptr) {
+        swr_free(&r.swr);
+    }
+
+    AVChannelLayout in_layout{};
+    AVChannelLayout out_layout{};
+    av_channel_layout_default(&in_layout, int(source_channels));
+    av_channel_layout_default(&out_layout, 2);  // the tap is always stereo
+
+    const int ret = swr_alloc_set_opts2(&r.swr,
+                                        &out_layout, AV_SAMPLE_FMT_FLT, int(kAnalysisRate),
+                                        &in_layout, AV_SAMPLE_FMT_FLT, int(source_rate),
+                                        0, nullptr);
+
+    av_channel_layout_uninit(&in_layout);
+    av_channel_layout_uninit(&out_layout);
+
+    if (ret < 0 || swr_init(r.swr) < 0) {
+        if (r.swr != nullptr) {
+            swr_free(&r.swr);
+        }
+        return DecoderError::kBackendFailure;
+    }
+
+    r.source_rate     = source_rate;
+    r.source_channels = source_channels;
+    return DecoderError::kOk;
+}
+
+bool Resampler::is_configured() const { return impl_->swr != nullptr; }
+
+std::size_t Resampler::max_output_frames(std::size_t input_frames) const
+{
+    const Impl& r = *impl_;
+    if (r.swr == nullptr) {
+        return 0;
+    }
+    // Delay-aware worst case, plus slack for rounding.
+    const int64_t delay = swr_get_delay(r.swr, int64_t(r.source_rate));
+    const int64_t out   = av_rescale_rnd(delay + int64_t(input_frames),
+                                         int64_t(kAnalysisRate), int64_t(r.source_rate),
+                                         AV_ROUND_UP);
+    return std::size_t(out) + 32;
+}
+
+std::size_t Resampler::process(const float* in, std::size_t input_frames,
+                               float* out, std::size_t max_output)
+{
+    Impl& r = *impl_;
+    if (r.swr == nullptr || out == nullptr || max_output == 0) {
+        return 0;
+    }
+
+    const auto*    src     = reinterpret_cast<const std::uint8_t*>(in);
+    auto*          dst     = reinterpret_cast<std::uint8_t*>(out);
+    const int      produced = swr_convert(r.swr, &dst, int(max_output),
+                                          (in != nullptr && input_frames > 0) ? &src : nullptr,
+                                          int(input_frames));
+    return (produced > 0) ? std::size_t(produced) : 0;
+}
+
+std::size_t Resampler::flush(float* out, std::size_t max_output)
+{
+    return process(nullptr, 0, out, max_output);
+}
+
+}  // namespace holocron

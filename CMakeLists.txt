@@ -107,6 +107,31 @@ target_include_directories(holocron_analysis SYSTEM PRIVATE
 )
 
 # ---------------------------------------------------------------------------
+# Decoder
+#
+# FFmpeg is PRIVATE and reached through one translation unit, so nothing above
+# this library ever sees an AVFrame. The LGPL boundary matters here: vcpkg.json
+# pins default-features off and excludes 'gpl' and 'nonfree' deliberately.
+# ---------------------------------------------------------------------------
+
+find_package(FFMPEG REQUIRED)
+
+add_library(holocron_decoder STATIC
+    src/audio/decoder.cpp
+)
+add_library(holocron::decoder ALIAS holocron_decoder)
+
+target_link_libraries(holocron_decoder
+    PUBLIC  holocron::contract
+    PRIVATE holocron::warnings
+            ${FFMPEG_LIBRARIES}
+)
+target_include_directories(holocron_decoder SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
+target_link_directories(holocron_decoder PRIVATE ${FFMPEG_LIBRARY_DIRS})
+
+# ---------------------------------------------------------------------------
+
+add_subdirectory(tools)
 
 if(HOLOCRON_BUILD_TESTS)
     enable_testing()
