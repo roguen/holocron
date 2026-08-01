@@ -102,8 +102,13 @@ struct AudioFrame {
     // pow(fft_smoothed[i], 0.4) or a log mapping for display; the log-spaced band
     // arrays below already do that work and are usually the better choice.
 
+    // Note on naming: `fft_smoothed` is a per-bin fast-attack/slow-decay envelope,
+    // i.e. the spectrum's equivalent of a `_env` field. It is spelled differently
+    // for historical reasons and there is deliberately no `fft_norm` -- auto-gain
+    // is applied to the band arrays, not per bin, because per-bin auto-gain
+    // flattens exactly the spectral contrast a visualizer is trying to show.
     std::array<float, kSpectrumBins> fft_magnitude;  // instantaneous
-    std::array<float, kSpectrumBins> fft_smoothed;   // per-bin envelope, see below
+    std::array<float, kSpectrumBins> fft_smoothed;   // per-bin envelope
 
     // -- Log-spaced bands ----------------------------------------------------
     //
@@ -149,7 +154,9 @@ struct AudioFrame {
 
     // Short-term loudness, ITU-R BS.1770-4, 3-second window.
     //
-    // THIS IS THE ONE FIELD NOT IN 0..1, deliberately. It is LUFS: a negative dB
+    // NOT IN 0..1, deliberately -- see docs/audio-frame.md section 6 for the
+    // complete list of fields that are not, since binding one of them to a shader
+    // uniform expecting 0..1 fails silently. It is LUFS: a negative dB
     // value, typically -40 (very quiet) to -5 (loud modern master), with silence
     // reported as -70. Renormalizing it would throw away the only absolute,
     // cross-track-comparable loudness number in the struct, which is exactly what
@@ -204,6 +211,12 @@ struct AudioFrame {
     // Running tempo estimate. `bpm` is meaningless when `bpm_confidence` is low;
     // it holds its last good value rather than jumping around, so check the
     // confidence before trusting it.
+    //
+    // NOT IN 0..1 -- this is beats per minute, roughly 60..200 for most music and
+    // 0 before the first estimate. Binding it straight to a shader uniform that
+    // expects 0..1 will saturate with no error anywhere. Divide by a nominal
+    // maximum, or drive from `beat_phase` instead, which is what most crystals
+    // actually want.
     float bpm;
     float bpm_confidence;  // 0..1
 
