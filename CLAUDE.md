@@ -11,15 +11,25 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: M1 started — build system and test harness in
+## Status: M1 — analysis complete, no audio path yet
 
-There is still no `main()` and nothing that plays audio. What exists now, beyond
-the contract: a CMake + vcpkg build, a Catch2 test suite that runs green on
-Windows and Linux, and the `AudioSink` interface with a `NullSink` behind it.
+There is still no `main()` and nothing that plays audio. What exists: a CMake +
+vcpkg build, a Catch2 suite green on Windows and Linux, the `AudioSink`
+interface with `NullSink` behind it, and **the full analysis stage — every
+`AudioFrame` field is populated and tested.**
 
 **All four M1 blockers were resolved on 2026-08-01.** Remaining M1 work is the
-decoder, the analysis stage, a real sink (`SdlSink` first, then `WasapiSink`),
-the triple buffer, and the debug facet.
+decoder, a real sink (`SdlSink` first, then `WasapiSink`), the triple buffer,
+and the debug facet.
+
+Two things about the analysis that will otherwise look like bugs:
+
+- **`loudness_short` reads −70 for the first three seconds of any track.** It is
+  a 3-second BS.1770 window; there is genuinely no 3-second loudness before
+  3 seconds have passed.
+- **`bpm` holds its last good value when `bpm_confidence` is low** rather than
+  jumping around. Check the confidence before trusting it, and prefer
+  `beat_phase`, which free-runs and is always safe to read.
 
 ### Building
 
@@ -45,7 +55,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.1.5`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.1.6`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
