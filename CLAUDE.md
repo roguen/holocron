@@ -214,3 +214,10 @@ Ninja 1.13.2. **No C++ compiler yet** — MSVC Build Tools needs an elevated ins
   share-alike, incompatible with GPL-3.0. See #10 and #14.
 - `.gitignore` and `.gitattributes` describe the same media set in two places and
   will drift; see #18.
+- **Never round-trip a file through PowerShell to edit it.**
+  `(Get-Content f -Raw) -replace … | Set-Content -Encoding utf8 f` decodes with the
+  system ANSI codepage and re-encodes as UTF-8, **double-encoding every non-ASCII
+  character** and adding a BOM. Every `—` and `§` in these docs is a casualty, and
+  **CI does not catch it** (see #33) — the result is still valid UTF-8, just wrong.
+  Use a real editing tool, or `-Encoding utf8NoBOM` on PowerShell 7+. This bit once
+  already, on `Home.md`, and was caught only by inspecting the bytes.
