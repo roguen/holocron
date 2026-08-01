@@ -9,8 +9,8 @@
 #     src/build/ and cmake/build/, and the loss is silent.
 #
 # Anchoring bounds the blast radius but does NOT solve case-insensitivity. This
-# machine is case-insensitive APFS (core.ignorecase=true), so a rule `/Debug/`
-# would also ignore a root-level `debug/` here while Linux tracks it happily --
+# machine is case-insensitive NTFS (core.ignorecase=true), so a rule `/Debug/`
+# would also ignore a root-level `debug/` here while Linux CI tracks it happily --
 # a divergence invisible on the host where the work happens. The fix is not
 # cleverer patterns, it is not writing rules that collide with plausible source
 # directory names in the first place. That is why there is no MSVC
@@ -97,7 +97,7 @@ vgcore.*
 
 
 # ---------------------------------------------------------------------------
-# Windows / MSVC  (future target -- keep the door open)
+# Windows / MSVC  (the target -- see D-022, D-023)
 # ---------------------------------------------------------------------------
 
 .vs/
@@ -259,9 +259,9 @@ plex_token*
 
 # Character-class form for the same reason as .gitattributes section 5: ignore
 # patterns are case-SENSITIVE wherever core.ignorecase is false, which is every
-# Linux checkout. A plain `*.flac` does not match TRACK.FLAC there, and rippers
-# do emit uppercase extensions -- so the plain form silently stops working on
-# the primary target while continuing to look correct on the macOS dev host.
+# Linux checkout and all of CI. A plain `*.flac` does not match TRACK.FLAC there,
+# and rippers do emit uppercase extensions -- so the plain form silently stops
+# working in CI while continuing to look correct on the Windows target.
 
 *.[wW][aA][vV]
 *.[fF][lL][aA][cC]

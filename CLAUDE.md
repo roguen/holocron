@@ -85,8 +85,9 @@ Branch names describe the work: `m1/audio-spine`, `fix/gitattributes-case`,
 
 This matters more than usual here. An entire class of bug in this project —
 filename case, line endings, gitattribute matching — is **invisible on a
-case-insensitive filesystem and appears only on Linux**. CI runs on the PR and is
-the only thing that sees it.
+case-insensitive filesystem**, which is what the Windows target runs on. Linux CI
+runs on the PR and is the only thing in the project that sees it. That is why CI
+stays on Linux even though Linux is not a deployment target.
 
 ### 4. Semantic versioning
 
@@ -155,9 +156,12 @@ Clone the wiki with `git clone https://github.com/roguen/holocron.wiki.git`.
 ## First run on a new machine
 
 **Do this before the first commit.** The repo-local git identity does not survive a
-clone, and the consequence is not cosmetic: the machine's *global* identity is a
+clone, and the consequence is not cosmetic: the machine's *global* identity may be a
 work address, two `gh` accounts are authenticated, and this is a public repo where
 a published author address cannot be retracted from forks.
+
+**Run it from Git Bash, not PowerShell** — it is a `.sh` script and there is no WSL
+on the rack machine. Git ships Git Bash, so nothing extra is needed.
 
 ```bash
 ./scripts/setup-git-identity.sh
@@ -165,6 +169,10 @@ a published author address cannot be retracted from forks.
 
 It is idempotent and prints what it sets. Verify with `git log -1 --format='%an <%ae>'`
 after the first commit.
+
+Run it **after** `gh auth login`, or run it twice: the credential helper it
+configures is only set if `gh` is on `PATH` when the script runs. Without that,
+pushes fail even though the identity is correct.
 
 ### Build dependencies (none are wired up yet — M1, see #13)
 
