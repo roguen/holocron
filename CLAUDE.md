@@ -45,9 +45,14 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.1.3`. `main` is stable and CI is green. Bump this **in the same
+Current version `v0.1.4`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
+
+The version now lives in **three** files that must move together — this line,
+`vcpkg.json`'s `version-string`, and `CMakeLists.txt`'s `VERSION` — plus the wiki's
+Home and Working-Agreement. Nothing checks that they agree yet; see
+[#38](https://github.com/roguen/holocron/issues/38).
 
 **Toolchain verified on this machine** (2026-08-01): MSVC 19.44 / Build Tools
 17.14, Windows SDK 10.0.26100, CMake 4.4.1, Ninja 1.13.2, vcpkg bootstrapped at
