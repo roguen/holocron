@@ -11,13 +11,27 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: pre-M1, unblocked, nothing built
+## Status: M1 started — build system and test harness in
 
-Nothing runs. There is no build system, no `main()`, no executable. What exists is
-the `AudioFrame` contract, its documentation, and the repo scaffolding around them.
+There is still no `main()` and nothing that plays audio. What exists now, beyond
+the contract: a CMake + vcpkg build, a Catch2 test suite that runs green on
+Windows and Linux, and the `AudioSink` interface with a `NullSink` behind it.
 
-**All four M1 blockers were resolved on 2026-08-01 (session 2). M1 may start.**
-Do not read "unblocked" as "started" — not a line of buildable source exists yet.
+**All four M1 blockers were resolved on 2026-08-01.** Remaining M1 work is the
+decoder, the analysis stage, a real sink (`SdlSink` first, then `WasapiSink`),
+the triple buffer, and the debug facet.
+
+### Building
+
+```bash
+cmake --preset windows && cmake --build --preset windows && ctest --preset windows
+```
+
+Needs `VCPKG_ROOT` set and an MSVC environment. **`vcvars64.bat` overwrites
+`VCPKG_ROOT`** with Visual Studio's bundled vcpkg — set it *after* calling
+vcvars, or the manifest resolves against the wrong tree. Ninja must be on `PATH`
+before vcvars runs; appending to `%PATH%` afterwards in the same `cmd` line
+expands the *pre*-vcvars value and wipes the compiler paths.
 
 | | Blocker | State |
 |---|---|---|
@@ -79,17 +93,40 @@ Labels: `bug` · `enhancement` · `decision` (needs his call) · `blocker` · `c
 (touches the frozen `AudioFrame`) · `legal` · `chore` · `portability` ·
 `documentation`. Milestones M1–M7.
 
-### 3. Work on branches; `main` stays stable
+### 3. `main` is protected; work flows through `development`
 
-Nothing lands directly on `main`.
+Nothing lands directly on `main`, and this is now **enforced by GitHub branch
+protection**, not just convention:
 
 ```
-main (stable, tagged)
-  └── branch → iterate → PR → CI green → merge → tag
+main (protected, stable, tagged)
+  ↑ PR only — required checks must pass
+development (integration)
+  ↑ merge
+feature branch → iterate → PR
 ```
 
-Branch names describe the work: `m1/audio-spine`, `fix/gitattributes-case`,
-`docs/cutting-crystals`.
+Branch protection on `main`, set 2026-08-01: pull request required, both CI
+checks required and up to date, linear history, no force-push, no deletion, and
+**`enforce_admins: true`** — it applies to the owner too. There is deliberately
+no escape hatch; if it ever needs lifting, that is a conscious act:
+
+```bash
+gh api --method DELETE repos/roguen/holocron/branches/main/protection
+```
+
+`development` is the integration branch. Feature branches PR into it; it PRs into
+`main` when green. Branch names describe the work: `m1/audio-spine`,
+`fix/gitattributes-case`, `docs/cutting-crystals`.
+
+**Anything merged to `main` must build and pass the full test suite on both
+platforms.** "It compiles" is not the bar — `ctest` green on Windows *and* Linux
+is. A regression that reaches `main` is a process failure, not bad luck.
+
+> **`Closes #N` closes exactly one issue per keyword.** `Closes #2, #12, #15`
+> closes only #2 — GitHub honours the keyword per reference, not per list. Write
+> `Closes #2, closes #12, closes #15`, or the link rule 2 depends on silently
+> fails to form.
 
 This matters more than usual here. An entire class of bug in this project —
 filename case, line endings, gitattribute matching — is **invisible on a

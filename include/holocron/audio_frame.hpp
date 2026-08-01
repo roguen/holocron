@@ -62,6 +62,23 @@ inline constexpr float kWindowSeconds= float(kFftSize) / float(kAnalysisRate);  
 constexpr float bin_to_hz(int bin) { return float(bin) * kBinHz; }
 
 // ---------------------------------------------------------------------------
+// Band edges -- FIXED, not configurable.
+//
+// These were briefly gatekeeper settings, which silently voided the guarantee
+// this whole contract exists to provide: band[5] must mean the same frequency
+// span on every install, or a crystal binding that index means something
+// different per machine, with no error and no way for the crystal to detect it.
+// Same reasoning as kAnalysisRate being fixed. See docs/audio-frame.md
+// section 9 item 8, Decision-Log O-004, and issue #15.
+//
+// The bass/mid/treble crossovers are a SEPARATE question and remain
+// configurable -- see issue #30.
+// ---------------------------------------------------------------------------
+
+inline constexpr float kBandLowHz  = 30.0f;
+inline constexpr float kBandHighHz = 16000.0f;
+
+// ---------------------------------------------------------------------------
 
 struct AudioFrame {
     // -- Identity and time ---------------------------------------------------
@@ -138,8 +155,12 @@ struct AudioFrame {
     // they are interpolated from the same two or three bins and move together.
     // They are not wrong, they are just correlated; do not design a crystal that
     // depends on band 2 and band 5 being independent. Raising kFftSize to 4096
-    // pushes the limit down to ~54 Hz (bands 0..2) at the cost of ~21 ms more
+    // pushes the limit down to ~54.05 Hz (bands 0..3) at the cost of ~21 ms more
     // time smearing. See docs/audio-frame.md.
+    //
+    // That 4096 figure said "bands 0..2" until it was checked in code: band 3
+    // clears the threshold by 0.011% of a bin, so the boundary sits almost
+    // exactly on a band edge. tests/test_analysis_constants.cpp pins it.
 
     static constexpr int kBands = 32;
 

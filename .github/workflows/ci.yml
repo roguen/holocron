@@ -11,10 +11,12 @@
 #   * .gitattributes patterns that silently fail to match, since attribute
 #     matching is case-sensitive only when core.ignorecase is false
 #
-# None of these produce a local error. This job is the only thing that catches
-# them, which is why it exists before there is any build system to test.
+# None of these produce a local error. The hygiene job is the only thing that
+# catches them, which is why it existed before there was any build system.
 #
-# The CMake build matrix (Linux + Windows) lands with M1.
+# The build job below now covers BOTH platforms. That matters: until M1 there
+# was no job that built for the deployment target at all, which meant CI tested
+# the canary and nothing tested what ships.
 
 name: CI
 
@@ -79,6 +81,73 @@ jobs:
           EOF
           g++ -std=c++20 -Iinclude /tmp/check.cpp -o /tmp/check
           /tmp/check || { echo "::error::AudioFrame layout changed — update the expected size if intentional"; exit 1; }
+
+  build:
+    name: Build and test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            preset: windows-ci
+          - name: Linux
+            os: ubuntu-latest
+            preset: linux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to the exact commit in vcpkg.json's builtin-baseline rather than
+      # using the runner's preinstalled copy. The whole point of committing a
+      # baseline is that the dependency set is reproducible; resolving it
+      # against whatever the runner image happens to ship would defeat that.
+      - name: Check out vcpkg at the pinned baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: 39344dff01c5a5a0134caf2624cdd492f05d30ea
+          path: vcpkg
+          fetch-depth: 1
+
+      - name: Bootstrap vcpkg (Windows)
+        if: runner.os == 'Windows'
+        run: .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Bootstrap vcpkg (Linux)
+        if: runner.os == 'Linux'
+        run: ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: Install Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.os == 'Windows' && '~\AppData\Local\vcpkg\archives' || '~/.cache/vcpkg/archives' }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ runner.os }}-
+
+      - name: Configure
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      # Warnings are errors in both toolchains, so a green build here also means
+      # the tree is clean under /W4 on MSVC and -Wall -Wextra -Wconversion on
+      # gcc. Those two disagree about enough that running only one would miss
+      # things -- which is exactly what produced D-018.
+      - name: Test
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+        run: ctest --preset ${{ matrix.preset }}
 
   hygiene:
     name: Repo hygiene (case + line endings)

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "holocron",
+  "version-string": "0.1.3",
+  "description": "GPU music visualization engine that is also the music player",
+  "homepage": "https://github.com/roguen/holocron",
+  "license": "GPL-3.0-or-later",
+  "builtin-baseline": "39344dff01c5a5a0134caf2624cdd492f05d30ea",
+
+  "$licence-note": "Holocron is GPL-3.0-or-later (D-010), so GPL dependencies are compatible. What is NOT acceptable is anything non-redistributable: --enable-nonfree FFmpeg stays excluded under any licence. libprojectM at M4 must stay dynamically linked through its C API to keep the LGPL boundary intact (D-012), so it may not simply be added here.",
+  "$dependency-notes": {
+    "glm": "MIT. Required by track_context.hpp.",
+    "catch2": "BSL-1.0, GPL-compatible. Test-only, hence the feature."
+  },
+
+  "dependencies": [
+    "glm"
+  ],
+
+  "features": {
+    "tests": {
+      "description": "Build the test suite",
+      "dependencies": [
+        "catch2"
+      ]
+    }
+  },
+
+  "default-features": [
+    "tests"
+  ]
+}
