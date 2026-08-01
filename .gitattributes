@@ -1,0 +1,226 @@
+# Holocron .gitattributes
+#
+# THIS FILE MUST BE IN THE FIRST COMMIT. Attributes are applied at `git add` and
+# `git checkout` time, never retroactively. Landing it later means an isolated
+# `git add --renormalize .` commit to repair the tree, tangled into whatever else
+# was being changed that day. It is free right now and it never will be again.
+#
+# What it is for: the development host is macOS, the primary target is Linux, and
+# Windows is a future target. Without normalization the first Windows checkout
+# produces a whole-tree CRLF diff against the macOS/Linux history. Doing it here
+# rather than via each machine's core.autocrlf means the rule travels with the
+# repo instead of depending on every clone being configured correctly.
+
+
+# ---------------------------------------------------------------------------
+# 1. Baseline
+#
+# Normalize to LF in the repository, check out native in the working tree. Git
+# decides text-vs-binary per file; sections 5 overrides that where the guess is
+# not safe enough to rely on.
+# ---------------------------------------------------------------------------
+
+*                       text=auto
+
+
+# ---------------------------------------------------------------------------
+# 2. Source and docs
+#
+# diff=cpp gives hunk headers showing the enclosing function, which makes review
+# of the render loop and the analysis stage substantially easier to follow.
+# ---------------------------------------------------------------------------
+
+*.c                     text diff=cpp
+*.h                     text diff=cpp
+*.cc                    text diff=cpp
+*.cpp                   text diff=cpp
+*.cxx                   text diff=cpp
+*.hpp                   text diff=cpp
+*.hxx                   text diff=cpp
+*.inl                   text diff=cpp
+
+*.cmake                 text
+CMakeLists.txt          text
+CMakePresets.json       text
+*.json                  text
+*.yml                   text
+*.yaml                  text
+*.md                    text diff=markdown
+*.txt                   text
+*.toml                  text
+.clang-format           text
+.clang-tidy             text
+.editorconfig           text
+.gitattributes          text
+.gitignore              text
+
+
+# ---------------------------------------------------------------------------
+# 3. Files that must be LF even on Windows
+#
+# A shebang line followed by CRLF makes the kernel look for an interpreter whose
+# name ends in a carriage return, which fails with a uselessly obscure error.
+#
+# Crystal source is forced to LF for a different reason: a crystal is a .frag
+# plus its .toml manifest, and any shader cache keyed on source content must
+# produce the same key on macOS, Linux, and Windows. Both halves are pinned --
+# pinning only the shader would still let an identical crystal hash differently
+# across platforms.
+# ---------------------------------------------------------------------------
+
+*.sh                    text eol=lf
+*.bash                  text eol=lf
+*.zsh                   text eol=lf
+*.py                    text eol=lf
+configure               text eol=lf
+Makefile                text eol=lf
+
+*.frag                  text eol=lf
+*.vert                  text eol=lf
+*.geom                  text eol=lf
+*.comp                  text eol=lf
+*.tesc                  text eol=lf
+*.tese                  text eol=lf
+*.glsl                  text eol=lf
+*.inc                   text eol=lf
+vault/**/*.toml         text eol=lf
+
+
+# ---------------------------------------------------------------------------
+# 4. Files that must be CRLF even on Linux
+#
+# cmd.exe misparses a batch file with LF line endings, in ways that depend on
+# where the line break falls. There is no upside to normalizing these.
+# ---------------------------------------------------------------------------
+
+*.bat                   text eol=crlf
+*.cmd                   text eol=crlf
+*.sln                   text eol=crlf
+*.vcxproj               text eol=crlf
+*.props                 text eol=crlf
+
+
+# ---------------------------------------------------------------------------
+# 5. Binary - never normalize, never diff as text
+#
+# Git's own text detection looks for a NUL byte in the first 8000 bytes and
+# nothing else. There is no non-printable-ratio heuristic. A binary file that
+# happens to contain no NUL in its header -- which is entirely possible for
+# audio, font and compressed formats -- is therefore classified as text by
+# `* text=auto` above and gets CR bytes injected on a Windows checkout. The file
+# is silently corrupted with no error and no warning. These lines are what
+# prevent that, so treat the list as load-bearing rather than decorative.
+#
+# Every pattern is written in character-class form, e.g. *.[fF][lL][aA][cC].
+# This is not stylistic. Attribute matching is case-SENSITIVE when
+# core.ignorecase is false, which is every Linux checkout and all of CI -- so a
+# plain `*.flac` silently fails to match `TRACK.FLAC`. On the macOS dev host
+# core.ignorecase is true and the case folds, so a gap here is invisible exactly
+# where the work happens and only corrupts files on the target platform.
+#
+# ADDING A FORMAT: add it in class form, and mirror it in .gitignore's media
+# block so the two files keep describing the same set.
+# ---------------------------------------------------------------------------
+
+# Audio - test fixtures the AudioFrame analysis is validated against
+*.[aA][aA][cC]          binary
+*.[aA][iI][fF]          binary
+*.[aA][iI][fF][fF]      binary
+*.[aA][pP][eE]          binary
+*.[cC][aA][fF]          binary
+*.[dD][fF][fF]          binary
+*.[dD][sS][fF]          binary
+*.[fF][lL][aA][cC]      binary
+*.[mM]4[aA]             binary
+*.[mM][kK][aA]          binary
+*.[mM][pP]3             binary
+*.[oO][gG][aA]          binary
+*.[oO][gG][gG]          binary
+*.[oO][pP][uU][sS]      binary
+*.[wW][aA][vV]          binary
+*.[wW][mM][aA]          binary
+*.[wW][vV]              binary
+
+# Images - documentation figures and crystal preview thumbnails
+*.[bB][mM][pP]          binary
+*.[dD][dD][sS]          binary
+*.[gG][iI][fF]          binary
+*.[iI][cC][oO]          binary
+*.[jJ][pP][eE][gG]      binary
+*.[jJ][pP][gG]          binary
+*.[pP][nN][gG]          binary
+*.[pP][sS][dD]          binary
+*.[tT][gG][aA]          binary
+*.[tT][iI][fF]          binary
+*.[tT][iI][fF][fF]      binary
+*.[wW][eE][bB][pP]      binary
+
+# Video - fixtures for the future video facet
+*.[aA][vV][iI]          binary
+*.[mM][kK][vV]          binary
+*.[mM][oO][vV]          binary
+*.[mM][pP]4             binary
+*.[wW][eE][bB][mM]      binary
+
+# Fonts - the M6 on-screen library UI
+*.[eE][oO][tT]          binary
+*.[oO][tT][fF]          binary
+*.[tT][tT][fF]          binary
+*.[wW][oO][fF][fF]      binary
+*.[wW][oO][fF][fF]2     binary
+
+# Archives and opaque blobs
+*.7[zZ]                 binary
+*.[bB][iI][nN]          binary
+*.[bB][zZ]2             binary
+*.[dD][aA][tT]          binary
+*.[gG][zZ]              binary
+*.[pP][dD][fF]          binary
+*.[rR][aA][rR]          binary
+*.[tT][aA][rR]          binary
+*.[xX][zZ]              binary
+*.[zZ][iI][pP]          binary
+
+# Compiled output - gitignored, but belt and braces against a force-add
+*.[aA]                  binary
+*.[dD][lL][lL]          binary
+*.[dD][yY][lL][iI][bB]  binary
+*.[eE][xX][eE]          binary
+*.[lL][iI][bB]          binary
+*.[oO]                  binary
+*.[oO][bB][jJ]          binary
+*.[pP][dD][bB]          binary
+*.[sS][oO]              binary
+
+
+# ---------------------------------------------------------------------------
+# 6. Language reporting
+#
+# GitHub classifies .frag/.vert as Fortran-ish or unknown otherwise, which makes
+# the repo's language bar nonsense once the vault has any size to it.
+# ---------------------------------------------------------------------------
+
+*.frag                  linguist-language=GLSL
+*.vert                  linguist-language=GLSL
+*.geom                  linguist-language=GLSL
+*.comp                  linguist-language=GLSL
+*.tesc                  linguist-language=GLSL
+*.tese                  linguist-language=GLSL
+*.glsl                  linguist-language=GLSL
+*.inc                   linguist-language=GLSL
+
+third_party/**          linguist-vendored
+docs/**                 linguist-documentation
+
+
+# ---------------------------------------------------------------------------
+# 7. Source archives
+#
+# Affects `git archive` only, which is what backs GitHub's release tarballs and
+# "Download ZIP". It does NOT affect `git clone` -- contributors still get these.
+# ---------------------------------------------------------------------------
+
+.gitattributes          export-ignore
+.gitignore              export-ignore
+.editorconfig           export-ignore
+.github/                export-ignore

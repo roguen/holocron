@@ -1,0 +1,271 @@
+# The `AudioFrame` contract
+
+`include/holocron/audio_frame.hpp` is the interface between the audio half of
+Holocron and everything that draws. Every crystal, every facet, every parameter
+binding in a manifest resolves to a field on this struct.
+
+It is frozen once signed off. Fields may be **added**; the meaning, units, or
+range of an existing field may never change. There is no compiler error for
+redefining "bass" — there is only a vault of crystals that all quietly look wrong.
+
+---
+
+## 1. Threading model
+
+```
+ audio callback thread          analysis thread            render thread
+ ─────────────────────          ───────────────            ─────────────
+ decode → ring buffer  ──tap──► FFT + features  ──publish──► read newest
+ → ALSA  (bit-perfect)          (93.75 Hz)      triple buf   (vsync rate)
+```
+
+- **No locks and no allocation** in the audio callback. It moves samples and
+  nothing else.
+- The analysis tap reads the ring buffer **at the playback point minus output
+  device latency**, so features describe what the listener is hearing *now*, not
+  what was most recently written into the buffer. This offset is measured from
+  ALSA and trimmed by hand in `gatekeeper.toml`.
+- Publication is a **lock-free triple buffer**. The analysis thread writes into a
+  spare slot and atomically swaps; the render thread takes the newest complete
+  frame and never blocks, never tears, and never waits on audio.
+- The render thread may therefore **skip** frames (60 fps render vs 93.75 Hz
+  analysis) or **repeat** them (144 fps render). Both happen constantly. This is
+  the single most important consequence of the design and it is why discrete
+  events are exposed as counters — see §5.
+
+`AudioFrame` is `static_assert`-ed trivially copyable and standard layout, because
+it crosses that boundary by `memcpy`. It is 10.5 KB, so the whole triple buffer is
+31.5 KB — small enough to stay resident in L2.
+
+---
+
+## 2. Analysis is sample-rate invariant
+
+The output path opens ALSA at the **file's native rate** and stays bit-perfect.
+The **analysis tap is resampled to a fixed 48 kHz.**
+
+This matters more than it looks. If analysis ran at the file rate, a 2048-sample
+window would be 46 ms of audio on a 44.1 kHz rip and 10.7 ms on a 192 kHz master,
+with 4× different frequency resolution and 4× different update rate. The same
+crystal would visibly behave differently depending on which pressing you played.
+Fixing the analysis rate costs one resampler on a tap that nobody listens to, and
+buys identical behaviour across the whole library.
+
+Consequence: **`AudioFrame::sample_rate` is the source file's rate, and is for
+display only.** Never use it to interpret an array in the struct. Use the
+constants:
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `kAnalysisRate` | 48000 Hz | fixed analysis rate |
+| `kFftSize` | 2048 | Hann window length |
+| `kHopSize` | 512 | 75% overlap |
+| `kSpectrumBins` | 1024 | published bins, Nyquist bin dropped |
+| `kBinHz` | 23.4375 Hz | bin spacing |
+| `kFrameRateHz` | 93.75 Hz | analysis frames per second |
+| `kWindowSeconds` | 42.67 ms | time span of one window |
+
+Bin `i` is centred at `bin_to_hz(i)`. Bin 1023 is 23.98 kHz.
+
+---
+
+## 3. Bands, and what they can actually resolve
+
+32 geometrically spaced bands over `[band_low_hz, band_high_hz]`, gatekeeper
+defaults **30 Hz to 16 kHz**. Ratio 1.2168 per band, 0.283 octave each.
+
+A band is narrower than one FFT bin whenever `f · (r−1) < kBinHz`, i.e. below
+**108 Hz**. With the default edges that is **bands 0–6**: seven bands drawing on
+the same two or three bins. They move together.
+
+This is not a bug and it is not fixable by better interpolation — it is the
+time/frequency tradeoff. It is documented here so nobody designs a crystal whose
+effect depends on band 2 and band 5 being independent, then spends an evening
+wondering why the bottom of the spectrum looks like one fat blob.
+
+If it becomes a problem, raising `kFftSize` to 4096 moves the limit to 54 Hz
+(bands 0–2 correlated). The update rate is unchanged because it is set by the hop,
+not the window; the cost is ~21 ms more time smearing, which shows up as slightly
+mushier transients on fast percussion. **Not doing this by default** — the current
+setting favours transient response, which is what a music visualizer lives on.
+
+Coarse aggregate crossovers, all gatekeeper-configurable:
+
+| Field | Default range |
+|---|---|
+| `bass` | 30 – 250 Hz |
+| `mid` | 250 – 4000 Hz |
+| `treble` | 4000 – 16000 Hz |
+
+---
+
+## 4. The three variants, and which one to use
+
+Nearly every spectral quantity comes in three forms. Choosing wrong is the most
+common way for a crystal to look bad, so:
+
+| Suffix | Behaviour | Use for |
+|---|---|---|
+| *(none)* | instantaneous, twitchy, frame-accurate | impacts, hits, anything that should snap |
+| `_env` | fast attack, slow decay | continuous motion — scale, brightness, displacement |
+| `_norm` | enveloped **and** auto-gained | anything that must look right on every track |
+
+**When in doubt, use `_norm`.**
+
+### Envelopes
+
+One-pole, per analysis frame, with separate attack and decay time constants
+expressed in **seconds to 63%**:
+
+```
+tau   = (x > y_prev) ? attack : decay
+alpha = 1 - exp(-kHopSeconds / tau)
+y     = y_prev + alpha * (x - y_prev)
+```
+
+Defaults live in `gatekeeper.toml` and are never hardcoded. Crystal manifests may
+override attack/decay per uniform — that is what
+`u_flash = { source = "onset_strength", attack = 0.001, decay = 0.18 }` means.
+
+Sane starting points: flashes `attack 0.001 / decay 0.18`; continuous motion
+`attack 0.01 / decay 0.25`; slow washes `attack 0.05 / decay 1.5`.
+
+### Auto-gain
+
+```
+rolling_max = max(decayed rolling_max, x)      // ~20 s window, gatekeeper-set
+x_norm      = clamp(x / max(rolling_max, floor), 0, 1)
+```
+
+The `floor` is essential: without it, a quiet passage drives `rolling_max` toward
+zero and the next moment of silence gets amplified into full-scale noise. With it,
+signals below the floor stay dark.
+
+**This single decision is what makes the vault feel consistent.** A quiet acoustic
+recording and a brickwalled master push the visuals to comparable ranges, so a
+crystal is authored once and looks right everywhere, instead of needing per-track
+fiddling. The tradeoff is honest and worth stating: auto-gain destroys absolute
+loudness information. A deliberately quiet passage will, after ~20 seconds, look
+as bright as a loud one. When a crystal genuinely wants absolute level, use `rms`,
+`peak`, or `loudness_short`.
+
+---
+
+## 5. Discrete events: counters, not booleans
+
+The render thread skips and repeats analysis frames. So:
+
+```cpp
+if (frame.onset) fire();          // WRONG — drops and double-fires
+```
+
+This drops onsets when the render thread runs slower than 93.75 Hz, and fires
+twice when it runs faster. It looks exactly like a DSP timing bug and it is not.
+
+```cpp
+if (frame.onset_count != last_onset) {   // RIGHT
+    last_onset = frame.onset_count;
+    fire();
+}
+```
+
+`onset_count` and `beat_count` are monotonic and correct under both frame drop and
+frame repeat. The `onset` boolean exists for the debug facet and for anyone who
+wants the raw detector output; it is not the general-purpose trigger.
+
+For continuous visuals, prefer `onset_strength` — it decays smoothly, has no edge
+semantics, and is what you actually want for a flash or a kick.
+
+`TrackContext::track_changed_this_frame` does **not** have this hazard, because
+TrackContext is updated on the render thread and is therefore seen exactly once.
+
+---
+
+## 6. Fields that are not 0..1
+
+Two deliberate exceptions, both flagged in the header:
+
+**`loudness_short`** is **LUFS** (ITU-R BS.1770-4, 3 s window): negative dB,
+typically −40 to −5, silence −70. Normalizing it would discard the only absolute,
+cross-track-comparable loudness figure in the struct, which is precisely what makes
+it useful for questions like "is this a quiet record". To drive a shader from it:
+`clamp((loudness_short + 40) / 35, 0, 1)`.
+
+**`stereo_correlation`** is −1..1. +1 mono, 0 uncorrelated, −1 out of phase.
+
+**`spectral_centroid` and `spectral_rolloff` are normalized, not in Hz.** They use
+a log mapping over 20 Hz – 24 kHz:
+
+```
+norm = log2(hz / 20) / log2(24000 / 20)
+hz   = 20 * pow(1200, norm)
+```
+
+so 0.0 = 20 Hz, 0.5 ≈ 693 Hz, 1.0 = 24 kHz. Log rather than linear because pitch
+perception is logarithmic — a linear mapping parks every real musical signal in
+the bottom tenth of the range and the resulting visual barely moves.
+
+---
+
+## 7. Silence and the missing `playing` flag
+
+The analysis thread publishes frames at a constant 93.75 Hz **whether or not audio
+is flowing**. When the transport is stopped, audio-derived fields decay to zero
+while `time_seconds` keeps advancing.
+
+So visuals keep breathing during silence instead of freezing on the last frame —
+which is what would happen if publication stopped and the render thread kept
+re-reading a stale frame forever. There is deliberately no `playing` flag on
+`AudioFrame`; transport state is `TrackContext::playing`.
+
+`time_seconds` is also **stamped by the render thread**, not the analysis thread.
+It is that render frame's own wall clock: strictly increasing, never repeated, free
+of analysis-hop jitter, and safe to drive continuous animation from.
+`track_position` is analysis-stamped and *does* repeat — fine for a progress
+readout, wrong for animation.
+
+---
+
+## 8. Adding a field
+
+The rule is: **if a crystal needs a feature that is not here, add it here.** Not in
+the crystal, not in a facet. One definition, one cost, one behaviour everywhere.
+A feature computed inside a crystal is invisible to every other crystal and will be
+reimplemented slightly differently three more times.
+
+1. Add the field, documented, in the right section.
+2. Compute it in the analysis stage, once per frame.
+3. Register its name for manifest binding so `source = "your_field"` resolves.
+4. Add it to the debug facet's readout.
+5. Never reuse or repurpose an existing field's name.
+
+Adding is safe: old crystals ignore new fields. Changing is not.
+
+---
+
+## 9. Open decisions for sign-off
+
+These are choices made in the header that are cheap to reverse **now** and
+expensive later. Flagging them explicitly rather than burying them:
+
+1. **Fixed 48 kHz analysis rate** (§2). Costs a resampler on the tap; buys
+   identical crystal behaviour across every sample rate in the library. Output
+   stays bit-perfect at native rate either way.
+2. **`spectral_centroid` / `spectral_rolloff` normalized rather than in Hz** (§6).
+   Consistent with everything else and directly usable in a shader, at the cost of
+   being surprising to anyone expecting standard DSP units. The inverse mapping is
+   documented, so nothing is lost.
+3. **`loudness_short` left in LUFS** (§6) — the one non-0..1 audio field.
+4. **`frame_index`, `onset_count`, `beat_count` added** beyond the original field
+   list (§5). These are the correct way to consume discrete events across a
+   rate-mismatched thread boundary; without them, onset-triggered crystals will
+   drop and double-fire and it will read as a DSP bug.
+5. **`has_art` and `track_change_count` added to `TrackContext`**, and the
+   fallback-ramp guarantee on `palette` when there is no art, so no crystal has to
+   special-case a missing sleeve or render invisible.
+6. **`kFftSize` stays 2048**, accepting that bands 0–6 are correlated (§3), in
+   exchange for tighter transient response. One-line change if the bottom end
+   turns out to matter more than the snap.
+7. **`TextureHandle = uint32_t` instead of `GLuint`** in `track_context.hpp`, so
+   the metadata and Plex layers can include it without pulling in a GL loader.
+   OpenGL specifies GLuint as 32-bit unsigned, so this is exact, not approximate.

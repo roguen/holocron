@@ -1,0 +1,46 @@
+# Holocron .editorconfig
+#
+# The editor-level half of the cross-platform story. .gitattributes normalizes
+# line endings on the way into and out of the repository; this stops them being
+# introduced in the first place, in whatever editor happens to be in use on
+# whatever machine. Both are needed: .gitattributes cannot stop a Windows editor
+# writing CRLF into the working tree, and this cannot stop a bad checkout.
+#
+# Supported natively by CLion, Visual Studio, Rider and Xcode; VS Code, vim and
+# emacs need a plugin.
+
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+charset = utf-8
+indent_style = space
+indent_size = 4
+
+# C++ — 4 spaces, matching the existing headers.
+[*.{c,h,cc,cpp,cxx,hpp,hxx,inl}]
+indent_size = 4
+max_line_length = 100
+
+# GLSL — crystals and engine shaders.
+[*.{frag,vert,geom,comp,tesc,tese,glsl,inc}]
+indent_size = 4
+
+# Config and data.
+[*.{toml,json,yml,yaml}]
+indent_size = 2
+
+[{CMakeLists.txt,*.cmake}]
+indent_size = 2
+
+# Markdown: trailing whitespace is significant (two spaces is a hard line break),
+# so it must not be trimmed here.
+[*.md]
+trim_trailing_whitespace = false
+indent_size = 2
+
+# Windows batch files are CRLF by contract — see section 4 of .gitattributes.
+[*.{bat,cmd}]
+end_of_line = crlf

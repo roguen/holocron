@@ -1,0 +1,122 @@
+# Holocron CI
+#
+# This runs on Linux on purpose, and it is worth understanding why before
+# trimming it. Development happens on macOS, whose filesystem is case-insensitive
+# (core.ignorecase=true). Three whole classes of bug are therefore INVISIBLE on
+# the machine where the work happens and appear only on the primary target:
+#
+#   * a header included as "AudioFrame.hpp" but named audio_frame.hpp
+#   * two tracked paths differing only in case, which cannot coexist on macOS
+#   * .gitattributes patterns that silently fail to match, since attribute
+#     matching is case-sensitive only when core.ignorecase is false
+#
+# None of these produce a local error. This job is the only thing that catches
+# them, which is why it exists before there is any build system to test.
+#
+# The CMake build matrix (Linux + Windows) lands with M1.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Contract headers compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install glm (required by track_context.hpp)
+        run: sudo apt-get update && sudo apt-get install -y libglm-dev
+
+      # audio_frame.hpp is deliberately std-only, so it must compile with no
+      # third-party include path at all. If that ever stops being true, the
+      # contract has grown a dependency it was designed not to have.
+      - name: audio_frame.hpp is dependency-free
+        run: |
+          for cxx in g++ clang++; do
+            echo "--- $cxx ---"
+            $cxx -std=c++20 -Wall -Wextra -Werror -fsyntax-only \
+                 -Iinclude include/holocron/audio_frame.hpp
+          done
+
+      - name: track_context.hpp compiles against glm
+        run: |
+          for cxx in g++ clang++; do
+            echo "--- $cxx ---"
+            $cxx -std=c++20 -Wall -Wextra -Werror -fsyntax-only \
+                 -Iinclude include/holocron/track_context.hpp
+          done
+
+      # The static_asserts guarantee AudioFrame can cross the analysis/render
+      # thread boundary by memcpy. Assert the size too, so an accidental field
+      # addition shows up as a deliberate decision rather than a silent change.
+      - name: AudioFrame invariants hold
+        run: |
+          cat > /tmp/check.cpp <<'EOF'
+          #include "holocron/audio_frame.hpp"
+          #include <cstdio>
+          using namespace holocron;
+          static_assert(std::is_trivially_copyable_v<AudioFrame>);
+          static_assert(std::is_standard_layout_v<AudioFrame>);
+          int main() {
+              std::printf("sizeof(AudioFrame) = %zu\n", sizeof(AudioFrame));
+              return sizeof(AudioFrame) == 10768 ? 0 : 1;
+          }
+          EOF
+          g++ -std=c++20 -Iinclude /tmp/check.cpp -o /tmp/check
+          /tmp/check || { echo "::error::AudioFrame layout changed — update the expected size if intentional"; exit 1; }
+
+  hygiene:
+    name: Repo hygiene (case + line endings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Catches any .gitattributes rule that would rewrite an already-committed
+      # file. On a correctly normalized tree this is a no-op; if it produces a
+      # diff, the working tree and the attribute rules disagree.
+      - name: Line endings are already normalized
+        run: |
+          git add --renormalize .
+          if ! git diff --cached --quiet; then
+            echo "::error::Committed files disagree with .gitattributes. Run: git add --renormalize . && git commit"
+            git diff --cached --stat
+            exit 1
+          fi
+
+      # Two paths differing only in case cannot coexist on a case-insensitive
+      # checkout: one silently clobbers the other. Free to prevent, painful to
+      # discover after someone on macOS or Windows clones a broken tree.
+      - name: No case-colliding paths
+        run: |
+          dupes=$(git ls-files | tr 'A-Z' 'a-z' | sort | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "::error::Paths differing only by case:"; echo "$dupes"; exit 1
+          fi
+
+      # Batch files are CRLF by contract (section 4 of .gitattributes); nothing
+      # else in the tree should carry a carriage return.
+      - name: No stray CRLF in text files
+        run: |
+          bad=$(git grep -I --files-with-matches $'\r' -- . \
+                  ':(exclude)*.bat' ':(exclude)*.cmd' ':(exclude)*.sln' \
+                  ':(exclude)*.vcxproj' ':(exclude)*.props' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::CRLF in tracked text files:"; echo "$bad"; exit 1
+          fi
+
+      # A real gatekeeper.toml carries a Plex token. Once it lands in a public
+      # repo that anyone has forked, rewriting history does not retract it.
+      - name: No secrets committed
+        run: |
+          if git ls-files | grep -qE '(^|/)gatekeeper\.toml$'; then
+            echo "::error::gatekeeper.toml is committed — it holds Plex credentials"; exit 1
+          fi

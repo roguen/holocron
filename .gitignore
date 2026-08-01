@@ -1,0 +1,322 @@
+# Holocron .gitignore
+#
+# Two conventions, both load-bearing:
+#
+#   * A trailing slash means directory-only, so a rule can never swallow a file.
+#   * A LEADING slash anchors to the repo root, and is used for every rule whose
+#     name could plausibly also be a source directory -- build, cache, logs,
+#     presets, out, install, coverage. Without it, `build/` also ignores
+#     src/build/ and cmake/build/, and the loss is silent.
+#
+# Anchoring bounds the blast radius but does NOT solve case-insensitivity. This
+# machine is case-insensitive APFS (core.ignorecase=true), so a rule `/Debug/`
+# would also ignore a root-level `debug/` here while Linux tracks it happily --
+# a divergence invisible on the host where the work happens. The fix is not
+# cleverer patterns, it is not writing rules that collide with plausible source
+# directory names in the first place. That is why there is no MSVC
+# Debug/Release/x64 block below: CMake writes MSVC configuration output inside
+# the build tree, which /build/ already covers, and those rules are inherited
+# from hand-rolled .vcxproj layouts this project will never have.
+#
+# There is deliberately NO blanket *.toml, *.frag, *.glsl, *.png or *.jpg rule
+# anywhere in this file. Those are first-party source.
+#
+# Sanity check before committing anything unusual:  git status --ignored
+
+
+# ---------------------------------------------------------------------------
+# CMake and build trees
+#
+# Anchored, because src/build/ and cmake/build/ are plausible source dirs.
+# _deps/ and CMakeFiles/ are left unanchored on purpose: CMake genuinely writes
+# them at arbitrary depth inside the build tree, and neither name is a credible
+# first-party directory.
+# ---------------------------------------------------------------------------
+
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+/install/
+
+_deps/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+install_manifest.txt
+
+# CMakePresets.json is committed and shared. CMakeUserPresets.json is per-dev.
+CMakeUserPresets.json
+CMakeSettings.json
+
+# clangd / clang-tidy index and compile database. The .clang-format,
+# .clang-tidy and .clangd config files themselves are NOT ignored.
+compile_commands.json
+.cache/
+.ccache/
+
+
+# ---------------------------------------------------------------------------
+# Compiler, linker, and profiling output
+#
+# *.map and *.user are deliberately absent: a linker map only ever appears in
+# the build tree (already covered), while src/render/lut.map or a band-mapping
+# table is entirely plausible first-party source.
+# ---------------------------------------------------------------------------
+
+*.o
+*.obj
+*.gch
+*.pch
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.dSYM/
+
+*.gcda
+*.gcno
+*.profraw
+*.profdata
+/coverage/
+perf.data
+perf.data.old
+callgrind.out.*
+
+/core
+core.[0-9]*
+*.stackdump
+vgcore.*
+
+
+# ---------------------------------------------------------------------------
+# Windows / MSVC  (future target -- keep the door open)
+# ---------------------------------------------------------------------------
+
+.vs/
+*.vcxproj.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.tlog
+ipch/
+
+# vcpkg manifest mode: vcpkg.json IS committed, the installed tree is not.
+vcpkg_installed/
+/vcpkg/
+
+
+# ---------------------------------------------------------------------------
+# OS cruft
+# ---------------------------------------------------------------------------
+
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+.fseventsd
+
+*~
+.directory
+.nfs*
+.fuse_hidden*
+
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+
+# ---------------------------------------------------------------------------
+# Editors and IDEs
+#
+# .vscode is NOT blanket-ignored -- shareable project config stays committed.
+# The `.vscode/*` star form is required for the negations to work at all.
+# c_cpp_properties.json stays ignored: it hardcodes local toolchain paths, and
+# clangd + compile_commands.json is the shared setup.
+# ---------------------------------------------------------------------------
+
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+.idea/
+*.iml
+
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+
+*.swp
+*.swo
+Session.vim
+/tags
+
+# Merge and patch debris. Near-certain to appear if libprojectM build patches
+# are ever carried in-tree, and the classic accidental commit.
+*.orig
+*.rej
+*.bak
+*.tmp
+
+
+# ---------------------------------------------------------------------------
+# Python (tooling scripts only -- no first-party Python yet)
+# ---------------------------------------------------------------------------
+
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+
+# ---------------------------------------------------------------------------
+# SECRETS AND LOCAL CONFIG  -- the highest-stakes block in this file
+#
+# gatekeeper.toml holds the audio device selection AND the Plex server address
+# and auth token. An X-Plex-Token is a long-lived credential granting access to
+# the whole library. Once it lands in a commit on a public repo that anyone has
+# forked, rewriting history does not retract it: the fork keeps the object.
+# The rule has to exist before the first commit, not after the first mistake.
+#
+# Unanchored on purpose -- a stray copy in a subdirectory is still a leaked
+# token. A committed gatekeeper.example.toml template is unaffected by these
+# patterns and is the intended way to document the schema.
+# ---------------------------------------------------------------------------
+
+gatekeeper.toml
+gatekeeper.local.toml
+secrets.toml
+*.token
+plex_token*
+.env
+.env.*
+!.env.example
+
+
+# ---------------------------------------------------------------------------
+# libprojectM / MilkDrop preset packs  (M4)
+#
+# Tens of thousands of third-party files whose authors are mostly untraceable
+# and who granted no license. Explicitly NOT vendored -- gatekeeper.toml points
+# at wherever they live on disk. Ignored here so a stray `git add -A` during
+# development cannot pull 40,000 files of someone else's work into a public repo.
+# ---------------------------------------------------------------------------
+
+*.milk
+*.prjm
+/presets/
+/milkdrop/
+/projectm-presets/
+
+
+# ---------------------------------------------------------------------------
+# Runtime caches, logs, and state  (M5 Plex, spdlog)
+#
+# Album art is fetched from Plex and cached on disk; it is third-party artwork
+# and must never be committed or redistributed. These paths are a guess until
+# M5 fixes them -- when the cache path is wired up in gatekeeper.toml, make sure
+# whatever it points at in-tree is covered here.
+#
+# Images are NOT blanket-ignored: docs figures and crystal preview thumbnails
+# are legitimate first-party source.
+# ---------------------------------------------------------------------------
+
+/cache/
+/art-cache/
+/albumart/
+/logs/
+*.log
+
+
+# ---------------------------------------------------------------------------
+# Media
+#
+# Broadly ignored so that dropping a FLAC in the tree to exercise `--file` mode
+# cannot turn into a 40 MB blob in permanent history. Test fixtures are
+# re-included wholesale below.
+#
+# Keep this list in sync with section 5 of .gitattributes, which marks the same
+# formats binary. They describe the same set and will drift the first time
+# someone adds a format to one and not the other.
+# ---------------------------------------------------------------------------
+
+# Character-class form for the same reason as .gitattributes section 5: ignore
+# patterns are case-SENSITIVE wherever core.ignorecase is false, which is every
+# Linux checkout. A plain `*.flac` does not match TRACK.FLAC there, and rippers
+# do emit uppercase extensions -- so the plain form silently stops working on
+# the primary target while continuing to look correct on the macOS dev host.
+
+*.[wW][aA][vV]
+*.[fF][lL][aA][cC]
+*.[mM][pP]3
+*.[mM]4[aA]
+*.[aA][aA][cC]
+*.[oO][gG][gG]
+*.[oO][gG][aA]
+*.[oO][pP][uU][sS]
+*.[aA][iI][fF][fF]
+*.[aA][iI][fF]
+*.[wW][vV]
+*.[aA][pP][eE]
+*.[dD][sS][fF]
+*.[dD][fF][fF]
+*.[wW][mM][aA]
+*.[mM][kK][aA]
+*.[cC][aA][fF]
+*.[mM][pP]4
+*.[mM][kK][vV]
+*.[mM][oO][vV]
+*.[wW][eE][bB][mM]
+*.[aA][vV][iI]
+
+# Re-include the entire fixture tree. `**` rather than `*` on purpose: a
+# single-level negation would rescue tests/fixtures/tone.wav but silently miss
+# tests/fixtures/audio/tone.wav. tests/ itself is not ignored, so this works --
+# note that a negation can never rescue a file whose PARENT DIRECTORY is
+# ignored, which is a hard git rule with no workaround.
+!tests/fixtures/**
+
+
+# ---------------------------------------------------------------------------
+# Source-extension guard
+#
+# Defensive negations for first-party source types. If someone later adds a
+# blanket `*.frag` or `*.toml` rule ABOVE this block, these keep the vault and
+# the engine shaders tracked.
+#
+# Honest limits: this only helps for a rule added above it, and it cannot
+# rescue anything under an ignored directory. It is a cheap seatbelt, not a
+# guarantee -- `git status --ignored` remains the real check.
+#
+# Engine shaders are covered as well as vault crystals: the compositor blit and
+# blend passes, M1's debug facet, and M6's UI shaders are engine source and will
+# not live in the vault.
+# ---------------------------------------------------------------------------
+
+!**/*.frag
+!**/*.vert
+!**/*.geom
+!**/*.comp
+!**/*.glsl
+!**/*.inc
+!vault/**
+!include/**
+!src/**
+!docs/**
