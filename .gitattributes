@@ -5,9 +5,9 @@
 # `git add --renormalize .` commit to repair the tree, tangled into whatever else
 # was being changed that day. It is free right now and it never will be again.
 #
-# What it is for: the development host is macOS, the primary target is Linux, and
-# Windows is a future target. Without normalization the first Windows checkout
-# produces a whole-tree CRLF diff against the macOS/Linux history. Doing it here
+# What it is for: the target is Windows and CI runs on Linux, so the tree is
+# checked out under both conventions routinely. Without normalization a Windows
+# checkout produces a whole-tree CRLF diff against the Linux history. Doing it here
 # rather than via each machine's core.autocrlf means the rule travels with the
 # repo instead of depending on every clone being configured correctly.
 
@@ -63,7 +63,7 @@ CMakePresets.json       text
 #
 # Crystal source is forced to LF for a different reason: a crystal is a .frag
 # plus its .toml manifest, and any shader cache keyed on source content must
-# produce the same key on macOS, Linux, and Windows. Both halves are pinned --
+# produce the same key on the Windows target and on Linux CI. Both halves are pinned --
 # pinning only the shader would still let an identical crystal hash differently
 # across platforms.
 # ---------------------------------------------------------------------------
@@ -114,9 +114,11 @@ vault/**/*.toml         text eol=lf
 # Every pattern is written in character-class form, e.g. *.[fF][lL][aA][cC].
 # This is not stylistic. Attribute matching is case-SENSITIVE when
 # core.ignorecase is false, which is every Linux checkout and all of CI -- so a
-# plain `*.flac` silently fails to match `TRACK.FLAC`. On the macOS dev host
+# plain `*.flac` silently fails to match `TRACK.FLAC`. On the Windows target
 # core.ignorecase is true and the case folds, so a gap here is invisible exactly
-# where the work happens and only corrupts files on the target platform.
+# where the work happens. The corruption path runs the other way: a file added
+# from a case-sensitive checkout -- CI, or a contributor on Linux -- misses the
+# attribute, gets normalized as text, and arrives corrupt on the target.
 #
 # ADDING A FORMAT: add it in class form, and mirror it in .gitignore's media
 # block so the two files keep describing the same set.

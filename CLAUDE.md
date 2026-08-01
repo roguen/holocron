@@ -31,7 +31,9 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.1.3`. `main` is stable and CI is green.
+Current version `v0.1.2`. `main` is stable and CI is green. Bump this **in the same
+change that creates the tag**, never ahead of it — see
+[#29](https://github.com/roguen/holocron/issues/29).
 
 ---
 
@@ -85,8 +87,9 @@ Branch names describe the work: `m1/audio-spine`, `fix/gitattributes-case`,
 
 This matters more than usual here. An entire class of bug in this project —
 filename case, line endings, gitattribute matching — is **invisible on a
-case-insensitive filesystem and appears only on Linux**. CI runs on the PR and is
-the only thing that sees it.
+case-insensitive filesystem**, which is what the Windows target runs on. Linux CI
+runs on the PR and is the only thing in the project that sees it. That is why CI
+stays on Linux even though Linux is not a deployment target.
 
 ### 4. Semantic versioning
 
@@ -155,9 +158,12 @@ Clone the wiki with `git clone https://github.com/roguen/holocron.wiki.git`.
 ## First run on a new machine
 
 **Do this before the first commit.** The repo-local git identity does not survive a
-clone, and the consequence is not cosmetic: the machine's *global* identity is a
+clone, and the consequence is not cosmetic: the machine's *global* identity may be a
 work address, two `gh` accounts are authenticated, and this is a public repo where
 a published author address cannot be retracted from forks.
+
+**Run it from Git Bash, not PowerShell** — it is a `.sh` script and there is no WSL
+on the rack machine. Git ships Git Bash, so nothing extra is needed.
 
 ```bash
 ./scripts/setup-git-identity.sh
@@ -165,6 +171,10 @@ a published author address cannot be retracted from forks.
 
 It is idempotent and prints what it sets. Verify with `git log -1 --format='%an <%ae>'`
 after the first commit.
+
+Run it **after** `gh auth login`, or run it twice: the credential helper it
+configures is only set if `gh` is on `PATH` when the script runs. Without that,
+pushes fail even though the identity is correct.
 
 ### Build dependencies (none are wired up yet — M1, see #13)
 
@@ -204,3 +214,10 @@ Ninja 1.13.2. **No C++ compiler yet** — MSVC Build Tools needs an elevated ins
   share-alike, incompatible with GPL-3.0. See #10 and #14.
 - `.gitignore` and `.gitattributes` describe the same media set in two places and
   will drift; see #18.
+- **Never round-trip a file through PowerShell to edit it.**
+  `(Get-Content f -Raw) -replace … | Set-Content -Encoding utf8 f` decodes with the
+  system ANSI codepage and re-encodes as UTF-8, **double-encoding every non-ASCII
+  character** and adding a BOM. Every `—` and `§` in these docs is a casualty, and
+  **CI does not catch it** (see #33) — the result is still valid UTF-8, just wrong.
+  Use a real editing tool, or `-Encoding utf8NoBOM` on PowerShell 7+. This bit once
+  already, on `Home.md`, and was caught only by inspecting the bytes.

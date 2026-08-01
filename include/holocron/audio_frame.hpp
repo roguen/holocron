@@ -149,8 +149,10 @@ struct AudioFrame {
 
     // -- Coarse aggregates ---------------------------------------------------
     //
-    // Energy in three fixed ranges (gatekeeper defaults: bass 30..250 Hz,
-    // mid 250..4000 Hz, treble 4000..16000 Hz). Nine out of ten crystals need
+    // Energy in three coarse ranges, all still gatekeeper-configurable (defaults:
+    // bass 30..250 Hz, mid 250..4000 Hz, treble 4000..16000 Hz). Note the contrast
+    // with the band array above, whose edges ARE fixed: whether these crossovers
+    // should be fixed too is open, see issue #30. Nine out of ten crystals need
     // nothing more than these.
     //
     // Pick the right variant. Raw is twitchy and frame-accurate: use it for

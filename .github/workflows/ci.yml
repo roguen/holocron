@@ -1,12 +1,13 @@
 # Holocron CI
 #
 # This runs on Linux on purpose, and it is worth understanding why before
-# trimming it. Development happens on macOS, whose filesystem is case-insensitive
-# (core.ignorecase=true). Three whole classes of bug are therefore INVISIBLE on
-# the machine where the work happens and appear only on the primary target:
+# trimming it. Work happens on the Windows target, whose filesystem is
+# case-insensitive (core.ignorecase=true). Three whole classes of bug are
+# therefore INVISIBLE on the machine where the work happens, and this Linux job
+# is the only thing in the project that can see them:
 #
 #   * a header included as "AudioFrame.hpp" but named audio_frame.hpp
-#   * two tracked paths differing only in case, which cannot coexist on macOS
+#   * two tracked paths differing only in case, which cannot coexist on Windows
 #   * .gitattributes patterns that silently fail to match, since attribute
 #     matching is case-sensitive only when core.ignorecase is false
 #
@@ -99,7 +100,7 @@ jobs:
 
       # Two paths differing only in case cannot coexist on a case-insensitive
       # checkout: one silently clobbers the other. Free to prevent, painful to
-      # discover after someone on macOS or Windows clones a broken tree.
+      # discover after someone on Windows clones a broken tree.
       - name: No case-colliding paths
         run: |
           dupes=$(git ls-files | tr 'A-Z' 'a-z' | sort | uniq -d)
