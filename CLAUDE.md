@@ -11,17 +11,17 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: pre-M1, one blocker left
+## Status: pre-M1, unblocked, nothing built
 
 Nothing runs. There is no build system, no `main()`, no executable. What exists is
 the `AudioFrame` contract, its documentation, and the repo scaffolding around them.
 
-Three of the four M1 blockers were resolved on 2026-08-01 (session 2). **One
-remains, and it is the one that shapes the audio spine:**
+**All four M1 blockers were resolved on 2026-08-01 (session 2). M1 may start.**
+Do not read "unblocked" as "started" — not a line of buildable source exists yet.
 
 | | Blocker | State |
 |---|---|---|
-| [#1](https://github.com/roguen/holocron/issues/1) | `AudioSink`'s shape | **OPEN — blocks M1.** The sketched blocking-write interface cannot implement WASAPI exclusive mode. Under D-022 WASAPI is the *only* backend, so a pull/callback interface is now **forced**, not merely preferred. Settle before any sink is written. |
+| [#1](https://github.com/roguen/holocron/issues/1) | `AudioSink`'s shape | **DECIDED: pull/callback.** The blocking-write sketch is discarded — it cannot implement WASAPI exclusive mode, and wrapping it breaks the constant-latency premise the analysis tap depends on. Latency is a correlated (frame-position, timestamp) pair, not a scalar; `open()` returns an error enum, not `bool`. Write `SdlSink` **first** — it proves the interface is not WASAPI-shaped, which is an M1 exit criterion. See D-022 / O-001. |
 | [#2](https://github.com/roguen/holocron/issues/2) | `AudioFrame` contract sign-off | **CLOSED.** [#15](https://github.com/roguen/holocron/issues/15) and [#16](https://github.com/roguen/holocron/issues/16) signed off; the other seven §9 items stand unless overturned. |
 | [#12](https://github.com/roguen/holocron/issues/12) | OpenGL version | **DECIDED: 4.5 core.** The macOS 4.1 cap is gone with the dev host; the rack GPU measured 4.6 core with DSA, compute, SSBO and `KHR_debug` all present. |
 | [#13](https://github.com/roguen/holocron/issues/13) | Build system and dependencies | **DECIDED: MSVC + CMake + Ninja + vcpkg manifest mode** (D-023). FFmpeg's licence configuration and libprojectM's dynamic-link boundary still need deliberate handling. |
@@ -31,9 +31,15 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.1.2`. `main` is stable and CI is green. Bump this **in the same
+Current version `v0.1.3`. `main` is stable and CI is green. Bump this **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
+
+**Toolchain verified on this machine** (2026-08-01): MSVC 19.44 / Build Tools
+17.14, Windows SDK 10.0.26100, CMake 4.4.1, Ninja 1.13.2, vcpkg bootstrapped at
+`%VCPKG_ROOT%`. The contract compiles under MSVC at `/std:c++20 /W4 /WX` through an
+including TU with `sizeof(AudioFrame) == 10768` holding — the first time the pin has
+been checked against the target's own compiler rather than only g++/clang++ in CI.
 
 ---
 
