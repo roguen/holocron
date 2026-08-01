@@ -22,10 +22,15 @@ concern.
 
 | | Blocker |
 |---|---|
-| [#2](https://github.com/roguen/holocron/issues/2) | Sign off the `AudioFrame` contract — **nine** open decisions in `docs/audio-frame.md` §9 |
-| [#1](https://github.com/roguen/holocron/issues/1) | `AudioSink`'s shape. The sketched blocking-write interface cannot implement WASAPI exclusive mode |
-| [#12](https://github.com/roguen/holocron/issues/12) | Which OpenGL version to target |
+| [#2](https://github.com/roguen/holocron/issues/2) | Sign off the `AudioFrame` contract. The two genuinely unresolved items — [#15](https://github.com/roguen/holocron/issues/15) and [#16](https://github.com/roguen/holocron/issues/16) — **were signed off 2026-08-01**; the other seven stand unless overturned |
+| [#1](https://github.com/roguen/holocron/issues/1) | `AudioSink`'s shape. The sketched blocking-write interface cannot implement WASAPI exclusive mode — and under D-022 WASAPI is the **only** backend, so this is now forced rather than preferred |
+| [#12](https://github.com/roguen/holocron/issues/12) | Which OpenGL version to target. Narrowed to **4.5 vs 4.6 core**: the macOS 4.1 cap that made this a blocker is gone, and the rack GPU was measured at 4.6 core |
 | [#13](https://github.com/roguen/holocron/issues/13) | Build system and how ten dependencies are acquired |
+
+**The target platform is Windows** (Decision-Log D-022). The rack machine runs
+Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuilding
+the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
+host and a Linux target — treat that framing as superseded wherever it survives.
 
 Current version `v0.1.1`. `main` is stable and CI is green.
 
@@ -166,8 +171,12 @@ after the first commit.
 
 C++20 toolchain, CMake, SDL3, OpenGL loader, FFmpeg (**LGPL build**; `--enable-gpl`
 is fine under GPL-3.0 but `--enable-nonfree` is not, since it is non-redistributable
-under any licence), ALSA (`libasound`), glm, toml++, nlohmann/json, spdlog, and
-libprojectM 4.x at M4 (**dynamically linked, C API only**).
+under any licence), the platform audio backend (**WASAPI on the target — not ALSA**;
+see D-022), glm, toml++, nlohmann/json, spdlog, and libprojectM 4.x at M4
+(**dynamically linked, C API only**).
+
+Installed on the rack machine so far: `git` 2.55.0, `gh` 2.97.0, CMake 4.4.1,
+Ninja 1.13.2. **No C++ compiler yet** — MSVC Build Tools needs an elevated install.
 
 ---
 

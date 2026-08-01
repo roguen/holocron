@@ -16,15 +16,16 @@ redefining "bass" — there is only a vault of crystals that all quietly look wr
  audio callback thread          analysis thread            render thread
  ─────────────────────          ───────────────            ─────────────
  decode → ring buffer  ──tap──► FFT + features  ──publish──► read newest
- → ALSA  (bit-perfect)          (93.75 Hz)      triple buf   (vsync rate)
+ → sink  (bit-perfect)          (93.75 Hz)      triple buf   (vsync rate)
 ```
 
 - **No locks and no allocation** in the audio callback. It moves samples and
   nothing else.
 - The analysis tap reads the ring buffer **at the playback point minus output
   device latency**, so features describe what the listener is hearing *now*, not
-  what was most recently written into the buffer. This offset is measured from
-  ALSA and trimmed by hand in `gatekeeper.toml`.
+  what was most recently written into the buffer. This offset is reported by the
+  `AudioSink` and trimmed by hand in `gatekeeper.toml`. The sink is the platform
+  boundary — ALSA, WASAPI or SDL3 — and the tap does not know which it is.
 - Publication is a **lock-free triple buffer**. The analysis thread writes into a
   spare slot and atomically swaps; the render thread takes the newest complete
   frame and never blocks, never tears, and never waits on audio.
@@ -41,8 +42,17 @@ it crosses that boundary by `memcpy`. It is 10.5 KB, so the whole triple buffer 
 
 ## 2. Analysis is sample-rate invariant
 
-The output path opens ALSA at the **file's native rate** and stays bit-perfect.
-The **analysis tap is resampled to a fixed 48 kHz.**
+The output path opens the device at the **file's native rate** and stays
+bit-perfect where the platform allows it. The **analysis tap is resampled to a
+fixed 48 kHz.**
+
+> **Platform qualifier.** "Bit-perfect at native rate" is a property of the sink,
+> not a guarantee of this contract. On Windows exclusive mode an endpoint may
+> refuse some rates outright — 88.2 and 176.4 kHz were both refused on measured
+> hardware — in which case the output path falls back rather than failing. How it
+> falls back is still open ([#3](https://github.com/roguen/holocron/issues/3) and
+> Decision-Log O-003). **None of this reaches the visuals:** the tap is resampled
+> to 48 kHz regardless, so a crystal behaves identically either way.
 
 This matters more than it looks. If analysis ran at the file rate, a 2048-sample
 window would be 46 ms of audio on a 44.1 kHz rip and 10.7 ms on a 192 kHz master,
@@ -311,26 +321,46 @@ expensive later. Flagging them explicitly rather than burying them:
    OpenGL specifies GLuint as 32-bit unsigned, so this is exact, not approximate.
 
 The first seven are choices already made in the header, listed so they can be
-overturned cheaply. The last two are **genuinely unresolved** and have no answer in
-the code yet:
+overturned cheaply. They stand unless explicitly overturned.
 
-8. **Band indices do not currently have a fixed meaning.**
-   ([#15](https://github.com/roguen/holocron/issues/15)) §3 describes the band range
-   as gatekeeper-configurable. If a user widens it, `band[5]` covers a different
-   frequency span, and every crystal binding that index means something different on
+The last two were **genuinely unresolved** and had no answer in the code.
+**Both were signed off on 2026-08-01** and are recorded here as decided. The
+implementing changes are M1 work and have not landed yet.
+
+8. **Band indices have a fixed meaning. — DECIDED: fix the edges.**
+   ([#15](https://github.com/roguen/holocron/issues/15)) §3 described the band range
+   as gatekeeper-configurable. If a user widened it, `band[5]` covered a different
+   frequency span, and every crystal binding that index meant something different on
    that machine — with no error and no way for the crystal to detect it. That
-   partially voids the one-definition-everywhere guarantee this whole contract is
-   built on. Either the edges get fixed as `constexpr` alongside `kBands`, or they
-   stay configurable and crystals are told to prefer `bass`/`mid`/`treble` over
-   individual indices.
+   partially voided the one-definition-everywhere guarantee this whole contract is
+   built on.
 
-9. **`time_seconds` has no defined owner.**
+   **`band_low_hz` and `band_high_hz` become `constexpr` alongside `kBands`** and
+   leave `gatekeeper.toml`. This is the same reasoning that already fixes
+   `kAnalysisRate` (§2): a quantity the whole vault binds against cannot be
+   per-installation. The cost is two lost knobs, which is accepted. The consequence
+   is that §3's arithmetic is now permanent rather than illustrative — **bands 0–6
+   are correlated below 108 Hz on every install, forever** — and that crystals may
+   bind an individual band index without hedging. Preferring `bass`/`mid`/`treble`
+   becomes style, not correctness. Recorded as Decision-Log O-004.
+
+9. **`time_seconds` is owned by the render thread's private copy. — DECIDED.**
    ([#16](https://github.com/roguen/holocron/issues/16)) §7 says the render thread
-   stamps it, but the struct is published by the analysis thread — so it is
-   undefined what the analysis thread writes there, and stamping the *shared* slot
-   rather than a private copy would be a data race. It also means an offline
-   analysis harness with no render thread produces frames whose `time_seconds` is
-   meaningless and cannot be diffed against a golden file, which is exactly the
-   workflow that would make the analysis testable. Resolve by stamping a private
-   copy after the triple-buffer read, or by moving wall clock off `AudioFrame`
-   entirely and passing it to facets alongside `dt`.
+   stamps it, but the struct is published by the analysis thread — so it was
+   undefined what the analysis thread wrote there, and stamping the *shared* slot
+   rather than a private copy would be a data race.
+
+   **The render thread stamps its own private copy after the triple-buffer read and
+   never writes to the shared slot.** The race is closed by construction: the render
+   side's only contact with shared memory stays a read. §7's guarantee is preserved
+   exactly — that render frame's own wall clock, strictly increasing, never repeated,
+   free of analysis-hop jitter.
+
+   Two obligations follow, and both are binding. **What the analysis thread writes
+   into the published slot is now specified rather than undefined** — it writes the
+   analysis-side timestamp of that frame. And an offline harness with no render
+   thread therefore produces frames whose `time_seconds` is deterministic and
+   **diffable against a golden file**, which is the workflow that makes the analysis
+   testable at all. Reading `time_seconds` off the shared slot instead of a private
+   copy is a bug with a name; it belongs in the debug facet's checks, not only here.
+   Recorded as Decision-Log O-005.
