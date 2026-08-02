@@ -16,6 +16,7 @@ add_executable(holocron_tests
     test_audio_sink.cpp
     test_triple_buffer.cpp
     test_decoder.cpp
+    test_sdl_sink.cpp
 )
 
 target_link_libraries(holocron_tests
@@ -23,6 +24,7 @@ target_link_libraries(holocron_tests
         holocron::contract
         holocron::analysis
         holocron::decoder
+        holocron::sdl_sink
         holocron::warnings
         Catch2::Catch2WithMain
         # The triple-buffer tests spawn a producer and a consumer thread. On

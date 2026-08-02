@@ -135,6 +135,31 @@ target_include_directories(holocron_decoder SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS
 target_link_directories(holocron_decoder PRIVATE ${FFMPEG_LIBRARY_DIRS})
 
 # ---------------------------------------------------------------------------
+# SDL sink
+#
+# SDL is PRIVATE and reached through one translation unit, exactly as FFmpeg is
+# above: nothing over this library ever sees an SDL_AudioStream. That is what
+# keeps "swap the sink" real rather than aspirational.
+#
+# vcpkg builds SDL3 as a shared library. That is fine under D-010 -- SDL is
+# Zlib AND MIT AND Apache-2.0, all GPL-compatible either way -- and on Windows
+# the vcpkg toolchain copies the DLL beside the executable automatically.
+# ---------------------------------------------------------------------------
+
+find_package(SDL3 CONFIG REQUIRED)
+
+add_library(holocron_sdl_sink STATIC
+    src/audio/sdl_sink.cpp
+)
+add_library(holocron::sdl_sink ALIAS holocron_sdl_sink)
+
+target_link_libraries(holocron_sdl_sink
+    PUBLIC  holocron::contract
+    PRIVATE holocron::warnings
+            SDL3::SDL3
+)
+
+# ---------------------------------------------------------------------------
 
 add_subdirectory(tools)
 
