@@ -135,6 +135,54 @@ target_include_directories(holocron_decoder SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS
 target_link_directories(holocron_decoder PRIVATE ${FFMPEG_LIBRARY_DIRS})
 
 # ---------------------------------------------------------------------------
+# SDL sink
+#
+# SDL is PRIVATE and reached through one translation unit, exactly as FFmpeg is
+# above: nothing over this library ever sees an SDL_AudioStream. That is what
+# keeps "swap the sink" real rather than aspirational.
+#
+# vcpkg builds SDL3 as a shared library. That is fine under D-010 -- SDL is
+# Zlib AND MIT AND Apache-2.0, all GPL-compatible either way -- and on Windows
+# the vcpkg toolchain copies the DLL beside the executable automatically.
+# ---------------------------------------------------------------------------
+
+find_package(SDL3 CONFIG REQUIRED)
+
+add_library(holocron_sdl_sink STATIC
+    src/audio/sdl_sink.cpp
+)
+add_library(holocron::sdl_sink ALIAS holocron_sdl_sink)
+
+target_link_libraries(holocron_sdl_sink
+    PUBLIC  holocron::contract
+    PRIVATE holocron::warnings
+            SDL3::SDL3
+)
+
+# SDL's headers must be SYSTEM, and this is not tidiness -- without it the
+# Linux job does not compile at all.
+#
+# SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK is `((SDL_AudioDeviceID) 0xFFFFFFFFu)`. That
+# C-style cast is expanded at OUR use site, so -Wold-style-cast fires on it and
+# -Werror turns it into a build failure. The cast is SDL's, in SDL's header, and
+# is not ours to fix -- which is precisely the case holocron::warnings exists to
+# handle, and the same treatment FFmpeg, pocketfft and libebur128 already get
+# above.
+#
+# It surfaced only on Linux because MSVC has no equivalent warning. That is the
+# Linux job doing the exact job it is documented to do at the top of ci.yml: it
+# is a free second compiler, and it sees what the target's compiler cannot.
+#
+# SDL3::SDL3 is an ALIAS, so its properties cannot be set directly; SDL3::Headers
+# is the imported target that actually carries the include directories. Listing
+# the same directory with both -I (via the link above) and -isystem is
+# well-defined in GCC: the -I is ignored and the directory is searched as a
+# system directory.
+target_include_directories(holocron_sdl_sink SYSTEM PRIVATE
+    $<TARGET_PROPERTY:SDL3::Headers,INTERFACE_INCLUDE_DIRECTORIES>
+)
+
+# ---------------------------------------------------------------------------
 
 add_subdirectory(tools)
 

@@ -13,7 +13,8 @@
     "glm": "MIT. Required by track_context.hpp.",
     "pocketfft": "BSD-3-Clause, header-only. FFT for the analysis stage (#9). The implementation SciPy uses. FFTW was available under D-010 but rejected: a 2048-point real FFT at 93.75 Hz does not justify the weight.",
     "libebur128": "MIT. ITU-R BS.1770-4 loudness for AudioFrame::loudness_short (#9, D-024). Hand-rolling the K-weighting filter and gating would produce a number that looks plausible and is not comparable across tracks, which would destroy the only reason D-007 leaves the field un-normalized.",
-    "catch2": "BSL-1.0, GPL-compatible. Test-only, hence the feature."
+    "catch2": "BSL-1.0, GPL-compatible. Test-only, hence the feature.",
+    "sdl3": "Zlib AND MIT AND Apache-2.0, GPL-compatible. The first sink backend (#1) and, later, the window and GL 4.5 context. default-features is FALSE, which costs nothing on the target: every one of the port's default features (ibus, wayland, x11) is platform-gated to Linux, so Windows resolves to the same set either way. Turning them off spares the Linux CI job a chain of system dev packages for a platform that is a second compiler, not a deployment target (D-022). SDL's built-in dummy audio driver needs no feature and no hardware, which is how the sink is exercised headless on both platforms."
   },
 
   "dependencies": [
@@ -28,7 +29,11 @@
     },
     "glm",
     "libebur128",
-    "pocketfft"
+    "pocketfft",
+    {
+      "name": "sdl3",
+      "default-features": false
+    }
   ],
 
   "features": {
