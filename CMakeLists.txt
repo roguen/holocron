@@ -183,6 +183,38 @@ target_include_directories(holocron_sdl_sink SYSTEM PRIVATE
 )
 
 # ---------------------------------------------------------------------------
+# Render
+#
+# The window, the GL 4.5 core context, and the debug facet. GL is reached
+# through exactly two translation units and appears in no header, same rule as
+# FFmpeg and SDL audio above.
+#
+# glad's headers get the SYSTEM treatment for the same reason SDL's do -- see
+# the note on holocron_sdl_sink. A loader generated from the GL registry is not
+# written to our warning discipline and is not ours to fix.
+# ---------------------------------------------------------------------------
+
+find_package(glad CONFIG REQUIRED)
+
+add_library(holocron_render STATIC
+    src/render/window.cpp
+    src/render/debug_facet.cpp
+)
+add_library(holocron::render ALIAS holocron_render)
+
+target_link_libraries(holocron_render
+    PUBLIC  holocron::contract
+    PRIVATE holocron::warnings
+            SDL3::SDL3
+            glad::glad
+)
+
+target_include_directories(holocron_render SYSTEM PRIVATE
+    $<TARGET_PROPERTY:SDL3::Headers,INTERFACE_INCLUDE_DIRECTORIES>
+    $<TARGET_PROPERTY:glad::glad,INTERFACE_INCLUDE_DIRECTORIES>
+)
+
+# ---------------------------------------------------------------------------
 
 add_subdirectory(tools)
 

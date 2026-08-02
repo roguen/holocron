@@ -85,7 +85,7 @@ struct SdlSink::Impl {
     std::vector<float> scratch;
 
     std::atomic<std::uint64_t> frames_submitted{0};
-    std::atomic<std::uint64_t> starved{0};
+    std::atomic<std::uint64_t> callbacks{0};
 
     bool open_   = false;
     bool running = false;
@@ -113,11 +113,7 @@ struct SdlSink::Impl {
             return;
         }
 
-        // Nothing left queued means the previous fill was fully drained before
-        // this callback arrived: the stream is running with zero margin.
-        if (SDL_GetAudioStreamQueued(stream) <= 0) {
-            self->starved.fetch_add(1, std::memory_order_relaxed);
-        }
+        self->callbacks.fetch_add(1, std::memory_order_relaxed);
 
         const std::uint32_t bpf         = self->bytes_per_frame();
         const std::uint32_t period      = self->period;
@@ -231,7 +227,7 @@ SinkError SdlSink::open(const SinkFormat& desired, RenderCallback cb, void* user
     impl_->scratch.assign(static_cast<std::size_t>(impl_->period) * desired.channels, 0.0f);
 
     impl_->frames_submitted.store(0, std::memory_order_relaxed);
-    impl_->starved.store(0, std::memory_order_relaxed);
+    impl_->callbacks.store(0, std::memory_order_relaxed);
     impl_->open_   = true;
     impl_->running = false;
 
@@ -336,9 +332,9 @@ SinkClock SdlSink::clock() const
 
 const char* SdlSink::backend_name() const { return "sdl3"; }
 
-std::uint64_t SdlSink::starved_callbacks() const
+std::uint64_t SdlSink::callbacks_served() const
 {
-    return impl_->starved.load(std::memory_order_relaxed);
+    return impl_->callbacks.load(std::memory_order_relaxed);
 }
 
 }  // namespace holocron
