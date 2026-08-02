@@ -183,6 +183,30 @@ target_include_directories(holocron_sdl_sink SYSTEM PRIVATE
 )
 
 # ---------------------------------------------------------------------------
+# Crystals
+#
+# Loading and validating the .frag + .toml pair. NO GL HERE, deliberately: a
+# crystal can be loaded, validated and tested with no window, no context and no
+# GPU, which is what lets the whole format be verified in CI on both platforms.
+# The renderer above it is then narrow enough to check with one screenshot.
+#
+# Same argument holocron-analyze made for the analysis stage, one layer up.
+# ---------------------------------------------------------------------------
+
+find_package(tomlplusplus CONFIG REQUIRED)
+
+add_library(holocron_crystal STATIC
+    src/crystal/crystal.cpp
+)
+add_library(holocron::crystal ALIAS holocron_crystal)
+
+target_link_libraries(holocron_crystal
+    PUBLIC  holocron::contract
+    PRIVATE holocron::warnings
+            tomlplusplus::tomlplusplus
+)
+
+# ---------------------------------------------------------------------------
 # WASAPI sink
 #
 # The whole implementation is behind _WIN32 INSIDE the source, and the target is

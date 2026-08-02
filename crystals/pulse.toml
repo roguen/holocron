@@ -1,0 +1,21 @@
+# The reference crystal.
+#
+# Deliberately the simplest thing that is still a real crystal: it binds one
+# scalar, one phase and one array, which covers every binding kind the loader
+# supports. If the pipeline is broken, this is the file to test against before
+# suspecting anything more interesting.
+
+name = "pulse"
+
+# Each key is a GLSL uniform in pulse.frag. Each value is a field on AudioFrame,
+# spelled exactly as docs/audio-frame.md spells it.
+#
+# The names are checked AT LOAD TIME against the contract. A typo here is an
+# error listing the valid vocabulary, not a uniform that silently stays zero.
+[uniforms]
+u_bass      = "bass_norm"
+u_treble    = "treble_norm"
+u_beat      = "beat_phase"
+u_onset     = "onset_strength"
+u_bands     = "band_norm"
+u_centroid  = "spectral_centroid"
