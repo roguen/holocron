@@ -664,9 +664,10 @@ void AnalysisStage::Impl::compute_frame(AudioFrame& f)
     }
 
     // -- coarse aggregates ---------------------------------------------------
-    const float raw_bass   = mean_over_hz(f.fft_magnitude, config.bass_low_hz, config.bass_high_hz);
-    const float raw_mid    = mean_over_hz(f.fft_magnitude, config.bass_high_hz, config.mid_high_hz);
-    const float raw_treble = mean_over_hz(f.fft_magnitude, config.mid_high_hz, config.treble_high_hz);
+    // Fixed crossovers, not config -- issue #30. See audio_frame.hpp.
+    const float raw_bass   = mean_over_hz(f.fft_magnitude, kBassLowHz, kBassHighHz);
+    const float raw_mid    = mean_over_hz(f.fft_magnitude, kBassHighHz, kMidHighHz);
+    const float raw_treble = mean_over_hz(f.fft_magnitude, kMidHighHz, kTrebleHighHz);
 
     const float raw[3] = {raw_bass, raw_mid, raw_treble};
     for (std::size_t i = 0; i < 3; ++i) {

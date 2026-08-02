@@ -118,13 +118,31 @@ setting favours transient response, which is what a music visualizer lives on.
 > edges or `kBands`. `tests/test_analysis_constants.cpp` pins both the count and
 > the margin, so the next edit that flips it fails a test rather than drifting.
 
-Coarse aggregate crossovers, all gatekeeper-configurable:
+Coarse aggregate crossovers. **Fixed `constexpr`, not gatekeeper-configurable** —
+`kBassLowHz`, `kBassHighHz`, `kMidHighHz`, `kTrebleHighHz`. Issue #30.
 
-| Field | Default range |
+| Field | Range |
 |---|---|
 | `bass` | 30 – 250 Hz |
 | `mid` | 250 – 4000 Hz |
 | `treble` | 4000 – 16000 Hz |
+
+The outer edges match `kBandLowHz` and `kBandHighHz` deliberately, so the
+aggregates and the band array cover the same total span and a crystal can mix
+them without a seam. A `static_assert` pins that.
+
+> **Why these are fixed too.** Freezing the band edges while leaving these
+> configurable inverted the advice this document gives. Band indices became the
+> portable choice and the coarse aggregates — the fields *most* crystals actually
+> read — became the ones that meant something different on every install. The
+> case for freezing them is therefore stronger than it was for the band array,
+> and the failure mode is identical: no error, no warning, just a vault of
+> crystals that quietly look wrong somewhere else.
+>
+> The cost is real and is accepted: a user cannot retune "bass" to taste for their
+> system. That is a per-install visual preference, and §9 item 8 already decided
+> those do not get to silently change what a contract field means. Retuning
+> belongs in the crystal, where it is visible and travels with what it affects.
 
 ---
 

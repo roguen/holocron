@@ -71,12 +71,47 @@ constexpr float bin_to_hz(int bin) { return float(bin) * kBinHz; }
 // Same reasoning as kAnalysisRate being fixed. See docs/audio-frame.md
 // section 9 item 8, Decision-Log O-004, and issue #15.
 //
-// The bass/mid/treble crossovers are a SEPARATE question and remain
-// configurable -- see issue #30.
+// The bass/mid/treble crossovers are FIXED for the same reason, and that was
+// issue #30. Leaving them configurable while the band edges were frozen inverted
+// the portability advice in the worst possible way: band indices became the
+// portable choice and the coarse aggregates -- the fields nine out of ten
+// crystals actually read -- became the ones that meant something different on
+// every install.
+//
+// The argument for freezing them is therefore STRONGER than it was for the band
+// array, not weaker. A crystal that binds `bass_norm` is exposed to this on more
+// machines than one that binds `band[5]`, and the failure is identical: no error,
+// no warning, just a vault of crystals that quietly look wrong somewhere else.
+//
+// This costs a real thing and it is worth naming: a user cannot retune "bass" to
+// taste for their system. That is a per-install visual preference, and O-004
+// already decided that per-install visual preferences do not get to silently
+// change what a contract field means. Retuning belongs in the crystal, where it
+// is visible and travels with the thing it affects.
 // ---------------------------------------------------------------------------
 
 inline constexpr float kBandLowHz  = 30.0f;
 inline constexpr float kBandHighHz = 16000.0f;
+
+// Coarse aggregate crossovers. Fixed, per issue #30. bass is
+// [kBassLowHz, kBassHighHz), mid is [kBassHighHz, kMidHighHz), treble is
+// [kMidHighHz, kTrebleHighHz).
+//
+// The outer edges deliberately match kBandLowHz and kBandHighHz: the aggregates
+// and the band array describe the same total span, so a crystal can mix the two
+// without a seam.
+inline constexpr float kBassLowHz    = 30.0f;
+inline constexpr float kBassHighHz   = 250.0f;
+inline constexpr float kMidHighHz    = 4000.0f;
+inline constexpr float kTrebleHighHz = 16000.0f;
+
+static_assert(kBassLowHz == kBandLowHz,
+              "aggregate and band arrays must describe the same span");
+static_assert(kTrebleHighHz == kBandHighHz,
+              "aggregate and band arrays must describe the same span");
+static_assert(kBassLowHz < kBassHighHz && kBassHighHz < kMidHighHz &&
+                  kMidHighHz < kTrebleHighHz,
+              "crossovers must be strictly increasing");
 
 // ---------------------------------------------------------------------------
 
@@ -170,10 +205,12 @@ struct AudioFrame {
 
     // -- Coarse aggregates ---------------------------------------------------
     //
-    // Energy in three coarse ranges, all still gatekeeper-configurable (defaults:
-    // bass 30..250 Hz, mid 250..4000 Hz, treble 4000..16000 Hz). Note the contrast
-    // with the band array above, whose edges ARE fixed: whether these crossovers
-    // should be fixed too is open, see issue #30. Nine out of ten crystals need
+    // Energy in three coarse ranges with FIXED crossovers: bass 30..250 Hz, mid
+    // 250..4000 Hz, treble 4000..16000 Hz. Not gatekeeper-configurable, for the
+    // same reason the band edges are not -- see kBassLowHz above and issue #30.
+    //
+    // These mean the same thing on every install, which is what makes the advice
+    // below ("when in doubt, reach for _norm") safe to give. Nine out of ten crystals need
     // nothing more than these.
     //
     // Pick the right variant. Raw is twitchy and frame-accurate: use it for
