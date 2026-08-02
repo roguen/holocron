@@ -342,3 +342,27 @@ Ninja 1.13.2. **No C++ compiler yet** — MSVC Build Tools needs an elevated ins
   because a mojibake diff looks plausible at a glance. `-Encoding ascii` is safe
   for pure-ASCII files like `vcpkg.json` and `CMakeLists.txt`; anything with prose
   in it needs a real editor.
+
+  `Out-File -Encoding utf8` is the same trap wearing a different hat: on Windows
+  PowerShell 5.1 it writes a **BOM**. It once put a `U+FEFF` at the front of a
+  commit *subject line*, where it survived into the log before being caught.
+
+- **`git tag -F` and `git commit -F` strip every line beginning with `#`.** The
+  default cleanup mode treats them as comments, and this project's tag
+  annotations are full of issue references.
+
+  It has already cost one tag. The `v0.1.7` annotation opened three paragraphs
+  with `#45`, `#47` and `#47`, and git silently deleted all three sentences — the
+  tag published with paragraphs starting mid-thought. **There is no error and no
+  warning**; the only way it was caught was reading the annotation back
+  afterwards.
+
+  Two habits, both cheap:
+
+  - Pass `--cleanup=verbatim` when writing an annotation or message from a file.
+  - Do not start a line with `#`. Write `PR #45` or `issue #45` instead, which
+    reads better anyway and cannot be eaten.
+
+  **Read the annotation back after tagging** — `git tag -l vX.Y.Z --format='%(contents)'`.
+  Same discipline as counting bytes after a PowerShell edit, and for the same
+  reason: the failure is silent, so the check has to be deliberate.
