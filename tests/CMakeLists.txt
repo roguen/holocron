@@ -14,12 +14,14 @@ add_executable(holocron_tests
     test_analysis_stage.cpp
     test_rhythm_and_loudness.cpp
     test_audio_sink.cpp
+    test_decoder.cpp
 )
 
 target_link_libraries(holocron_tests
     PRIVATE
         holocron::contract
         holocron::analysis
+        holocron::decoder
         holocron::warnings
         Catch2::Catch2WithMain
 )
