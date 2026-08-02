@@ -8,9 +8,16 @@
 // WHAT THIS IS
 //
 // Decode -> analysis -> TripleBuffer -> debug facet, with the same decoded
-// audio going out through SdlSink. Every piece already existed and was tested
-// on its own; this is the first thing that puts them in one process and lets
-// you check whether they agree with each other.
+// audio going out through an AudioSink. Every piece already existed and was
+// tested on its own; this is the first thing that puts them in one process and
+// lets you check whether they agree with each other.
+//
+// The sink is chosen at RUNTIME through the interface -- WASAPI exclusive if
+// the endpoint permits it, WASAPI shared otherwise, SDL as the portable
+// fallback. That selection is the first time the abstraction from #1 has
+// actually been used rather than merely justified, and the fallback lives here
+// in the caller rather than inside any sink: per #32, a backend that quietly
+// retries elsewhere has broken a promise nobody can detect.
 //
 // It is NOT the finished player. There is no playlist, no seeking, no UI, no
 // gatekeeper.toml, and the facet is an instrument panel rather than a crystal.
@@ -44,6 +51,7 @@
 #include <holocron/decoder.hpp>
 #include <holocron/pcm_ring.hpp>
 #include <holocron/sdl_sink.hpp>
+#include <holocron/wasapi_sink.hpp>
 #include <holocron/triple_buffer.hpp>
 #include <holocron/window.hpp>
 
@@ -51,6 +59,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -59,11 +68,17 @@ using namespace holocron;
 namespace {
 
 struct Options {
+    // Which backend to insist on. kAuto walks the preference order; the other
+    // two are for proving a specific backend works rather than discovering
+    // which one happened to be picked.
+    enum Sink { kAuto, kWasapi, kSdl };
+
     const char* path     = nullptr;
     const char* shot     = nullptr;
     int         frames   = 0;      // 0 = run until the window closes
     int         width    = 1280;
     int         height   = 720;
+    Sink        sink     = kAuto;
     bool        no_audio = false;
     bool        help     = false;
 };
@@ -81,6 +96,13 @@ Options parse(int argc, char** argv)
             o.width = std::atoi(argv[++i]);
         } else if (std::strcmp(a, "--height") == 0 && i + 1 < argc) {
             o.height = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--sink") == 0 && i + 1 < argc) {
+            const char* s = argv[++i];
+            if (std::strcmp(s, "wasapi") == 0) {
+                o.sink = Options::kWasapi;
+            } else if (std::strcmp(s, "sdl") == 0) {
+                o.sink = Options::kSdl;
+            }
         } else if (std::strcmp(a, "--no-audio") == 0) {
             o.no_audio = true;
         } else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
@@ -99,6 +121,8 @@ void usage()
         "\n"
         "  holocron <file> [options]\n"
         "\n"
+        "  --sink S       auto (default), wasapi, or sdl. auto prefers WASAPI\n"
+        "                 exclusive, then WASAPI shared, then SDL\n"
         "  --no-audio     decode and draw, but open no audio device\n"
         "  --frames N     render exactly N frames then exit\n"
         "  --shot PATH    write the last rendered frame to PATH as a BMP\n"
@@ -159,9 +183,6 @@ void decode_loop(Shared& s, const char* path, bool feed_audio)
     std::uint64_t decoded_frames = 0;
 
     while (!s.quit.load(std::memory_order_relaxed)) {
-        // Back-pressure. Without this the decoder races ahead of playback and
-        // the ring is permanently full, which would make the visual lead the
-        // whole file rather than the ring depth.
         // Back-pressure. Without this the decoder races ahead of playback and
         // the ring stays permanently full, which would make the visuals lead by
         // the whole file rather than by the ring depth.
@@ -229,9 +250,14 @@ int main(int argc, char** argv)
 
     // -- audio ---------------------------------------------------------------
 
-    SdlSink   sink;
-    bool      audio_started = false;   // device opened
-    bool      audio_running = false;   // device opened AND pulling
+    // The sink is chosen at runtime through the interface, which is the first
+    // time anything in this project has actually DONE that rather than merely
+    // being able to. Two backends behind one pointer is what #1's shape was
+    // for.
+    std::unique_ptr<AudioSink> sink;
+    bool        audio_started = false;   // device opened
+    bool        audio_running = false;   // device opened AND pulling
+    bool        bit_perfect   = false;
 
     if (!opt.no_audio) {
         Decoder probe;
@@ -245,10 +271,65 @@ int main(int argc, char** argv)
         SinkFormat want;
         want.sample_rate = info.sample_rate;
         want.channels    = info.channels;
-        want.format      = SampleFormat::kFloat32;
+        // Ask for the source's own depth. Exclusive mode negotiates DEPTH (see
+        // wasapi_sink.cpp) but never RATE -- that is #32.
+        want.format      = info.is_lossless ? SampleFormat::kInt24 : SampleFormat::kFloat32;
 
-        const SinkError err = sink.open(want, &render_audio, &shared);
-        if (err != SinkError::kOk) {
+        SinkError err = SinkError::kBackendFailure;
+
+        // Preference order, and the reasoning is in the order itself:
+        //
+        //   1. WASAPI exclusive -- the only bit-perfect path (D-004).
+        //   2. WASAPI shared    -- not bit-perfect, but still IAudioClock, which
+        //                          is the real device clock #53 needs.
+        //   3. SDL              -- portable fallback, derived clock.
+        //
+        // The fallback happens HERE, in the caller, not inside the sink. Per
+        // #32 a sink that quietly retries somewhere else has broken a promise
+        // nobody can detect; a caller that does it and says so has not.
+        if (opt.sink != Options::kSdl && WasapiSink::available()) {
+            auto w = std::make_unique<WasapiSink>();
+            w->set_mode(WasapiMode::kExclusive);
+            err = w->open(want, &render_audio, &shared);
+
+            if (err == SinkError::kExclusiveModeNotPermitted) {
+                // Policy, not capability, and the user can fix it. Saying so is
+                // the entire reason this is a distinct error rather than a bare
+                // failure -- see audio_sink.hpp, which named this case before
+                // any backend existed to return it.
+                std::printf(
+                    "holocron: exclusive mode is disabled for this endpoint, so playback is\n"
+                    "          NOT bit-perfect. Enable it in Sound > Playback > Properties >\n"
+                    "          Advanced > \"Allow applications to take exclusive control\".\n");
+            } else if (err == SinkError::kRateUnavailable) {
+                std::printf("holocron: the endpoint refuses %u Hz in exclusive mode; not\n"
+                            "          resampling behind your back (#32).\n",
+                            info.sample_rate);
+            }
+
+            if (err == SinkError::kOk) {
+                bit_perfect = w->is_bit_perfect();
+                sink        = std::move(w);
+            } else if (opt.sink != Options::kWasapi) {
+                auto s = std::make_unique<WasapiSink>();
+                s->set_mode(WasapiMode::kShared);
+                err = s->open(want, &render_audio, &shared);
+                if (err == SinkError::kOk) {
+                    bit_perfect = s->is_bit_perfect();
+                    sink        = std::move(s);
+                }
+            }
+        }
+
+        if (sink == nullptr && opt.sink != Options::kWasapi) {
+            auto s = std::make_unique<SdlSink>();
+            err    = s->open(want, &render_audio, &shared);
+            if (err == SinkError::kOk) {
+                sink = std::move(s);
+            }
+        }
+
+        if (sink == nullptr) {
             std::fprintf(stderr, "holocron: audio unavailable (%s), continuing muted\n",
                          to_string(err));
         } else {
@@ -267,7 +348,8 @@ int main(int argc, char** argv)
             // is also the upper bound on how far the visuals lead the sound.
             // The real fix is a device clock to tap against rather than a
             // deeper buffer, which is WasapiSink's job.
-            shared.pcm.reset(static_cast<std::size_t>(sink.period_frames()) * 16, info.channels);
+            shared.pcm.reset(static_cast<std::size_t>(sink->period_frames()) * 16,
+                             info.channels);
             audio_started = true;
         }
     }
@@ -284,7 +366,7 @@ int main(int argc, char** argv)
     if (werr != WindowError::kOk) {
         std::fprintf(stderr, "holocron: %s\n", to_string(werr));
         if (audio_started) {
-            sink.close();
+            sink->close();
         }
         return 1;
     }
@@ -292,16 +374,17 @@ int main(int argc, char** argv)
     std::printf("holocron: GL %d.%d core on %s\n", window.gl_major(), window.gl_minor(),
                 window.gl_renderer());
     std::printf("holocron: %s\n", window.gl_version());
-    std::printf("holocron: audio %s, %u frames per period\n",
-                audio_started ? SdlSink::current_driver() : "(none)",
-                audio_started ? sink.period_frames() : 0u);
+    std::printf("holocron: audio %s, %u frames per period%s\n",
+                audio_started ? sink->backend_name() : "(none)",
+                audio_started ? sink->period_frames() : 0u,
+                audio_started ? (bit_perfect ? ", BIT-PERFECT" : ", not bit-perfect") : "");
 
     DebugFacet facet;
     if (!facet.init()) {
         std::fprintf(stderr, "holocron: the debug facet failed to initialise\n");
         window.close();
         if (audio_started) {
-            sink.close();
+            sink->close();
         }
         return 1;
     }
@@ -323,7 +406,7 @@ int main(int argc, char** argv)
                !shared.finished.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        audio_running = sink.start() == SinkError::kOk;
+        audio_running = sink->start() == SinkError::kOk;
     }
 
     // -- render loop ---------------------------------------------------------
@@ -365,11 +448,19 @@ int main(int argc, char** argv)
                 rendered,
                 static_cast<unsigned long long>(shared.published.load()));
     if (audio_running) {
+        // The underrun count comes from the RING, not the sink -- the ring is
+        // the only thing that knows whether it had audio when it was asked.
+        // Two sink-side metrics were deleted for pretending otherwise.
         const std::uint64_t dropped = shared.pcm.silence_padded();
-        std::printf("holocron: %llu callbacks served, %llu frames of silence padded%s\n",
-                    static_cast<unsigned long long>(sink.callbacks_served()),
+        std::printf("holocron: %llu frames of silence padded%s\n",
                     static_cast<unsigned long long>(dropped),
                     dropped == 0 ? " (clean)" : " -- THE RING RAN DRY");
+
+        const SinkClock c = sink->clock();
+        if (c.valid) {
+            std::printf("holocron: device clock reported %llu frames played\n",
+                        static_cast<unsigned long long>(c.frames_played));
+        }
     }
 
     // Order matters. Stop the decode thread first so nothing is still writing
@@ -380,8 +471,8 @@ int main(int argc, char** argv)
     decoder_thread.join();
 
     if (audio_running) {
-        sink.stop();
-        sink.close();
+        sink->stop();
+        sink->close();
     }
 
     facet.shutdown();

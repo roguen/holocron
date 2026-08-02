@@ -31,15 +31,26 @@ tested:
 
 **All four M1 blockers were resolved on 2026-08-01.** What remains for M1:
 
-1. **`WasapiSink`.** `SdlSink` proved the interface is not WASAPI-shaped, which
-   was the exit criterion. WASAPI is now wanted for two concrete reasons rather
-   than for completeness: exclusive mode is the only bit-perfect path (D-004,
-   #36), and `IAudioClock::GetPosition` is the real device clock that #53 needs.
-2. **Fix the analysis tap (#53).** The visuals currently lead the sound by the
-   PCM ring depth (~160 ms) because the analysis runs at the decode point, not
-   the playback point. §1 says otherwise. Needs a real clock, and needs
-   something other than `TripleBuffer` to select a frame from.
+1. **Prove the exclusive-mode path on hardware.** `WasapiSink` is written and
+   both modes are wired, but **exclusive mode has never actually run here**: the
+   theater HDMI endpoint refuses it by policy, so the sink correctly returns
+   `kExclusiveModeNotPermitted` and the player falls back to shared. Shared mode
+   works and gives the real `IAudioClock`, but it is **not bit-perfect**. Until
+   someone ticks *Sound → Playback → Properties → Advanced → "Allow applications
+   to take exclusive control"* and runs `holocron --sink wasapi`, D-004's central
+   promise is implemented and unverified. Do not record it as done.
+2. **Fix the analysis tap (#53).** The visuals still lead the sound by the PCM
+   ring depth (~160 ms) because the analysis runs at the decode point, not the
+   playback point. §1 says otherwise. The clock it needed now exists; what
+   remains is selecting a frame by position, which `TripleBuffer` deliberately
+   cannot do — it publishes only the newest value.
 3. Then M2: crystals, and a visual language that owes nothing to the debug facet.
+
+**Bit-perfect is a question you can ask, not a claim.** `WasapiSink::is_bit_perfect()`
+is computed from what was actually negotiated — exclusive mode, at the requested
+rate, in a format the float conversion is exact for. The player prints it every
+run. See `sample_convert.hpp` for why 16- and 24-bit sources round-trip through
+float exactly and 32-bit integer sources do not (#36).
 
 ### Running the player
 

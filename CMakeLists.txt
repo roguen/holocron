@@ -183,6 +183,34 @@ target_include_directories(holocron_sdl_sink SYSTEM PRIVATE
 )
 
 # ---------------------------------------------------------------------------
+# WASAPI sink
+#
+# The whole implementation is behind _WIN32 INSIDE the source, and the target is
+# built on every platform on purpose. Excluding it from the Linux build would
+# mean the second-most-important file in the audio path is never seen by the
+# free second compiler -- and the SdlSink episode showed exactly what that
+# compiler catches that MSVC does not.
+#
+# Windows needs avrt for AvSetMmThreadCharacteristics, which is what stops a
+# busy desktop from making the render thread miss period deadlines. ole32 for
+# COM. Both are system libraries; there is no vcpkg dependency here.
+# ---------------------------------------------------------------------------
+
+add_library(holocron_wasapi_sink STATIC
+    src/audio/wasapi_sink.cpp
+)
+add_library(holocron::wasapi_sink ALIAS holocron_wasapi_sink)
+
+target_link_libraries(holocron_wasapi_sink
+    PUBLIC  holocron::contract
+    PRIVATE holocron::warnings
+)
+
+if(WIN32)
+    target_link_libraries(holocron_wasapi_sink PRIVATE avrt ole32)
+endif()
+
+# ---------------------------------------------------------------------------
 # Render
 #
 # The window, the GL 4.5 core context, and the debug facet. GL is reached
