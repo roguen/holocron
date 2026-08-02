@@ -47,6 +47,8 @@
 
 #include <holocron/analysis.hpp>
 #include <holocron/audio_frame.hpp>
+#include <holocron/crystal.hpp>
+#include <holocron/crystal_facet.hpp>
 #include <holocron/debug_facet.hpp>
 #include <holocron/decoder.hpp>
 #include <holocron/frame_history.hpp>
@@ -76,6 +78,9 @@ struct Options {
 
     const char* path     = nullptr;
     const char* shot     = nullptr;
+    // Path stem of a crystal to draw instead of the debug facet: "crystals/pulse"
+    // loads crystals/pulse.toml and crystals/pulse.frag.
+    const char* crystal  = nullptr;
     int         frames   = 0;      // 0 = run until the window closes
     int         width    = 1280;
     int         height   = 720;
@@ -103,6 +108,8 @@ Options parse(int argc, char** argv)
             o.width = std::atoi(argv[++i]);
         } else if (std::strcmp(a, "--height") == 0 && i + 1 < argc) {
             o.height = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--crystal") == 0 && i + 1 < argc) {
+            o.crystal = argv[++i];
         } else if (std::strcmp(a, "--trim-ms") == 0 && i + 1 < argc) {
             o.trim_ms = std::atof(argv[++i]);
         } else if (std::strcmp(a, "--sink") == 0 && i + 1 < argc) {
@@ -130,6 +137,8 @@ void usage()
         "\n"
         "  holocron <file> [options]\n"
         "\n"
+        "  --crystal STEM draw a crystal instead of the debug facet, e.g.\n"
+        "                 --crystal crystals/pulse (loads .toml and .frag)\n"
         "  --sink S       auto (default), wasapi, or sdl. auto prefers WASAPI\n"
         "                 exclusive, then WASAPI shared, then SDL\n"
         "  --trim-ms N    shift the analysis tap N ms earlier, to compensate for\n"
@@ -438,8 +447,48 @@ int main(int argc, char** argv)
                 audio_started ? sink->period_frames() : 0u,
                 audio_started ? (bit_perfect ? ", BIT-PERFECT" : ", not bit-perfect") : "");
 
-    DebugFacet facet;
-    if (!facet.init()) {
+    DebugFacet   facet;
+    CrystalFacet crystal_facet;
+    bool         drawing_crystal = false;
+
+    if (opt.crystal != nullptr) {
+        Crystal     crystal;
+        std::string detail;
+        const CrystalError err = load_crystal(opt.crystal, crystal, detail);
+        if (err != CrystalError::kOk) {
+            // The detail carries the offending field and the valid vocabulary.
+            // Printing the code alone would tell an author their crystal is
+            // broken without telling them which line to look at.
+            std::fprintf(stderr, "holocron: %s\n%s\n", to_string(err), detail.c_str());
+            window.close();
+            if (audio_started) {
+                sink->close();
+            }
+            return 1;
+        }
+
+        std::string log;
+        if (!crystal_facet.init(crystal, log)) {
+            std::fprintf(stderr, "holocron: crystal failed to build\n%s\n", log.c_str());
+            window.close();
+            if (audio_started) {
+                sink->close();
+            }
+            return 1;
+        }
+
+        drawing_crystal = true;
+        std::printf("holocron: crystal \"%s\" from %s, %zu uniforms bound\n",
+                    crystal.name.c_str(), crystal.manifest_path.c_str(),
+                    crystal.uniforms.size());
+        if (crystal_facet.unused_uniforms() > 0) {
+            // Usually harmless, occasionally a misspelled uniform in the .frag,
+            // which otherwise looks exactly like the crystal ignoring the audio.
+            std::printf("holocron: %zu bound uniform(s) unused by the shader "
+                        "(removed by the compiler, or misspelled in the .frag)\n",
+                        crystal_facet.unused_uniforms());
+        }
+    } else if (!facet.init()) {
         std::fprintf(stderr, "holocron: the debug facet failed to initialise\n");
         window.close();
         if (audio_started) {
@@ -530,7 +579,11 @@ int main(int argc, char** argv)
         const bool playing =
             audio_running && !shared.finished.load(std::memory_order_acquire);
 
-        facet.draw(frame, window.width(), window.height(), playing);
+        if (drawing_crystal) {
+            crystal_facet.draw(frame, window.width(), window.height());
+        } else {
+            facet.draw(frame, window.width(), window.height(), playing);
+        }
         window.swap();
 
         ++rendered;
@@ -591,6 +644,7 @@ int main(int argc, char** argv)
         sink->close();
     }
 
+    crystal_facet.shutdown();
     facet.shutdown();
     window.close();
     return 0;

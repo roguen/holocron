@@ -37,11 +37,25 @@ void main()
     float r = length(p);
     float a = atan(p.y, p.x);
 
-    // Which band this direction corresponds to. atan gives -pi..pi; map it onto
-    // 0..31 so the spectrum wraps once around the ring.
-    float band_pos = (a + kPi) / (2.0 * kPi) * 32.0;
-    int   bi       = int(clamp(band_pos, 0.0, 31.0));
-    float band     = u_bands[bi];
+    // Which band this direction corresponds to.
+    //
+    // MIRRORED, so bass sits at the bottom and treble at the top on BOTH sides.
+    // Mapping the angle linearly onto 0..31 instead wraps the spectrum once
+    // around, which puts every low band on one side of the ring: on bass-heavy
+    // material the whole shape leans, and it reads as a bug rather than as the
+    // spectrum it is.
+    float half_turn = abs(a) / kPi;              // 0 at +x, 1 at -x, symmetric
+    float band_pos  = half_turn * float(31);
+
+    // INTERPOLATED between neighbours, not floored. Nearest-neighbour sampling
+    // gives 32 hard sectors, and wherever adjacent bands differ the seam shows
+    // as a wedge cut into the ring -- which is exactly what the first render of
+    // this crystal looked like. The bands are a coarse sampling of a continuous
+    // spectrum; drawing them as if they were discrete is the wrong reading.
+    int   b0 = int(floor(band_pos));
+    int   b1 = min(b0 + 1, 31);
+    float bt = fract(band_pos);
+    float band = mix(u_bands[b0], u_bands[b1], bt);
 
     // The ring breathes with bass and is pushed outward per-direction by that
     // direction's band. Bass is the auto-gained field, so this behaves the same

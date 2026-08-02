@@ -251,11 +251,16 @@ find_package(glad CONFIG REQUIRED)
 add_library(holocron_render STATIC
     src/render/window.cpp
     src/render/debug_facet.cpp
+    src/render/crystal_facet.cpp
 )
 add_library(holocron::render ALIAS holocron_render)
 
 target_link_libraries(holocron_render
     PUBLIC  holocron::contract
+            # crystal_facet.cpp needs Crystal and the binding table. PUBLIC
+            # because the facet's own header takes a Crystal by reference, so
+            # anything using the renderer needs the type too.
+            holocron::crystal
     PRIVATE holocron::warnings
             SDL3::SDL3
             glad::glad
