@@ -159,6 +159,29 @@ target_link_libraries(holocron_sdl_sink
             SDL3::SDL3
 )
 
+# SDL's headers must be SYSTEM, and this is not tidiness -- without it the
+# Linux job does not compile at all.
+#
+# SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK is `((SDL_AudioDeviceID) 0xFFFFFFFFu)`. That
+# C-style cast is expanded at OUR use site, so -Wold-style-cast fires on it and
+# -Werror turns it into a build failure. The cast is SDL's, in SDL's header, and
+# is not ours to fix -- which is precisely the case holocron::warnings exists to
+# handle, and the same treatment FFmpeg, pocketfft and libebur128 already get
+# above.
+#
+# It surfaced only on Linux because MSVC has no equivalent warning. That is the
+# Linux job doing the exact job it is documented to do at the top of ci.yml: it
+# is a free second compiler, and it sees what the target's compiler cannot.
+#
+# SDL3::SDL3 is an ALIAS, so its properties cannot be set directly; SDL3::Headers
+# is the imported target that actually carries the include directories. Listing
+# the same directory with both -I (via the link above) and -isystem is
+# well-defined in GCC: the -I is ignored and the directory is searched as a
+# system directory.
+target_include_directories(holocron_sdl_sink SYSTEM PRIVATE
+    $<TARGET_PROPERTY:SDL3::Headers,INTERFACE_INCLUDE_DIRECTORIES>
+)
+
 # ---------------------------------------------------------------------------
 
 add_subdirectory(tools)
