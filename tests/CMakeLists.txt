@@ -22,6 +22,7 @@ add_executable(holocron_tests
     test_wasapi_sink.cpp
     test_frame_history.cpp
     test_frame_binding.cpp
+    test_crystal.cpp
 )
 
 target_link_libraries(holocron_tests
@@ -31,6 +32,7 @@ target_link_libraries(holocron_tests
         holocron::decoder
         holocron::sdl_sink
         holocron::wasapi_sink
+        holocron::crystal
         holocron::warnings
         Catch2::Catch2WithMain
         # The triple-buffer tests spawn a producer and a consumer thread. On
