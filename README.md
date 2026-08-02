@@ -117,17 +117,28 @@ field may not change.
 
 | | Milestone | Scope | Status |
 |---|---|---|---|
-| **M1** | **Spine and audio** | CMake, SDL3 window, GL 4.5 core context, FFmpeg decode, `AudioSink` + `WasapiSink`, the analysis stage that fills `AudioFrame`, the lock-free triple buffer, and a debug facet that draws every field so the numbers can be trusted before anything is built on them. | **next** |
-| M2 | Crystals | Vault loading, the `.frag` + `.toml` crystal format, manifest uniform binding against the contract, hot reload. | planned |
+| **M1** | **Spine and audio** | CMake, SDL3 window, GL 4.5 core context, FFmpeg decode, `AudioSink` + `WasapiSink`, the analysis stage that fills `AudioFrame`, the lock-free triple buffer, and a debug facet that draws every field so the numbers can be trusted before anything is built on them. | **the spine is complete** |
+| **M2** | Crystals | Vault loading, the `.frag` + `.toml` crystal format, manifest uniform binding against the contract, hot reload. | **next** |
 | M3 | Compositor | The facet stack: layering, blend modes, transitions, archives. | planned |
 | M4 | projectM | libprojectM 4.x driven as a facet source, reading MilkDrop presets from a user-supplied path. | planned |
 | M5 | Plex | Server discovery and auth, library browsing, streaming, metadata and album art fetch and cache, palette extraction into `TrackContext`. | planned |
 | M6 | On-screen UI | Now-playing, library browsing, and facet control rendered in-app. | planned |
 | M7 | eISCP receiver control | Power, input, and volume control of the receiver over the network. | planned |
 
-The contract is signed off. M1 now waits only on the shape of `AudioSink`
-([#1](https://github.com/roguen/holocron/issues/1)), because the analysis tap's
-placement and the latency trim both encode the answer.
+**M1's spine works end to end.** `holocron` decodes a file, analyses it, plays it
+bit-perfect through WASAPI in exclusive mode, and draws every `AudioFrame` field —
+showing the frame the speakers are producing rather than the newest one the
+decoder has reached. Measured on the target: OpenGL 4.5 core on a Radeon RX 6800,
+a 160-frame (~3.6 ms) device period, zero dropouts.
+
+One number in it is zero by declaration rather than measurement. `--trim-ms`
+compensates for latency *downstream* of the device clock — the DAC, the HDMI link,
+the receiver's own processing — and defaults to **0**, which means "no trim
+applied", not "no latency exists". Measuring it needs ears on the real rack.
+
+What M1 does **not** have yet is a debug facet that has been used in anger. That
+is an exit criterion, and it is why the version is still `0.1.x` rather than
+`0.2.0`.
 
 ---
 
@@ -158,7 +169,7 @@ of crystals that all quietly look wrong.
 
 | Platform | Role | State today |
 |---|---|---|
-| **Windows x86-64 + discrete GPU** | The target, and the machine the work happens on | Nothing runs yet. `WasapiSink` is the M1 audio path. |
+| **Windows x86-64 + discrete GPU** | The target, and the machine the work happens on | **Runs.** Plays bit-perfect through `WasapiSink` in exclusive mode and draws the debug facet. |
 | **Linux** | CI only | Builds and hygiene checks run here. Not a deployment target. |
 | **macOS** | Not supported | Was the development host until 2026-08-01. No longer in the project. |
 
@@ -167,81 +178,101 @@ receiver. Verified on that machine: GL **4.6 core** on a Radeon RX 6800 — the
 project targets 4.5 — and an HDMI audio endpoint whose connected-display EDID
 reads `ONK` / `AV Receiver`.
 
-Audio output sits behind an `AudioSink` interface. `WasapiSink` will be the only
-implementation for a long time, and that is exactly why nothing above the sink may
-assume WASAPI — device enumeration, format negotiation, and latency reporting all
-belong to the interface. That boundary is not about portability for its own sake:
-it is what lets the sink's own contribution to latency stay a *measurable
-constant*, which is the premise the analysis tap depends on.
+Audio output sits behind an `AudioSink` interface with **two** implementations:
+`WasapiSink` (exclusive for the bit-perfect path, shared as a fallback) and
+`SdlSink` (portable, and how CI exercises the sink with no hardware at all,
+through SDL's dummy driver). The player picks one at runtime.
+
+Two implementations is the point rather than an accident. An interface with one
+implementation is indistinguishable from that implementation's API with different
+spelling, and `SdlSink` was written **first**, deliberately, as the cheapest proof
+that the abstraction was not merely WASAPI-shaped. It found real differences — SDL
+asks for a variable byte count where the contract promises an exact frame count,
+and SDL has no hardware clock at all — and the interface survived both.
+
+That boundary is not portability for its own sake: it is what lets the sink's own
+contribution to latency stay a *measurable constant*, which is the premise the
+analysis tap depends on. `IAudioClock::GetPosition` is what makes the tap land on
+the playback point.
 
 Linux CI is kept deliberately even though Linux is not a target. It is a free
 second compiler, and it is the only thing that sees filename-case and line-ending
 faults, which are invisible on Windows' case-insensitive filesystem exactly as
 they were on macOS'.
 
-**Open question 1 — the shape of `AudioSink`, and it needs settling before any
-sink is written.** The sketched interface is a blocking push:
-`size_t write(const float* interleaved, size_t frames)`. WASAPI exclusive mode
-cannot implement that. It is an event-driven *pull* model
+**Both questions this section used to carry are settled, and both resolved the way
+it predicted.**
+
+**The shape of `AudioSink` ([#1](https://github.com/roguen/holocron/issues/1)) is
+a pull/callback interface.** The sketched blocking push could not be implemented
+on WASAPI exclusive mode at all — that is an event-driven pull model
 (`AUDCLNT_STREAMFLAGS_EVENTCALLBACK` + `SetEventHandle`, then
-`IAudioRenderClient::GetBuffer`/`ReleaseBuffer` filling exactly one full device
-period per wakeup, with no partial fill and no back-pressure primitive). Wrapping
-it in a `write()` forces an internal thread and an interposed ring buffer whose
-fill level varies — which breaks the central premise in
-[`docs/audio-frame.md`](docs/audio-frame.md) §1, where the analysis tap reads at
-"the playback point minus output device latency" and treats that latency as a
-measurable constant to be trimmed once in `gatekeeper.toml`. Wrapped, it would not
-be constant, and no hand-trim can fix drift that moves.
+`IAudioRenderClient::GetBuffer`/`ReleaseBuffer` filling exactly one device period
+per wakeup, with no partial fill and no back-pressure primitive). Wrapping it
+would have forced an interposed ring buffer whose fill level varies, breaking the
+premise in [`docs/audio-frame.md`](docs/audio-frame.md) §1 that the sink's latency
+is a measurable constant.
 
-**Since WASAPI is now the only backend, this is a constraint rather than a
-preference.** A pull/callback interface is first-class on WASAPI and SDL3 alike; a
-push interface is first-class on neither. Related: `latency_seconds()` flattens what
-the platform natively exposes as a correlated (frame-position, timestamp) pair —
-`IAudioClock::GetPosition` — and a `bool` return from `open()` cannot distinguish
-"device busy" from "format unsupported" from "this rate unavailable on this
-endpoint", which are three different recoveries and the third is real on this
-hardware. Since SDL3 is already a dependency and is natively pull-based, an
-`SdlSink` written first is the cheapest possible proof that the abstraction is not
-merely WASAPI-shaped.
+`latency_seconds()` became a correlated `(frames_played, timestamp)` pair, and
+`open()` returns a `SinkError` enum rather than a bool. That distinction earned
+itself immediately: "exclusive mode not permitted by policy" and "device busy" are
+different problems with different fixes — the first is a checkbox, the second is
+another application — and **both were hit on this hardware, in that order**, while
+bringing the WASAPI path up.
 
-One consequence to face rather than discover later: Windows endpoints may refuse
-rates outright in exclusive mode, so the bit-perfect-at-native-rate promise in §2
-carries a platform qualifier. On a measured endpoint here, 88.2 and 176.4 kHz were
-both refused while 44.1, 48, 96 and 192 were accepted. Either fall back to shared
-mode, or resample and stop calling it bit-perfect —
-[#32](https://github.com/roguen/holocron/issues/32) has the numbers and the choice.
-Note that the measurement above came from an S/PDIF endpoint, **not** the theater
-HDMI path, which still has exclusive mode disabled and is therefore unprobed.
+**The offline harness ([#3](https://github.com/roguen/holocron/issues/3)) is
+`holocron-analyze`**, and it turned out to be permanent rather than scaffolding.
+It decodes a file, runs the analysis over it and reports — no window, no GL
+context, no audio device — so a known-frequency tone lands in a known bin and a
+known-tempo loop produces a known `bpm`. It found two start-of-track bugs within
+minutes of existing, both invisible to a unit-test suite that had only ever
+asserted on steady state.
 
-**Open question 2 — the analysis stage needs an offline, deterministic harness.**
-The debug facet exists to prove the analysis numbers are trustworthy, but a
-renderer is a poor place to establish trust in a number. A `NullSink` plus a
-PCM-dump sink lets the analysis stage run headless against a fixture with no window
-and no audio device, which makes it genuinely unit-testable — a known-frequency
-tone lands in a known bin, a known-tempo loop produces a known `bpm` — and lets
-`AudioFrame` output be diffed against a golden file in CI. The `time_seconds`
-sign-off makes that concrete: with no render thread, every dumped frame carries the
-analysis-stamped value and is reproducible.
+That argument generalised. The renderer now has the same escape hatch:
+`holocron --frames N --shot out.bmp` writes what was drawn, which is how two
+layout defects were found that no exit code could have shown.
+
+**One consequence remains live.** Windows endpoints may refuse rates outright in
+exclusive mode, so §2's bit-perfect-at-native-rate promise carries a platform
+qualifier. On a measured S/PDIF endpoint here, 88.2 and 176.4 kHz were refused
+while 44.1, 48, 96 and 192 were accepted.
+[#32](https://github.com/roguen/holocron/issues/32) resolved it: the sink
+**reports** `kRateUnavailable` and never silently resamples, because a sink that
+quietly resamples has broken the promise with no way for anyone to detect it. The
+caller decides what to do instead. The theater HDMI path now has exclusive mode
+enabled and opens at 44.1 kHz; the rates above it there remain unprobed.
 
 ---
 
-## Planned dependencies
+## Dependencies
 
-None of these are wired up yet; there is no build system and nothing is vendored.
+Acquired through vcpkg manifest mode ([`vcpkg.json`](vcpkg.json)), pinned by a
+`builtin-baseline`. Full licence texts and the linkage of each are in
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
+**In the build today:**
 
 | Dependency | For | Notes |
 |---|---|---|
 | C++20 toolchain | everything | MSVC Build Tools on the target; GCC/clang on Linux CI |
-| CMake + Ninja | build | arrives with M1; dependencies via vcpkg manifest mode |
-| SDL3 | window, input, event loop | zlib licence |
-| OpenGL 4.5 core | rendering | plus a loader; the headers deliberately avoid depending on one |
-| FFmpeg | decode | LGPL build only — see below |
-| WASAPI | audio output | part of the Win32 SDK, nothing to acquire. Behind `AudioSink`. |
-| glm | vector and matrix types | already required by `track_context.hpp` |
-| toml++ | `gatekeeper.toml`, crystal manifests, archives | MIT |
+| CMake + Ninja | build | vcpkg manifest mode (D-023) |
+| FFmpeg | decode | **LGPL-2.1**, `default-features` off with an explicit feature list so `gpl` and `nonfree` are excluded |
+| SDL3 | window, event loop, portable sink | Zlib AND MIT AND Apache-2.0 |
+| WASAPI | audio output | Win32 SDK, nothing to acquire. Behind `AudioSink`. |
+| glad | GL 4.5 function loader | MIT, pinned to `gl-api-45` so a 4.6-only call is a compile error |
+| pocketfft | FFT for the analysis stage | BSD-3-Clause, header-only (D-024) |
+| libebur128 | BS.1770-4 loudness | MIT (D-024) |
+| glm | vector and matrix types | MIT, required by `track_context.hpp` |
+| Catch2 | tests | BSL-1.0, test-only, never shipped |
+
+**Not yet acquired:**
+
+| Dependency | For | Notes |
+|---|---|---|
+| toml++ | `gatekeeper.toml`, crystal manifests, archives | M2. MIT |
 | nlohmann/json | Plex API | M5. MIT |
 | spdlog | logging | MIT |
-| libprojectM 4.x | MilkDrop preset rendering | M4. LGPL-2.1, **dynamically linked** |
+| libprojectM 4.x | MilkDrop preset rendering | M4. LGPL-2.1, **must stay dynamically linked** through its C API (D-012) |
 
 An FFT and a loudness meter are still to be chosen ([#9](https://github.com/roguen/holocron/issues/9)).
 Because Holocron is GPL-3.0-or-later, **GPL dependencies are compatible** — FFTW
