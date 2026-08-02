@@ -14,6 +14,7 @@ add_executable(holocron_tests
     test_analysis_stage.cpp
     test_rhythm_and_loudness.cpp
     test_audio_sink.cpp
+    test_triple_buffer.cpp
     test_decoder.cpp
 )
 
@@ -24,6 +25,10 @@ target_link_libraries(holocron_tests
         holocron::decoder
         holocron::warnings
         Catch2::Catch2WithMain
+        # The triple-buffer tests spawn a producer and a consumer thread. On
+        # gcc/libstdc++ std::thread needs an explicit pthread link; MSVC needs
+        # nothing and Threads::Threads resolves to a no-op there.
+        Threads::Threads
 )
 
 # Register each TEST_CASE with CTest individually, so a failure names the case

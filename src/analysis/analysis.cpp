@@ -24,6 +24,16 @@ namespace {
 constexpr float kPi      = 3.14159265358979323846f;
 constexpr float kEpsilon = 1e-12f;
 
+// How many hops until the FFT input window holds no zero-padding at all.
+// Auto-gain output is ramped in over this many frames (issue #44): with
+// rolling_max seeded at zero, the very first sample becomes the reference by
+// definition and every _norm field reads a manufactured 1.0 on frame 0 of
+// every track. The internal AGC state (rolling_max itself) still updates from
+// real, un-ramped data throughout -- only the REPORTED ratio is scaled down at
+// the start, so genuine transients are tracked at full speed from the first
+// frame; only the display value is damped.
+constexpr std::uint32_t kAgcWarmupFrames = std::uint32_t(kFftSize / kHopSize);
+
 // Log mapping used by spectral_centroid and spectral_rolloff. 20 Hz -> 0.0,
 // 24 kHz -> 1.0. Log rather than linear because pitch perception is
 // logarithmic; a linear mapping parks every musical signal in the bottom tenth
@@ -141,8 +151,18 @@ struct AnalysisStage::Impl {
         onset_count     = 0;
         frames_since_tempo = 0;
 
+        frames_since_reset = 0;
+
         ebur_staging.clear();
         open_loudness();
+    }
+
+    // 0 on the frame right after a reset, rising to 1 once the FFT window no
+    // longer contains any zero-padding. Multiplied into the auto-gained OUTPUT
+    // fields only -- see kAgcWarmupFrames.
+    float warmup_scale() const
+    {
+        return std::min(1.0f, float(frames_since_reset) / float(kAgcWarmupFrames));
     }
 
     // Which bins each band covers. Bands narrower than one bin (0..6 with the
@@ -259,10 +279,11 @@ struct AnalysisStage::Impl {
     void  estimate_tempo();
     float short_term_loudness() const;
 
-    std::uint64_t frame_index      = 0;
-    std::uint32_t source_rate      = 48000;
-    double        track_position   = 0.0;
-    double        track_duration   = 0.0;
+    std::uint64_t frame_index         = 0;
+    std::uint32_t frames_since_reset  = 0;  // for warmup_scale(); see reset_state()
+    std::uint32_t source_rate         = 48000;
+    double        track_position      = 0.0;
+    double        track_duration      = 0.0;
 };
 
 // ---------------------------------------------------------------------------
@@ -276,9 +297,6 @@ struct AnalysisStage::Impl {
 void AnalysisStage::Impl::estimate_tempo()
 {
     const std::size_t n = odf_history.size();
-    if (odf_filled < n) {
-        return;  // not enough history yet
-    }
 
     const int min_lag = std::max(2, int(60.0f / (config.tempo_max_bpm * kHopSeconds)));
     const int max_lag = std::min(int(n) - 1, int(60.0f / (config.tempo_min_bpm * kHopSeconds)));
@@ -286,14 +304,39 @@ void AnalysisStage::Impl::estimate_tempo()
         return;
     }
 
+    // Estimate from whatever history exists once there is enough for the
+    // LONGEST lag being searched -- not the full ring (issue #44). Waiting for
+    // the full tempo_history_seconds (6 s by default) left the first six
+    // seconds of every track with no beat_count progress at all, because
+    // estimate_tempo() returned unconditionally until then. The autocorrelation
+    // never looks back further than max_lag samples regardless of how much
+    // history exists, so max_lag+1 samples is already sufficient to attempt an
+    // estimate -- roughly one second at the default 60 BPM floor. Confidence
+    // starts low on a short window and rises as more history accumulates,
+    // which is exactly what bpm_confidence exists to communicate; callers are
+    // already told to gate bpm on it rather than trust it unconditionally.
+    const std::size_t m = odf_filled;
+    if (int(m) <= max_lag) {
+        return;
+    }
+
+    // Oldest-to-newest window of exactly the m samples that exist: indices
+    // [0, m) directly before the ring has wrapped (odf_pos == odf_filled in
+    // that case, so start=0 already lines up), or the m == n samples starting
+    // at odf_pos -- the next write position, i.e. the oldest surviving sample
+    // -- once it has. Using the full ring size here instead of m would treat
+    // never-written, still-zero slots as real (silent) history and bias the
+    // correlation toward finding periodicity in that silence.
+    const std::size_t start = (m < n) ? 0 : odf_pos;
+
     // Mean-removed, so a loud constant floor does not dominate the correlation.
     float mean = 0.0f;
-    for (float v : odf_history) {
-        mean += v;
+    for (std::size_t i = 0; i < m; ++i) {
+        mean += odf_history[(start + i) % n];
     }
-    mean /= float(n);
+    mean /= float(m);
 
-    auto at = [&](std::size_t i) { return odf_history[(odf_pos + i) % n] - mean; };
+    auto at = [&](std::size_t i) { return odf_history[(start + i) % n] - mean; };
 
     // Autocorrelation at zero lag: the signal's variance, and the value a
     // perfectly periodic signal would reach at its true period. Normalising by
@@ -305,20 +348,20 @@ void AnalysisStage::Impl::estimate_tempo()
     // implementation, and it reported confidence 0.0 while recovering 119.7 BPM
     // from a 120 BPM click track -- correct answer, useless confidence.
     float r0 = 0.0f;
-    for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t i = 0; i < m; ++i) {
         r0 += at(i) * at(i);
     }
-    r0 /= float(n);
+    r0 /= float(m);
 
     float best_score = 0.0f;
     int   best_lag   = 0;
 
     for (int lag = min_lag; lag <= max_lag; ++lag) {
         float sum = 0.0f;
-        for (std::size_t i = std::size_t(lag); i < n; ++i) {
+        for (std::size_t i = std::size_t(lag); i < m; ++i) {
             sum += at(i) * at(i - std::size_t(lag));
         }
-        sum /= float(n - std::size_t(lag));
+        sum /= float(m - std::size_t(lag));
 
         if (sum > best_score) {
             best_score = sum;
@@ -376,7 +419,7 @@ void AnalysisStage::Impl::update_rhythm(AudioFrame& f, float raw_flux)
     // slow-decay envelope. Section 5 points crystals here rather than at the
     // boolean, because it has no edge semantics and cannot be missed by a
     // render thread running at an unrelated rate.
-    const float normalized = auto_gain(raw_flux, onset_max);
+    const float normalized = auto_gain(raw_flux, onset_max) * warmup_scale();
     onset_strength =
         envelope_step(onset_strength, normalized, config.onset_attack, config.onset_decay);
     f.onset_strength = std::clamp(onset_strength, 0.0f, 1.0f);
@@ -513,6 +556,12 @@ void AnalysisStage::Impl::compute_frame(AudioFrame& f)
     }
     smoothed_state = f.fft_smoothed;
 
+    // Ramps 0 -> 1 over kAgcWarmupFrames. See kAgcWarmupFrames / warmup_scale()
+    // for why: rolling_max seeded at zero would otherwise make the very first
+    // sample its own reference and every _norm field would read a manufactured
+    // 1.0 on frame 0 of every track (issue #44).
+    const float warmup = warmup_scale();
+
     // -- bands ---------------------------------------------------------------
     for (int b = 0; b < AudioFrame::kBands; ++b) {
         const float raw = band_value(f.fft_magnitude, b);
@@ -524,7 +573,7 @@ void AnalysisStage::Impl::compute_frame(AudioFrame& f)
         f.band_env[std::size_t(b)] = band_env[std::size_t(b)];
 
         f.band_norm[std::size_t(b)] =
-            auto_gain(band_env[std::size_t(b)], band_max[std::size_t(b)]);
+            auto_gain(band_env[std::size_t(b)], band_max[std::size_t(b)]) * warmup;
     }
 
     // -- coarse aggregates ---------------------------------------------------
@@ -547,9 +596,9 @@ void AnalysisStage::Impl::compute_frame(AudioFrame& f)
     f.mid_env    = aggregate_env[1];
     f.treble_env = aggregate_env[2];
 
-    f.bass_norm   = auto_gain(aggregate_env[0], aggregate_max[0]);
-    f.mid_norm    = auto_gain(aggregate_env[1], aggregate_max[1]);
-    f.treble_norm = auto_gain(aggregate_env[2], aggregate_max[2]);
+    f.bass_norm   = auto_gain(aggregate_env[0], aggregate_max[0]) * warmup;
+    f.mid_norm    = auto_gain(aggregate_env[1], aggregate_max[1]) * warmup;
+    f.treble_norm = auto_gain(aggregate_env[2], aggregate_max[2]) * warmup;
 
     // -- levels --------------------------------------------------------------
     float sum_sq = 0.0f, peak = 0.0f;
@@ -630,6 +679,7 @@ void AnalysisStage::Impl::compute_frame(AudioFrame& f)
     f.sample_rate    = source_rate;
 
     ++frame_index;
+    ++frames_since_reset;
     primed = true;
 }
 
