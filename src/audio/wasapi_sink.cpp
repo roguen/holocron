@@ -587,8 +587,19 @@ void       WasapiSink::set_mode(WasapiMode m) { impl_->mode = m; }
 WasapiMode WasapiSink::mode() const           { return impl_->mode; }
 bool       WasapiSink::is_bit_perfect() const { return false; }
 
-SinkError WasapiSink::open(const SinkFormat&, RenderCallback, void*)
+SinkError WasapiSink::open(const SinkFormat& desired, RenderCallback cb, void*)
 {
+    // The SAME argument validation as the Windows path, and it is not
+    // decoration. The Linux job caught this: the stub returned kDeviceNotFound
+    // for a null callback while Windows returned kFormatUnsupported, so a
+    // caller checking "did I pass something malformed" got different answers
+    // per platform from one interface.
+    //
+    // Argument validation is a property of the CALL, not of the hardware. It
+    // must not depend on whether a device could ever have existed.
+    if (cb == nullptr || desired.channels == 0 || desired.sample_rate == 0) {
+        return SinkError::kFormatUnsupported;
+    }
     return SinkError::kDeviceNotFound;
 }
 void      WasapiSink::close() {}
