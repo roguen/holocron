@@ -74,8 +74,18 @@ and come back to.
 selection and latency trim, analysis tuning (envelope time constants, auto-gain
 window), paths to the vault and to MilkDrop preset packs, and Plex
 network settings. Because that last part means server addresses and tokens, a real
-`gatekeeper.toml` is never committed — a redacted `gatekeeper.example.toml`
-template will land with M1, when there is a loader to describe.
+`gatekeeper.toml` is never committed — the redacted template is
+[`gatekeeper.example.toml`](gatekeeper.example.toml).
+
+The template is **ahead of the code**: M1 reaches this behaviour through
+command-line flags and does not read the file yet, which each section notes. It is
+committed anyway because it is the most useful thing a newcomer can read, and
+because it doubles as the specification the loader has to satisfy.
+
+Note what it deliberately does **not** offer: band edges, band count, the
+bass/mid/treble crossovers and the analysis rate are fixed `constexpr` and are
+absent by design. Configuration may change how a number *moves* — attack, decay,
+gain response — and may not change what it *means*.
 
 ---
 

@@ -1,0 +1,176 @@
+# gatekeeper.example.toml
+#
+# The committed template. Copy it to `gatekeeper.toml` beside the executable and
+# edit that copy:
+#
+#     cp gatekeeper.example.toml gatekeeper.toml
+#
+# `gatekeeper.toml` is gitignored and MUST stay that way -- it holds a Plex token.
+# The loader reads `gatekeeper.toml` only and never this file, so an unedited
+# checkout runs on defaults rather than on the example's placeholder values.
+#
+# Every value here IS the default. Deleting a key is the same as leaving it, so
+# a working config can be as short as the two or three lines you actually changed.
+#
+# STATUS: this file is ahead of the code. M1 does not read it yet -- the
+# behaviour it describes is reached through command-line flags today, noted per
+# section. It is committed now because it is the most useful thing a newcomer can
+# read, and because it doubles as the specification the loader has to satisfy.
+
+
+# ---------------------------------------------------------------------------
+# [audio] -- the output device and the one number only you can measure
+# ---------------------------------------------------------------------------
+[audio]
+
+# Which backend to use: "auto", "wasapi", or "sdl".
+#
+# auto prefers WASAPI exclusive, falls back to WASAPI shared, then SDL. Exclusive
+# mode is the only bit-perfect path; shared goes through the Windows mixer and is
+# not bit-perfect, though it still provides a real device clock.
+#
+# Today: --sink
+backend = "auto"
+
+# Empty means the system default playback device. Set it to a substring of the
+# endpoint's friendly name to pin a specific one -- useful when the receiver is
+# not the default, e.g. "AV Receiver".
+device = ""
+
+# EXCLUSIVE MODE NEEDS TWO CHECKBOXES IN WINDOWS, AND THE SECOND IS NOT OBVIOUS.
+#
+#   Sound > Playback > (your device) > Properties > Advanced
+#     [x] Allow applications to take exclusive control of this device
+#     [x] Give exclusive mode applications priority
+#
+# The first permits exclusive mode at all. The SECOND is what lets it preempt a
+# stream that is already running -- without it, opening exclusively fails with
+# "device busy" whenever anything else is playing, which on a desktop is most of
+# the time. Both are needed. Holocron prints which one is missing.
+
+# Output latency DOWNSTREAM of the device clock, in milliseconds: the DAC, the
+# HDMI link, the receiver's own processing. Positive values make the picture wait.
+#
+# ZERO MEANS "NO TRIM APPLIED", NOT "NO LATENCY EXISTS". The analysis tap is
+# placed against the device clock, which is accurate to what the sink reports and
+# blind to everything after it. docs/audio-frame.md section 1 treats this as a
+# constant measured once by hand.
+#
+# HOW TO MEASURE IT: play something with a hard, obvious downbeat and watch the
+# beat marker on the debug facet against what you hear. If the picture leads the
+# sound, raise this. Percussion makes it obvious; pads hide it completely.
+#
+# Today: --trim-ms
+trim_ms = 0.0
+
+
+# ---------------------------------------------------------------------------
+# [analysis] -- how the numbers behave, NOT what they mean
+# ---------------------------------------------------------------------------
+#
+# NOTHING HERE CHANGES THE MEANING OF AN AudioFrame FIELD, and that boundary is
+# the point of the section rather than an accident of what happened to be
+# tunable.
+#
+# The band edges (30 Hz .. 16 kHz), the 32 band count, the bass/mid/treble
+# crossovers and the 48 kHz analysis rate are all fixed `constexpr` and are
+# deliberately ABSENT from this file. A crystal binding `band[5]` or `bass_norm`
+# must get the same span on every install, or the same crystal quietly looks
+# wrong on someone else's machine with no error and no way to detect it. See
+# Decision-Log O-004 and issue #30.
+#
+# What is tunable here is how values MOVE -- attack, decay, gain response. Those
+# change the feel and cannot change the meaning.
+[analysis]
+
+# Envelope time constants, seconds to 63%. Smaller attack is snappier; larger
+# decay holds longer. See docs/audio-frame.md section 4.
+band_attack      = 0.01
+band_decay       = 0.25
+aggregate_attack = 0.01
+aggregate_decay  = 0.25
+
+# Auto-gain, used by every `_norm` field. The window is how far back the rolling
+# maximum looks; the floor is essential and not a fudge -- without it a quiet
+# passage drives the maximum toward zero and the next moment of near-silence is
+# amplified into full-scale noise.
+agc_window_seconds = 20.0
+agc_floor          = 0.02
+
+# Onset detection: adaptive spectral flux. The threshold is a moving mean scaled
+# by `threshold_scale`. A FIXED threshold cannot work across a library holding
+# both a quiet acoustic recording and a brickwalled master.
+onset_window_seconds    = 1.0
+onset_threshold_scale   = 1.6
+onset_refractory_seconds = 0.05
+
+# Tempo search range, BPM. Outside a musically plausible range the
+# autocorrelation reliably locks onto half- and double-time and reports them
+# confidently, which is worse than not answering.
+tempo_min_bpm = 60.0
+tempo_max_bpm = 200.0
+
+# Below this confidence, `bpm` holds its last good value rather than jumping
+# around. Prefer `beat_phase`, which free-runs and is always safe to read.
+tempo_confidence_floor = 0.25
+
+
+# ---------------------------------------------------------------------------
+# [render] -- the window and the GL context
+# ---------------------------------------------------------------------------
+[render]
+
+# Window size in pixels. Today: --width / --height
+width  = 1280
+height = 720
+
+# Wait for vertical blank. Off uncaps the frame rate and tears; on is almost
+# always what you want on a television.
+vsync = true
+
+# Internal render scale. Below 1.0 renders smaller and upscales, which is the
+# first thing to try if a heavy crystal cannot hold the refresh rate.
+scale = 1.0
+
+# Ask the driver for a debug context and log GL errors. Cheap, and it turns a
+# silent misuse into a message at the moment it happens rather than a black
+# screen twenty draw calls later.
+gl_debug = true
+
+
+# ---------------------------------------------------------------------------
+# [paths] -- M2 and later. Nothing reads these yet.
+# ---------------------------------------------------------------------------
+[paths]
+
+# The crystal vault: the directory holding `.frag` + `.toml` crystal pairs.
+vault = "crystals"
+
+# MilkDrop presets for the projectM facet (M4). User-supplied; none ship with
+# Holocron, and none can -- see THIRD-PARTY-NOTICES.md.
+preset_packs = ""
+
+# Album art, palettes and Plex metadata (M5).
+cache = "cache"
+
+# Empty logs to stderr only.
+log = ""
+
+
+# ---------------------------------------------------------------------------
+# [plex] -- M5. Nothing reads these yet.
+# ---------------------------------------------------------------------------
+#
+# THIS SECTION IS WHY gatekeeper.toml IS GITIGNORED. A Plex token grants access
+# to the whole library; once it lands in a public repo that anyone has forked,
+# rewriting history does not retract it.
+[plex]
+
+# The example address is from RFC 5737's documentation range on purpose, so that
+# pasting this template unedited cannot probe a real machine.
+server = "http://192.0.2.1:32400"
+
+# Leave EMPTY here. Put the real token in gatekeeper.toml, which is gitignored.
+# Holocron refuses to start if it finds this placeholder value in a real config,
+# rather than failing later with a confusing authentication error.
+token = ""
