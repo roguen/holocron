@@ -28,14 +28,21 @@ tested:
 | PCM handoff | `PcmRing` — lock-free SPSC ring, decode thread to audio callback. Lossless and ordered, which is the opposite of `TripleBuffer`'s job. |
 | Sink | `WasapiSink` — **exclusive mode verified bit-perfect on the rack**, 160-frame period, plus a shared-mode fallback. `SdlSink` behind it, exercised headless in CI through SDL's dummy driver. Chosen at runtime through the interface. |
 | Render | `Window` (GL 4.5 core, KHR_debug) and `DebugFacet`, drawing every field as bars and markers. |
+| Crystals | **M2 has started.** A crystal is `<stem>.frag` + `<stem>.toml`; the manifest binds uniforms to `AudioFrame` fields BY NAME, validated at load against `frame_binding.hpp`. `CrystalFacet` compiles and draws it. `crystals/pulse` is the reference and a test loads it so it cannot rot. |
 | Executables | `holocron` — the player. `holocron-analyze` — the offline harness. |
 
 **All four M1 blockers were resolved on 2026-08-01.** What remains for M1:
 
-**M1's spine is complete.** It decodes, analyses, plays bit-perfect, draws, and
-what it draws is what you are hearing. What remains before M2 is judgement, not
-plumbing: the debug facet is an instrument panel and M2 needs a visual language
-that owes it nothing.
+**M1's spine is complete and M2 has started.** It decodes, analyses, plays
+bit-perfect, draws, and what it draws is what you are hearing — and it now draws
+a *crystal*, loaded from disk and bound to the contract by name.
+
+**What remains in M2 is judgement, not plumbing.** The format, loader and
+renderer exist and are tested. Hot reload and a multi-crystal vault are
+straightforward and unbuilt. The undecided part is the **visual language**:
+`crystals/pulse` is deliberately honest rather than pretty, and nothing in M2
+should inherit from the debug facet, which is an instrument panel. That call is
+the owner's and should not be made from a screenshot.
 
 One number is still unmeasured and deliberately so. `--trim-ms` compensates for
 latency *downstream* of the device clock — the DAC, the HDMI link, the Onkyo's
@@ -117,7 +124,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.1.11`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.1.12`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
