@@ -11,16 +11,28 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: M1 — analysis complete, no audio path yet
+## Status: M1 — everything but the audio device and the renderer
 
-There is still no `main()` and nothing that plays audio. What exists: a CMake +
-vcpkg build, a Catch2 suite green on Windows and Linux, the `AudioSink`
-interface with `NullSink` behind it, and **the full analysis stage — every
-`AudioFrame` field is populated and tested.**
+Nothing plays audio and nothing draws yet. What exists and is tested:
 
-**All four M1 blockers were resolved on 2026-08-01.** Remaining M1 work is the
-decoder, a real sink (`SdlSink` first, then `WasapiSink`), the triple buffer,
-and the debug facet.
+| | |
+|---|---|
+| Build | CMake + Ninja + MSVC, vcpkg manifest mode. Catch2 suite green on Windows **and** Linux. |
+| Contract | `AudioFrame` signed off; every field populated by the analysis stage. |
+| Analysis | Spectrum, bands, levels, stereo, spectral descriptors, onsets, tempo, beat/bar phase, BS.1770-4 loudness. |
+| Decode | FFmpeg behind `Decoder` (native rate) + `Resampler` (48 kHz stereo tap). |
+| Publication | `TripleBuffer` — lock-free SPSC, verified tear-free under real thread contention. |
+| Sink | Interface + `NullSink` only. **No real backend yet.** |
+| Executable | `holocron-analyze` — the offline harness. The only binary. |
+
+**All four M1 blockers were resolved on 2026-08-01.** What remains for M1:
+
+1. **`SdlSink`, then `WasapiSink`** (#1 decided the shape; write SdlSink first — it
+   is the cheapest proof the interface is not WASAPI-shaped, an M1 exit criterion).
+   Adding SDL3 changes `vcpkg.json`'s hash and **invalidates the FFmpeg binary
+   cache**, so expect one slow CI round when it lands.
+2. The window, GL 4.5 core context, and the debug facet that draws every field.
+3. Wiring the analysis output through `TripleBuffer` to that facet.
 
 Two things about the analysis that will otherwise look like bugs:
 
@@ -30,6 +42,20 @@ Two things about the analysis that will otherwise look like bugs:
 - **`bpm` holds its last good value when `bpm_confidence` is low** rather than
   jumping around. Check the confidence before trusting it, and prefer
   `beat_phase`, which free-runs and is always safe to read.
+
+### Running the harness
+
+The fastest way to see whether an analysis change is right. Point it at any file
+FFmpeg can decode:
+
+```bash
+.\build\windows\bin\holocron-analyze.exe track.flac --csv frames.csv
+```
+
+It prints a summary and, with `--csv`, one row per `AudioFrame`. **Both bugs in
+#44 were found this way and by nothing else** — the unit tests all asserted on
+steady state and never looked at how a track begins. Run it over a real file
+before trusting an analysis change.
 
 ### Building
 
