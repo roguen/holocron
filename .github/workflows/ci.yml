@@ -128,12 +128,38 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ninja-build nasm
 
+      # The run id in the key is deliberate and is the whole point -- see #49.
+      #
+      # A cancelled run still executes its post-steps, so it saves whatever is
+      # in the archives directory AT THAT MOMENT, which is a partial set. And
+      # actions/cache never overwrites an existing key, so the run that then
+      # completes properly logs "Cache hit occurred on the primary key, not
+      # saving cache" and its complete archives are thrown away. The partial
+      # cache is pinned to that key forever, and every later run on that ref
+      # restores it and rebuilds the difference.
+      #
+      # This was not theoretical: the Windows job restored 6 of 12 packages and
+      # rebuilt the other six on every run, costing ~23 min against 61 s for
+      # the whole Linux job. The same key held 100 MB on refs/heads/main and
+      # 75 MB on refs/pull/47/merge -- the partial one is directly visible in
+      # the cache listing.
+      #
+      # Making the key unique per run means every run saves, so a partial cache
+      # is superseded by the next complete one instead of pinned. Restores fall
+      # back through the prefixes: exact manifest first, then any cache for the
+      # platform.
+      #
+      # The cost is that every run now writes a cache, so the 10 GB limit
+      # arrives sooner and GitHub evicts least-recently-used. That is the
+      # accepted trade, not an oversight.
       - name: Cache vcpkg binaries
         uses: actions/cache@v4
         with:
           path: ${{ runner.os == 'Windows' && '~\AppData\Local\vcpkg\archives' || '~/.cache/vcpkg/archives' }}
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-${{ runner.os }}-
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-${{ runner.os }}-
 
       # Windows needs the MSVC environment before Ninja can find cl.exe, and
       # there is no generator shortcut: the runner has no Visual Studio instance
