@@ -1,0 +1,63 @@
+# Holocron .clang-format
+#
+# Written to DESCRIBE the style the codebase already has, not to impose a new
+# one. Issue #5 asked for this "before source lands"; source landed first, so the
+# job changed from choosing a style to recording the one in use — and the test of
+# this file is how little it wants to change, not how tidy it is in the abstract.
+#
+# Nothing in the build applies it. Reformatting the tree is a separate,
+# deliberate decision, because a bulk reformat rewrites every line's blame and
+# this project's comments carry a lot of the reasoning.
+
+Language: Cpp
+BasedOnStyle: LLVM
+
+# --- the two that define the look ------------------------------------------
+
+# Braces on their own line for FUNCTIONS only. Control flow keeps them attached,
+# and `} else {` stays on one line. That is not any of the named styles:
+# Stroustrup breaks before `else`, Allman breaks everywhere, Attach breaks
+# nowhere. Hence Custom.
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction:        true
+  AfterClass:           false
+  AfterStruct:          false
+  AfterUnion:           false
+  AfterEnum:            false
+  AfterNamespace:       false
+  AfterControlStatement: Never
+  AfterCaseLabel:       false
+  BeforeElse:           false
+  BeforeCatch:          false
+  BeforeWhile:          false
+  SplitEmptyFunction:   false
+  SplitEmptyRecord:     false
+
+# The codebase aligns runs of declarations and assignments into columns by hand,
+# and it is load-bearing for readability in the struct definitions — the Impl
+# structs read as tables. Turning this off would produce an enormous diff and a
+# worse result.
+AlignConsecutiveAssignments:  Consecutive
+AlignConsecutiveDeclarations: Consecutive
+
+# --- everything else --------------------------------------------------------
+
+IndentWidth:     4
+TabWidth:        4
+UseTab:          Never
+ColumnLimit:     100          # matches .editorconfig max_line_length
+AccessModifierOffset: -4
+NamespaceIndentation: None
+IndentCaseLabels: false
+PointerAlignment: Left        # `float* out`, not `float *out`
+ReferenceAlignment: Left
+FixNamespaceComments: true    # the tree already writes `}  // namespace holocron`
+SpacesBeforeTrailingComments: 2
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: true
+SortIncludes: Never           # include order is grouped by intent, not alphabet
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1

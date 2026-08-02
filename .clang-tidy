@@ -1,0 +1,71 @@
+# Holocron .clang-tidy
+#
+# Advisory, like .clang-format beside it. Nothing in the build runs this and no
+# CI job gates on it — see the note at the bottom for why that is a deliberate
+# choice rather than an omission.
+#
+# Run it against a configured build tree, which already exports the compile
+# database (CMAKE_EXPORT_COMPILE_COMMANDS is ON for top-level builds):
+#
+#   clang-tidy -p build/windows src/audio/wasapi_sink.cpp
+#
+# The check list is chosen for what this project can actually get wrong. It is a
+# real-time audio and GPU codebase with three lock-free structures, so the
+# concurrency and bugprone families earn their place; the readability and
+# "modernize" families are mostly opinion and are largely off.
+
+Checks: >
+  -*,
+  bugprone-*,
+  concurrency-*,
+  performance-*,
+  cert-dcl21-cpp,
+  cert-dcl58-cpp,
+  cert-err34-c,
+  cert-flp30-c,
+  cert-oop58-cpp,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-slicing,
+  cppcoreguidelines-virtual-class-destructor,
+  misc-misplaced-const,
+  misc-unused-parameters,
+  misc-unused-using-decls,
+  readability-misleading-indentation,
+  readability-non-const-parameter,
+  readability-redundant-control-flow,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -performance-avoid-endl
+
+WarningsAsErrors: ''
+HeaderFilterRegex: 'include/holocron/.*'
+FormatStyle: file
+
+CheckOptions:
+  # The contract's constants are deliberately not enums and not macros.
+  - key:   readability-magic-numbers.IgnoredIntegerValues
+    value: '1;2;3;4;8;16;24;32;48;64;100;1000'
+
+# --- why some checks are OFF ------------------------------------------------
+#
+# bugprone-easily-swappable-parameters fires on every one of the RenderCallback
+# and FrameCallback signatures, which are fixed by audio_sink.hpp's contract and
+# cannot be reordered or wrapped without breaking the "no allocation, no
+# std::function" rule that interface exists to enforce. It is right in general
+# and wrong here, every time.
+#
+# bugprone-narrowing-conversions duplicates -Wconversion, which the build already
+# runs at -Werror on gcc and clang. A second opinion on the same lines is noise.
+#
+# performance-avoid-endl is irrelevant: nothing on a hot path writes to a stream.
+#
+# --- why this is not a CI gate ----------------------------------------------
+#
+# The same reason .clang-format is not: the tree predates both files. Issue #5
+# asked for them "before source lands" and source landed first, so gating on them
+# would fail the build on day one and the honest options would be to reformat
+# everything or to lower the bar until it passed. Both are worse than saying
+# plainly that these describe the intended style and are run by hand.
+#
+# Turning either into a gate is a real option later, and it should follow a
+# deliberate normalisation pass rather than arrive with one hidden inside it.
