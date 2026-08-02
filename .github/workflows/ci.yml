@@ -117,9 +117,16 @@ jobs:
         if: runner.os == 'Linux'
         run: ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
-      - name: Install Ninja (Linux)
+      # nasm is required to build ffmpeg's assembly-optimized codec paths.
+      # vcpkg auto-downloads a portable nasm for the Windows triplet -- that is
+      # why the Windows job needs nothing extra here -- but has no such fetch
+      # path on Linux and fails the configure with a plain "please apt-get
+      # install nasm". Discovered when this dependency first landed: the build
+      # got as far as downloading ffmpeg's source before failing, so it is not
+      # caught by a quick sanity check -- only by an actual CI run.
+      - name: Install Ninja and nasm (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        run: sudo apt-get update && sudo apt-get install -y ninja-build nasm
 
       - name: Cache vcpkg binaries
         uses: actions/cache@v4
