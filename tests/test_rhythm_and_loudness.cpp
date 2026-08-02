@@ -186,6 +186,130 @@ TEST_CASE("onset_strength stays in range and decays", "[rhythm][onset]")
 }
 
 // ---------------------------------------------------------------------------
+// Warm-up (issue #44)
+//
+// Both bugs here were found by running the offline harness over a real file,
+// not by a unit test -- the existing tests all asserted on steady state and
+// never looked at how a track BEGINS. These are written against that failure.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("_norm fields do not flash full-scale on frame 0", "[analysis][warmup]")
+{
+    // rolling_max seeds at zero, so with no ramp the first sample of any
+    // track becomes its own reference and reads a manufactured 1.0. A
+    // sustained tone at a fixed level is exactly the case that triggered it:
+    // loud enough to exceed agc_floor immediately, giving the AGC ratio
+    // nothing to divide down. 100 Hz sits inside the default bass range
+    // (30-250 Hz), so bass_norm is exercised by real signal rather than
+    // testing a field that would read near-zero regardless of the fix.
+    AnalysisStage stage;
+    const auto    frames = run(stage, stereo_sine(100.0f, 1.0f, 0.8f));
+    REQUIRE(!frames.empty());
+
+    CHECK(frames[0].bass_norm == Approx(0.0f).margin(1e-5));
+    CHECK(frames[0].mid_norm == Approx(0.0f).margin(1e-5));
+    CHECK(frames[0].treble_norm == Approx(0.0f).margin(1e-5));
+    for (int b = 0; b < AudioFrame::kBands; ++b) {
+        REQUIRE(frames[0].band_norm[std::size_t(b)] == Approx(0.0f).margin(1e-5));
+    }
+}
+
+TEST_CASE("the _norm warm-up rises through its ramp and reaches a normal reading",
+          "[analysis][warmup]")
+{
+    // Ramps in over kAgcWarmupFrames (4: the FFT window length in hops).
+    // Checking non-decrease only across that short prefix, not indefinitely:
+    // once warmup reaches 1.0 the ordinary auto-gain dynamics take over, and
+    // those are free to dip slightly as the envelope and the rolling max
+    // settle against each other -- that is normal AGC behaviour, not a
+    // regression, and asserting monotonicity past the ramp itself would be
+    // testing an invented property rather than the one #44 is about.
+    AnalysisStage stage;
+    const auto    frames = run(stage, stereo_sine(100.0f, 1.0f, 0.8f));
+    REQUIRE(frames.size() > 20);
+
+    float previous = -1.0f;
+    for (std::size_t i = 0; i < 4; ++i) {
+        INFO("frame " << i << ": bass_norm = " << frames[i].bass_norm);
+        CHECK(frames[i].bass_norm >= previous);
+        previous = frames[i].bass_norm;
+    }
+
+    // And it must actually reach a normal reading once past warm-up, not stay
+    // suppressed forever. Sampled a little past the ramp rather than at the
+    // very end of the buffer, so the assertion is about "warm-up released",
+    // not "fully converged after a full second".
+    INFO("frame 20: bass_norm = " << frames[20].bass_norm);
+    CHECK(frames[20].bass_norm > 0.5f);
+}
+
+TEST_CASE("onset_strength does not flash on the very first onset of a track", "[analysis][warmup]")
+{
+    AnalysisStage stage;
+    const auto    frames = run(stage, click_track(120.0f, 2.0f));
+    REQUIRE(!frames.empty());
+
+    CHECK(frames[0].onset_strength == Approx(0.0f).margin(1e-5));
+}
+
+TEST_CASE("silence still reads exactly zero through the warm-up window", "[analysis][warmup]")
+{
+    // The ramp multiplies a value that is already zero; confirms the fix did
+    // not accidentally turn multiplication into something that could produce
+    // a nonzero result from nothing (e.g. an additive fudge instead).
+    AnalysisStage      stage;
+    std::vector<float> silence(std::size_t(0.5f * float(kAnalysisRate)) * 2, 0.0f);
+    const auto         frames = run(stage, silence);
+    REQUIRE(!frames.empty());
+
+    for (const AudioFrame& f : frames) {
+        REQUIRE(f.bass_norm == 0.0f);
+        REQUIRE(f.onset_strength == 0.0f);
+    }
+}
+
+TEST_CASE("beat tracking starts within roughly a second, not six", "[rhythm][tempo][warmup]")
+{
+    // Before the fix, estimate_tempo() returned unconditionally until the full
+    // 6-second tempo_history_seconds ring had filled -- bpm stayed 0.0 and
+    // beat_count made no progress for the first six seconds of every track.
+    // The autocorrelation never looks back further than the longest searched
+    // lag regardless of how much history exists, so that is all it should
+    // need: at the default 60 BPM floor, roughly one second.
+    AnalysisStage stage;
+    const auto    frames = run(stage, click_track(120.0f, 3.0f));
+    REQUIRE(!frames.empty());
+
+    std::size_t first_nonzero_bpm = frames.size();
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        if (frames[i].bpm > 0.0f) {
+            first_nonzero_bpm = i;
+            break;
+        }
+    }
+    REQUIRE(first_nonzero_bpm < frames.size());
+
+    const double seconds_to_lock = double(first_nonzero_bpm) * double(kHopSeconds);
+    INFO("first nonzero bpm at frame " << first_nonzero_bpm << " = " << seconds_to_lock << " s");
+    CHECK(seconds_to_lock < 2.0);
+}
+
+TEST_CASE("beat_count makes real progress in the first few seconds", "[rhythm][beat][warmup]")
+{
+    // The consequence that actually matters visually: with tempo starting six
+    // seconds in, a 12-second track like the one used to find this issue
+    // tracked only 11 of its 24 beats. Assert the fixed behaviour directly
+    // rather than just the bpm timing above.
+    AnalysisStage stage;
+    const auto    frames = run(stage, click_track(120.0f, 6.0f));
+    REQUIRE(!frames.empty());
+
+    // 6 s at 120 BPM is 12 beats. Expect most of them, not a handful.
+    INFO("beats counted: " << frames.back().beat_count);
+    CHECK(frames.back().beat_count >= 8u);
+}
+
+// ---------------------------------------------------------------------------
 // Tempo and beat
 // ---------------------------------------------------------------------------
 
