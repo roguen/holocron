@@ -27,6 +27,11 @@ if(PROJECT_IS_TOP_LEVEL)
     set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 endif()
 
+# The triple buffer's tests run a real producer and consumer thread. Required
+# before any target links Threads::Threads.
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
 option(HOLOCRON_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
 option(HOLOCRON_WERROR      "Treat warnings as errors" ON)
 
