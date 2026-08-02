@@ -23,6 +23,11 @@ name: CI
 on:
   push:
     branches: [main]
+    # Tags are built so the version check can compare the tree against the tag
+    # itself (issue #38). Without this the tag half of that check is dead code:
+    # tagging happens after the merge, so the push-to-main run has already
+    # finished by the time the tag exists.
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -245,4 +250,105 @@ jobs:
         run: |
           if git ls-files | grep -qE '(^|/)gatekeeper\.toml$'; then
             echo "::error::gatekeeper.toml is committed — it holds Plex credentials"; exit 1
+          fi
+
+      # Issue #33. Both failure modes here have actually happened, more than
+      # once, and neither produces an error anywhere else: the result is still
+      # valid UTF-8, just wrong, so nothing downstream complains.
+      #
+      # A BOM is unambiguous and worth failing on outright. U+FEFF has no
+      # legitimate use in this tree, and it has been committed at the front of a
+      # source file AND at the front of a git commit subject line.
+      #
+      # Mojibake is detected by SIGNATURE, which is a heuristic and is stated as
+      # one. Double-encoding UTF-8 through a Latin-1 codepage rewrites each byte
+      # of a multi-byte character as its own Latin-1 character, so an em dash or
+      # a section sign turns into a short run of accented capitals and
+      # punctuation. Those runs are effectively impossible in this project's
+      # English technical prose and are trivially greppable.
+      #
+      # The patterns below are written as hex escapes and NOT spelled out in
+      # this comment, for the reason given at the grep itself. A file that
+      # legitimately needs such a sequence -- a fixture ABOUT encoding damage,
+      # say -- would have to be excluded explicitly, which is the right amount
+      # of friction.
+      - name: No BOM or double-encoded text
+        run: |
+          bom=$(git grep -I -l -F -e $'\xef\xbb\xbf' -- . || true)
+          if [ -n "$bom" ]; then
+            echo "::error::UTF-8 BOM in tracked files (U+FEFF has no legitimate use here):"
+            echo "$bom"
+            exit 1
+          fi
+
+          # Signatures of UTF-8 decoded as Latin-1 and re-encoded, written as hex
+          # escapes rather than as the characters themselves.
+          #
+          # That is not obfuscation, it is the only way this check can police the
+          # file it lives in. Spelling the patterns literally puts the very byte
+          # sequences being hunted into ci.yml, and the first run flagged this
+          # workflow as the sole offender in the tree. Hex escapes keep the file
+          # pure ASCII, so it is subject to its own rule.
+          #
+          #   \xc3\xa2\xe2\x82\xac  the "a-circumflex euro" opening of a
+          #                         double-encoded em dash or curly quote
+          #   \xc3\x82\xc2...       a double-encoded section sign, degree,
+          #                         middle dot, guillemet
+          #   \xc3\x83\xc2...       a double-encoded accented letter
+          mojibake=$(git grep -I -l -F \
+                       -e $'\xc3\xa2\xe2\x82\xac' \
+                       -e $'\xc3\x82\xc2\xa7' \
+                       -e $'\xc3\x82\xc2\xb0' \
+                       -e $'\xc3\x82\xc2\xb7' \
+                       -e $'\xc3\x82\xc2\xbb' \
+                       -e $'\xc3\x82\xc2\xab' \
+                       -e $'\xc3\x83\xc2\xa9' \
+                       -e $'\xc3\x83\xc2\xa8' \
+                       -e $'\xc3\x83\xc2\xbc' -- . || true)
+          if [ -n "$mojibake" ]; then
+            echo "::error::Double-encoded text in tracked files. The tell is a one-line edit"
+            echo "::error::producing a diff that touches every line. Check the byte count."
+            echo "$mojibake"
+            exit 1
+          fi
+
+      # Issue #38. The version lives in three tracked files plus two wiki pages.
+      # The wiki is a separate repository with no PR mechanism and CANNOT be
+      # checked from here -- that is stated in the issue and restated here so
+      # nobody reads a green check as covering it. Those two pages stay manual.
+      - name: Version agrees across the tracked files
+        run: |
+          claude_ver=$(grep -oP 'Current version `v\K[0-9]+\.[0-9]+\.[0-9]+' CLAUDE.md || true)
+          vcpkg_ver=$(grep -oP '"version-string": "\K[0-9]+\.[0-9]+\.[0-9]+' vcpkg.json || true)
+          cmake_ver=$(grep -oP '^\s+VERSION \K[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt || true)
+
+          # Guard the extraction BEFORE comparing. Three failed greps produce
+          # three empty strings, which compare equal -- so the naive version of
+          # this check passes loudest exactly when it has stopped working. If a
+          # file is reformatted so a pattern no longer matches, that must be a
+          # failure, not a silent pass.
+          for pair in "CLAUDE.md:$claude_ver" "vcpkg.json:$vcpkg_ver" "CMakeLists.txt:$cmake_ver"; do
+            if [ -z "${pair#*:}" ]; then
+              echo "::error::No version found in ${pair%%:*} — the check cannot see it, so it is not checking it"
+              exit 1
+            fi
+          done
+
+          if [ "$claude_ver" != "$vcpkg_ver" ] || [ "$vcpkg_ver" != "$cmake_ver" ]; then
+            echo "::error::version disagrees: CLAUDE.md=$claude_ver vcpkg.json=$vcpkg_ver CMakeLists.txt=$cmake_ver"
+            exit 1
+          fi
+
+          echo "version $claude_ver agrees across all three tracked files"
+
+          # On a tag, the three must also match the tag itself. This is the half
+          # of #38 that catches a tag applied to the wrong commit, which the
+          # file-to-file comparison cannot see.
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tag_ver="${GITHUB_REF_NAME#v}"
+            if [ "$tag_ver" != "$claude_ver" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match the version in the tree ($claude_ver)"
+              exit 1
+            fi
+            echo "tag $GITHUB_REF_NAME matches the tree"
           fi
