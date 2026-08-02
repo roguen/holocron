@@ -246,11 +246,88 @@ jobs:
 
       # A real gatekeeper.toml carries a Plex token. Once it lands in a public
       # repo that anyone has forked, rewriting history does not retract it.
+      # Widened for issue #18: .gitignore treats six patterns as secret-bearing
+      # and this step used to test exactly one of them. A check that covers a
+      # sixth of what it claims to cover is worse than none, because the green
+      # tick is read as "no secrets committed".
       - name: No secrets committed
         run: |
-          if git ls-files | grep -qE '(^|/)gatekeeper\.toml$'; then
-            echo "::error::gatekeeper.toml is committed — it holds Plex credentials"; exit 1
+          bad=$(git ls-files | grep -E \
+                  -e '(^|/)gatekeeper\.toml$' \
+                  -e '(^|/)gatekeeper\.local\.toml$' \
+                  -e '(^|/)secrets\.toml$' \
+                  -e '\.token$' \
+                  -e '(^|/)plex_token' \
+                  -e '(^|/)\.env$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Secret-bearing files are committed:"; echo "$bad"; exit 1
           fi
+
+      # Issue #18. Both files carry a comment telling the reader to keep their
+      # media lists in sync, and until now nothing checked it. They serve
+      # different purposes and drift is silent in BOTH directions:
+      #
+      #   * in .gitattributes but not .gitignore -> committable when it must not be
+      #   * in .gitignore but not .gitattributes -> CORRUPTED if force-added,
+      #     which is the exact failure the character-class work was done to prevent
+      #
+      # Only the AUDIO and VIDEO sections of .gitattributes are compared.
+      # Its image and font sections deliberately have no .gitignore counterpart:
+      # a PNG figure or a UI font is meant to be committable, a FLAC never is.
+      # Comparing the whole binary section would demand a drift that should not
+      # exist.
+      - name: .gitignore and .gitattributes describe the same media set
+        run: |
+          # Character-class form is the discriminator: every media pattern is
+          # written *.[wW][aA][vV] and nothing else in either file looks like it.
+          ignore_list=$(grep '^\*\.\[' .gitignore | sed 's/[[:space:]].*//' | sort -u)
+
+          attr_list=$(awk '
+            /^# Audio/    { c = 1; next }
+            /^# Video/    { c = 1; next }
+            /^# Images/   { c = 0; next }
+            /^# Fonts/    { c = 0; next }
+            /^# Archives/ { c = 0; next }
+            c && /^\*\./  { print $1 }
+          ' .gitattributes | sort -u)
+
+          # Guard the extraction before comparing, for the same reason the
+          # version check does: two empty lists compare equal, so a rename of a
+          # section header would turn this into a check that always passes.
+          if [ -z "$ignore_list" ] || [ -z "$attr_list" ]; then
+            echo "::error::media pattern extraction found nothing — section headers or pattern form must have changed"
+            exit 1
+          fi
+
+          if ! diff <(echo "$ignore_list") <(echo "$attr_list") > /tmp/media-diff.txt; then
+            echo "::error::.gitignore and .gitattributes disagree about the media set."
+            echo "::error::'<' is in .gitignore only, '>' is in .gitattributes audio/video only."
+            cat /tmp/media-diff.txt
+            exit 1
+          fi
+
+          echo "both files describe the same $(echo "$ignore_list" | wc -l) media patterns"
+
+      # Also issue #18. .editorconfig stops CRLF being written in the first
+      # place; .gitattributes stops it surviving a round trip. Two halves of one
+      # story, and they must not contradict each other.
+      #
+      # Note what `* text=auto` actually promises: LF in the REPOSITORY, native
+      # in the working tree. So a Windows checkout legitimately holds CRLF and
+      # the committed blob does not, which is why the CRLF check above is a
+      # statement about tracked content and gives a false positive if run
+      # against a Windows working tree. There is deliberately no `eol=lf` here --
+      # forcing LF into the working tree would fight every Windows editor for no
+      # benefit, since the blob is already normalized.
+      - name: .editorconfig and .gitattributes agree on line endings
+        run: |
+          if ! grep -qE '^end_of_line[[:space:]]*=[[:space:]]*lf' .editorconfig; then
+            echo "::error::.editorconfig no longer sets end_of_line = lf"; exit 1
+          fi
+          if ! grep -qE '^\*[[:space:]]+text=auto[[:space:]]*$' .gitattributes; then
+            echo "::error::.gitattributes no longer normalizes tracked text with '* text=auto'"; exit 1
+          fi
+          echo "both agree: LF in the repository, native in the working tree"
 
       # Issue #33. Both failure modes here have actually happened, more than
       # once, and neither produces an error anywhere else: the result is still
