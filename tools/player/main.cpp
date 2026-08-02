@@ -305,12 +305,25 @@ int main(int argc, char** argv)
                 std::printf("holocron: the endpoint refuses %u Hz in exclusive mode; not\n"
                             "          resampling behind your back (#32).\n",
                             info.sample_rate);
+            } else if (err == SinkError::kDeviceBusy) {
+                // Exclusive mode is PERMITTED but something already holds a
+                // stream on this endpoint, and Windows will not preempt it
+                // unless the endpoint is also set to give exclusive-mode
+                // applications priority. That is a second checkbox on the same
+                // property page, and the distinction is invisible unless
+                // something says it out loud.
+                std::printf(
+                    "holocron: exclusive mode is allowed but the endpoint is in use by\n"
+                    "          another application, so playback is NOT bit-perfect. Either\n"
+                    "          close whatever is playing, or tick Sound > Playback >\n"
+                    "          Properties > Advanced > \"Give exclusive mode applications\n"
+                    "          priority\".\n");
             }
 
             if (err == SinkError::kOk) {
                 bit_perfect = w->is_bit_perfect();
                 sink        = std::move(w);
-            } else if (opt.sink != Options::kWasapi) {
+            } else {
                 auto s = std::make_unique<WasapiSink>();
                 s->set_mode(WasapiMode::kShared);
                 err = s->open(want, &render_audio, &shared);

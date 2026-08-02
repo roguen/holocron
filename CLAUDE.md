@@ -25,26 +25,26 @@ tested:
 | Decode | FFmpeg behind `Decoder` (native rate) + `Resampler` (48 kHz stereo tap). |
 | Publication | `TripleBuffer` — lock-free SPSC, verified tear-free under real thread contention. |
 | PCM handoff | `PcmRing` — lock-free SPSC ring, decode thread to audio callback. Lossless and ordered, which is the opposite of `TripleBuffer`'s job. |
-| Sink | `SdlSink` — real, and exercised headless in CI through SDL's dummy driver. `NullSink` still there. **No `WasapiSink` yet.** |
+| Sink | `WasapiSink` — **exclusive mode verified bit-perfect on the rack**, 160-frame period, plus a shared-mode fallback. `SdlSink` behind it, exercised headless in CI through SDL's dummy driver. Chosen at runtime through the interface. |
 | Render | `Window` (GL 4.5 core, KHR_debug) and `DebugFacet`, drawing every field as bars and markers. |
 | Executables | `holocron` — the player. `holocron-analyze` — the offline harness. |
 
 **All four M1 blockers were resolved on 2026-08-01.** What remains for M1:
 
-1. **Prove the exclusive-mode path on hardware.** `WasapiSink` is written and
-   both modes are wired, but **exclusive mode has never actually run here**: the
-   theater HDMI endpoint refuses it by policy, so the sink correctly returns
-   `kExclusiveModeNotPermitted` and the player falls back to shared. Shared mode
-   works and gives the real `IAudioClock`, but it is **not bit-perfect**. Until
-   someone ticks *Sound → Playback → Properties → Advanced → "Allow applications
-   to take exclusive control"* and runs `holocron --sink wasapi`, D-004's central
-   promise is implemented and unverified. Do not record it as done.
-2. **Fix the analysis tap (#53).** The visuals still lead the sound by the PCM
+1. **Fix the analysis tap (#53).** The visuals still lead the sound by the PCM
    ring depth (~160 ms) because the analysis runs at the decode point, not the
    playback point. §1 says otherwise. The clock it needed now exists; what
    remains is selecting a frame by position, which `TripleBuffer` deliberately
    cannot do — it publishes only the newest value.
-3. Then M2: crystals, and a visual language that owes nothing to the debug facet.
+2. Then M2: crystals, and a visual language that owes nothing to the debug facet.
+
+**Exclusive mode needs BOTH checkboxes, and the second one is not obvious.**
+*Sound → Playback → the endpoint → Properties → Advanced* has two: "Allow
+applications to take exclusive control" permits exclusive mode at all, and
+"Give exclusive mode applications priority" lets it preempt a stream that is
+already running. With only the first ticked, `open()` returns `kDeviceBusy`
+whenever anything else is playing — which on a desktop is most of the time. The
+player prints which box to tick for both cases.
 
 **Bit-perfect is a question you can ask, not a claim.** `WasapiSink::is_bit_perfect()`
 is computed from what was actually negotiated — exclusive mode, at the requested
