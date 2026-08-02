@@ -20,6 +20,7 @@ add_executable(holocron_tests
     test_pcm_ring.cpp
     test_sample_convert.cpp
     test_wasapi_sink.cpp
+    test_frame_history.cpp
 )
 
 target_link_libraries(holocron_tests

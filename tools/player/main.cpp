@@ -49,6 +49,7 @@
 #include <holocron/audio_frame.hpp>
 #include <holocron/debug_facet.hpp>
 #include <holocron/decoder.hpp>
+#include <holocron/frame_history.hpp>
 #include <holocron/pcm_ring.hpp>
 #include <holocron/sdl_sink.hpp>
 #include <holocron/wasapi_sink.hpp>
@@ -79,6 +80,12 @@ struct Options {
     int         width    = 1280;
     int         height   = 720;
     Sink        sink     = kAuto;
+    // Hand-trim for output latency downstream of the device clock -- the DAC,
+    // the HDMI link, the receiver's own processing. D-004 and section 1 treat
+    // this as a measurable constant trimmed once by hand, and gatekeeper.toml
+    // will own it eventually. Zero is the honest default: it means "no trim
+    // applied", not "no latency exists".
+    double      trim_ms  = 0.0;
     bool        no_audio = false;
     bool        help     = false;
 };
@@ -96,6 +103,8 @@ Options parse(int argc, char** argv)
             o.width = std::atoi(argv[++i]);
         } else if (std::strcmp(a, "--height") == 0 && i + 1 < argc) {
             o.height = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--trim-ms") == 0 && i + 1 < argc) {
+            o.trim_ms = std::atof(argv[++i]);
         } else if (std::strcmp(a, "--sink") == 0 && i + 1 < argc) {
             const char* s = argv[++i];
             if (std::strcmp(s, "wasapi") == 0) {
@@ -123,6 +132,9 @@ void usage()
         "\n"
         "  --sink S       auto (default), wasapi, or sdl. auto prefers WASAPI\n"
         "                 exclusive, then WASAPI shared, then SDL\n"
+        "  --trim-ms N    shift the analysis tap N ms earlier, to compensate for\n"
+        "                 latency downstream of the device clock (DAC, HDMI,\n"
+        "                 receiver). Positive means the picture waits longer\n"
         "  --no-audio     decode and draw, but open no audio device\n"
         "  --frames N     render exactly N frames then exit\n"
         "  --shot PATH    write the last rendered frame to PATH as a BMP\n"
@@ -135,21 +147,44 @@ void usage()
 
 // ---------------------------------------------------------------------------
 
-struct Shared {
-    TripleBuffer<AudioFrame> frames;
-    PcmRing                  pcm;
+// Two seconds of history at 93.75 Hz, rounded to a power of two. Far more than
+// the lead ever is; the cost is 128 * sizeof(AudioFrame), about 1.4 MB, which is
+// nothing against being able to place a frame correctly.
+constexpr std::size_t kHistorySlots = 128;
 
-    std::atomic<bool> quit{false};
-    std::atomic<bool> finished{false};
+struct Shared {
+    FrameHistory<AudioFrame, kHistorySlots> frames;
+    PcmRing                                 pcm;
+
+    std::atomic<bool>          quit{false};
+    std::atomic<bool>          finished{false};
     std::atomic<std::uint64_t> published{0};
 };
 
 void on_analysis_frame(const AudioFrame& f, void* user)
 {
     auto* s = static_cast<Shared*>(user);
-    s->frames.back() = f;
-    s->frames.publish();
-    s->published.fetch_add(1, std::memory_order_relaxed);
+
+    const std::uint64_t k = s->published.fetch_add(1, std::memory_order_relaxed);
+
+    // The instant this frame REPRESENTS, which is the centre of its analysis
+    // window rather than its start.
+    //
+    // Frame k is computed from source samples [k*kHopSize, k*kHopSize +
+    // kFftSize) at kAnalysisRate. Keying on the window's start would place
+    // every frame kFftSize/2 too early -- about 21 ms at the current constants,
+    // which is a fifth of the beat at 120 BPM and would be plainly visible as
+    // the visuals running ahead even after #53 was otherwise fixed.
+    //
+    // Track time, not sample index: the source rate, the analysis rate and the
+    // device rate are three different numbers and time is the only currency
+    // all three agree on.
+    const std::uint64_t centre_samples =
+        (k * static_cast<std::uint64_t>(kHopSize)) + static_cast<std::uint64_t>(kFftSize) / 2;
+    const std::uint64_t position_us =
+        (centre_samples * 1'000'000ULL) / static_cast<std::uint64_t>(kAnalysisRate);
+
+    s->frames.publish(f, position_us);
 }
 
 void render_audio(float* out, std::size_t frames, std::uint16_t channels, void* user)
@@ -246,7 +281,18 @@ int main(int argc, char** argv)
         return opt.help ? 0 : 2;
     }
 
-    Shared shared;
+    // On the HEAP, and this is not a style preference.
+    //
+    // FrameHistory holds its slots inline, so 128 AudioFrames is about 1.38 MB
+    // in one object. Windows' default thread stack is 1 MB, so declaring this
+    // as a local overflows the stack before main() executes a single statement
+    // -- exit code 0xC00000FD, with no output at all and nothing to suggest the
+    // cause. It cost one confusing run to find.
+    //
+    // TripleBuffer never provoked it because three frames is 32 KB. The size
+    // came with keeping history, and history is what #53 required.
+    auto    shared_owner = std::make_unique<Shared>();
+    Shared& shared       = *shared_owner;
 
     // -- audio ---------------------------------------------------------------
 
@@ -424,14 +470,62 @@ int main(int argc, char** argv)
 
     // -- render loop ---------------------------------------------------------
 
-    int rendered = 0;
-    while (window.pump()) {
-        shared.frames.acquire();
+    // The frame currently on screen. Kept across iterations because "nothing
+    // new to show" is the normal case, not an error: at 144 fps against 93.75 Hz
+    // analysis the same frame is drawn repeatedly by design, and a failed
+    // select() means exactly the same thing.
+    AudioFrame    frame{};
+    int           rendered    = 0;
+    std::uint64_t lead_sum_us = 0;   // what the newest-wins frame would have led by
+    std::uint64_t lead_n      = 0;
 
-        // Per O-005 / #16 the render thread stamps time_seconds into its OWN
-        // copy, never into the shared slot -- front() returns const& precisely
-        // so that writing through it will not compile.
-        AudioFrame frame = shared.frames.front();
+    const std::uint32_t sink_rate = audio_started ? sink->format().sample_rate : 0;
+    const std::int64_t  trim_us   = static_cast<std::int64_t>(opt.trim_ms * 1000.0);
+
+    while (window.pump()) {
+        // THE FIX FOR #53.
+        //
+        // Ask the DEVICE where it is, and show the frame whose audio is coming
+        // out of the speakers now -- not the newest frame the decoder has
+        // produced, which is always ahead by however much is buffered.
+        //
+        // Section 1 puts the tap at "the playback point minus output device
+        // latency". frames_played is the playback point; trim_us is the
+        // latency, hand-measured, defaulting to zero.
+        const SinkClock clock = audio_running ? sink->clock() : SinkClock{};
+
+        if (clock.valid && sink_rate != 0) {
+            const std::int64_t played_us =
+                static_cast<std::int64_t>((clock.frames_played * 1'000'000ULL) / sink_rate);
+            const std::int64_t target = played_us - trim_us;
+            shared.frames.select(target > 0 ? static_cast<std::uint64_t>(target) : 0, frame);
+
+            // Measure what the OLD behaviour would have shown, so the fix is
+            // quantified rather than asserted. The newest frame's position
+            // minus the playback point is exactly the lead #53 describes, and
+            // it is the number that used to be on screen.
+            const std::uint64_t n = shared.published.load(std::memory_order_relaxed);
+            if (n > 0 && target > 0) {
+                const std::uint64_t newest_us =
+                    ((((n - 1) * static_cast<std::uint64_t>(kHopSize)) +
+                      (static_cast<std::uint64_t>(kFftSize) / 2)) *
+                     1'000'000ULL) /
+                    static_cast<std::uint64_t>(kAnalysisRate);
+                if (newest_us > static_cast<std::uint64_t>(target)) {
+                    lead_sum_us += newest_us - static_cast<std::uint64_t>(target);
+                    ++lead_n;
+                }
+            }
+        } else {
+            // No clock to place anything against -- muted, or a sink that
+            // cannot report a position. Newest-wins is correct here, and is
+            // exactly what the player did everywhere before #53.
+            shared.frames.newest(frame);
+        }
+
+        // Per O-005 / #16 the render thread works on its OWN copy and never
+        // writes into shared storage; FrameHistory hands out copies for the
+        // same reason TripleBuffer::front() returns a const reference.
 
         const bool playing =
             audio_running && !shared.finished.load(std::memory_order_acquire);
@@ -473,6 +567,15 @@ int main(int argc, char** argv)
         if (c.valid) {
             std::printf("holocron: device clock reported %llu frames played\n",
                         static_cast<unsigned long long>(c.frames_played));
+        }
+        if (lead_n > 0) {
+            // The frame is now chosen by position against the device clock, so
+            // this is what the OLD newest-wins behaviour would have put on
+            // screen: the analysis running this far ahead of the sound. It is
+            // the #53 gap, measured.
+            std::printf("holocron: tap corrected by %.1f ms (newest-wins would have led "
+                        "the sound by that much)\n",
+                        static_cast<double>(lead_sum_us / lead_n) / 1000.0);
         }
     }
 

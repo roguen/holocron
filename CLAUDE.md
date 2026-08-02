@@ -23,7 +23,8 @@ tested:
 | Contract | `AudioFrame` signed off; every field populated by the analysis stage. |
 | Analysis | Spectrum, bands, levels, stereo, spectral descriptors, onsets, tempo, beat/bar phase, BS.1770-4 loudness. |
 | Decode | FFmpeg behind `Decoder` (native rate) + `Resampler` (48 kHz stereo tap). |
-| Publication | `TripleBuffer` — lock-free SPSC, verified tear-free under real thread contention. |
+| Publication | `TripleBuffer` — lock-free SPSC, verified tear-free under real thread contention. Answers "newest frame", which is the right question for a renderer with no clock. |
+| Tap placement | `FrameHistory` — bounded history selectable **by position**, so the frame drawn is the one the speakers are producing. Measured 51 ms of correction against newest-wins (#53). **Heap-allocate it**: 128 `AudioFrame`s is ~1.38 MB, larger than the default stack. |
 | PCM handoff | `PcmRing` — lock-free SPSC ring, decode thread to audio callback. Lossless and ordered, which is the opposite of `TripleBuffer`'s job. |
 | Sink | `WasapiSink` — **exclusive mode verified bit-perfect on the rack**, 160-frame period, plus a shared-mode fallback. `SdlSink` behind it, exercised headless in CI through SDL's dummy driver. Chosen at runtime through the interface. |
 | Render | `Window` (GL 4.5 core, KHR_debug) and `DebugFacet`, drawing every field as bars and markers. |
@@ -31,12 +32,17 @@ tested:
 
 **All four M1 blockers were resolved on 2026-08-01.** What remains for M1:
 
-1. **Fix the analysis tap (#53).** The visuals still lead the sound by the PCM
-   ring depth (~160 ms) because the analysis runs at the decode point, not the
-   playback point. §1 says otherwise. The clock it needed now exists; what
-   remains is selecting a frame by position, which `TripleBuffer` deliberately
-   cannot do — it publishes only the newest value.
-2. Then M2: crystals, and a visual language that owes nothing to the debug facet.
+**M1's spine is complete.** It decodes, analyses, plays bit-perfect, draws, and
+what it draws is what you are hearing. What remains before M2 is judgement, not
+plumbing: the debug facet is an instrument panel and M2 needs a visual language
+that owes it nothing.
+
+One number is still unmeasured and deliberately so. `--trim-ms` compensates for
+latency *downstream* of the device clock — the DAC, the HDMI link, the Onkyo's
+own processing — and defaults to **zero**, which means "no trim applied", not
+"no latency exists". §1 and D-004 treat it as a constant measured once by hand;
+`gatekeeper.toml` will own it. Until someone measures it against the real rack,
+the tap is correct to the device clock and no further.
 
 **Exclusive mode needs BOTH checkboxes, and the second one is not obvious.**
 *Sound → Playback → the endpoint → Properties → Advanced* has two: "Allow

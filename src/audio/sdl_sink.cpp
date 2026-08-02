@@ -75,7 +75,12 @@ struct SdlSink::Impl {
     SDL_AudioStream* stream = nullptr;
 
     SinkFormat    fmt{};
-    std::uint32_t period = 0;
+    std::uint32_t period   = 0;
+    // The rate the CALLBACK is fed at, which is not necessarily the rate the
+    // device runs at -- SDL converts between them inside the stream. Both are
+    // needed: frames are counted on the app side and clock() must report on the
+    // device side, because format().sample_rate is what a caller will divide by.
+    std::uint32_t app_rate = 0;
 
     RenderCallback cb   = nullptr;
     void*          user = nullptr;
@@ -223,6 +228,7 @@ SinkError SdlSink::open(const SinkFormat& desired, RenderCallback cb, void* user
     impl_->fmt.sample_rate = static_cast<std::uint32_t>(device_spec.freq);
     impl_->fmt.channels    = desired.channels;
     impl_->fmt.format      = from_sdl_format(device_spec.format);
+    impl_->app_rate        = desired.sample_rate;
 
     impl_->scratch.assign(static_cast<std::size_t>(impl_->period) * desired.channels, 0.0f);
 
@@ -324,7 +330,23 @@ SinkClock SdlSink::clock() const
     // is "what we handed over, minus what has not been consumed yet". It is
     // monotonic and good enough to drive visuals, and it is the reason
     // WasapiSink exists.
-    c.frames_played     = submitted > queued_frames ? submitted - queued_frames : 0;
+    const std::uint64_t app_played = submitted > queued_frames ? submitted - queued_frames : 0;
+
+    // Reported in DEVICE frames, not app frames, so that dividing by
+    // format().sample_rate yields seconds of audio played. Counting happens on
+    // the app side because that is what this sink hands over; SDL resamples
+    // between the two, so the two counts differ whenever the device is not
+    // running at the source's rate.
+    //
+    // This was wrong until #53 needed the clock for something more demanding
+    // than a progress bar. It never showed up before because nothing divided by
+    // the rate -- the number was only ever compared against itself.
+    if (impl_->app_rate != 0 && impl_->fmt.sample_rate != impl_->app_rate) {
+        c.frames_played = (app_played * impl_->fmt.sample_rate) / impl_->app_rate;
+    } else {
+        c.frames_played = app_played;
+    }
+
     c.timestamp_seconds = static_cast<double>(SDL_GetTicksNS()) / 1'000'000'000.0;
     c.valid             = true;
     return c;
