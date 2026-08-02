@@ -170,3 +170,35 @@ TEST_CASE("the spectral log mapping puts 0.5 at ~693 Hz", "[analysis]")
     // Round trip.
     CHECK(to_norm(to_hz(0.37)) == Approx(0.37));
 }
+
+TEST_CASE("the coarse aggregates and the band array cover the same span", "[constants][30]")
+{
+    // Issue #30. The crossovers used to be gatekeeper-configurable while the
+    // band edges were frozen, which inverted the advice docs/audio-frame.md
+    // gives: band indices were the portable choice and bass/mid/treble -- the
+    // fields most crystals actually read -- were the ones that meant something
+    // different on every install.
+    //
+    // audio_frame.hpp static_asserts these, so a violation is a compile error
+    // before it is a test failure. The case exists anyway because the compile
+    // error says "must describe the same span" and this says WHY that matters,
+    // and because a future edit that deletes the asserts should still fail
+    // something.
+
+    CHECK(kBassLowHz == kBandLowHz);
+    CHECK(kTrebleHighHz == kBandHighHz);
+
+    // Strictly increasing, contiguous, no gaps and no overlap: bass ends exactly
+    // where mid starts, mid ends exactly where treble starts. A gap would be
+    // energy no aggregate reports; an overlap would be energy counted twice.
+    CHECK(kBassLowHz < kBassHighHz);
+    CHECK(kBassHighHz < kMidHighHz);
+    CHECK(kMidHighHz < kTrebleHighHz);
+
+    // The documented ranges, pinned. docs/audio-frame.md section 3 states these
+    // as a table and crystal authors design against them.
+    CHECK(kBassLowHz == Approx(30.0f));
+    CHECK(kBassHighHz == Approx(250.0f));
+    CHECK(kMidHighHz == Approx(4000.0f));
+    CHECK(kTrebleHighHz == Approx(16000.0f));
+}

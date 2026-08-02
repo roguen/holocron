@@ -53,11 +53,12 @@ struct AnalysisConfig {
     float agc_window_seconds = 20.0f;
     float agc_floor          = 0.02f;
 
-    // Coarse aggregate crossovers. Still configurable -- see issue #30.
-    float bass_low_hz    = 30.0f;
-    float bass_high_hz   = 250.0f;
-    float mid_high_hz    = 4000.0f;
-    float treble_high_hz = 16000.0f;
+    // The bass/mid/treble crossovers USED to live here and are now fixed
+    // constexpr in audio_frame.hpp -- kBassLowHz and friends. Issue #30.
+    //
+    // They were removed rather than deprecated because a field that exists and
+    // is ignored is worse than one that does not exist: it compiles, it looks
+    // like it works, and the effect it promises never happens.
 
     // Fraction of spectral energy below the rolloff point.
     float rolloff_fraction = 0.85f;
