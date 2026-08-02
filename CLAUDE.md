@@ -13,7 +13,9 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ## Status: M1 — everything but the audio device and the renderer
 
-Nothing plays audio and nothing draws yet. What exists and is tested:
+**It plays audio and it draws.** Verified on the rack: GL 4.5 core on the Radeon
+RX 6800, WASAPI at 441 frames per period, zero dropouts. What exists and is
+tested:
 
 | | |
 |---|---|
@@ -22,17 +24,34 @@ Nothing plays audio and nothing draws yet. What exists and is tested:
 | Analysis | Spectrum, bands, levels, stereo, spectral descriptors, onsets, tempo, beat/bar phase, BS.1770-4 loudness. |
 | Decode | FFmpeg behind `Decoder` (native rate) + `Resampler` (48 kHz stereo tap). |
 | Publication | `TripleBuffer` — lock-free SPSC, verified tear-free under real thread contention. |
-| Sink | Interface + `NullSink` only. **No real backend yet.** |
-| Executable | `holocron-analyze` — the offline harness. The only binary. |
+| PCM handoff | `PcmRing` — lock-free SPSC ring, decode thread to audio callback. Lossless and ordered, which is the opposite of `TripleBuffer`'s job. |
+| Sink | `SdlSink` — real, and exercised headless in CI through SDL's dummy driver. `NullSink` still there. **No `WasapiSink` yet.** |
+| Render | `Window` (GL 4.5 core, KHR_debug) and `DebugFacet`, drawing every field as bars and markers. |
+| Executables | `holocron` — the player. `holocron-analyze` — the offline harness. |
 
 **All four M1 blockers were resolved on 2026-08-01.** What remains for M1:
 
-1. **`SdlSink`, then `WasapiSink`** (#1 decided the shape; write SdlSink first — it
-   is the cheapest proof the interface is not WASAPI-shaped, an M1 exit criterion).
-   Adding SDL3 changes `vcpkg.json`'s hash and **invalidates the FFmpeg binary
-   cache**, so expect one slow CI round when it lands.
-2. The window, GL 4.5 core context, and the debug facet that draws every field.
-3. Wiring the analysis output through `TripleBuffer` to that facet.
+1. **`WasapiSink`.** `SdlSink` proved the interface is not WASAPI-shaped, which
+   was the exit criterion. WASAPI is now wanted for two concrete reasons rather
+   than for completeness: exclusive mode is the only bit-perfect path (D-004,
+   #36), and `IAudioClock::GetPosition` is the real device clock that #53 needs.
+2. **Fix the analysis tap (#53).** The visuals currently lead the sound by the
+   PCM ring depth (~160 ms) because the analysis runs at the decode point, not
+   the playback point. §1 says otherwise. Needs a real clock, and needs
+   something other than `TripleBuffer` to select a frame from.
+3. Then M2: crystals, and a visual language that owes nothing to the debug facet.
+
+### Running the player
+
+```bash
+.\build\windows\bin\holocron.exe track.flac
+```
+
+`--no-audio` decodes and draws without opening a device. `--frames N --shot out.bmp`
+renders exactly N frames and writes the last one, which is **how the renderer gets
+checked without a monitor** — the same argument that makes `holocron-analyze` worth
+having. Two real layout bugs were found that way and by nothing else; a facet that
+draws the wrong thing and one that draws the right thing have identical exit codes.
 
 Two things about the analysis that will otherwise look like bugs:
 
@@ -81,7 +100,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.1.7`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.1.8`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
