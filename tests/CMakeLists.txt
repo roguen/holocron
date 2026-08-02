@@ -17,6 +17,7 @@ add_executable(holocron_tests
     test_triple_buffer.cpp
     test_decoder.cpp
     test_sdl_sink.cpp
+    test_pcm_ring.cpp
 )
 
 target_link_libraries(holocron_tests

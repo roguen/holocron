@@ -105,22 +105,27 @@ public:
 
     const char* backend_name() const override;
 
-    // Times SDL's get-callback ran with NOTHING still queued, which means the
-    // previous fill was consumed entirely before this one arrived -- the stream
-    // is running with no margin and any further lateness is an audible dropout.
+    // Callbacks served since open(). A liveness counter, nothing more: if this
+    // is not climbing, the device is not pulling.
     //
-    // This is deliberately NOT called "underruns". SDL exposes no underrun
-    // counter, and because this sink always satisfies whatever SDL asks for, a
-    // literal count of unmet requests would be zero forever and would say
-    // "healthy" about a stream that was glitching. A starved callback is what
-    // can actually be observed here, so it is what gets reported and what the
-    // name says. WasapiSink can do better; this is the honest measurement
-    // available through SDL.
+    // THERE IS DELIBERATELY NO UNDERRUN COUNT HERE, AND THAT COST TWO ATTEMPTS.
     //
-    // Zero on a healthy stream. A rising number on the debug facet is how a
-    // real-time bug in the render callback gets noticed at all -- a dropout is
-    // otherwise just "it sounded bad for a moment".
-    std::uint64_t starved_callbacks() const;
+    // The first was underrun_frames(). Since this sink always satisfies
+    // whatever SDL asks for, that number would have read zero forever and
+    // called a glitching stream healthy.
+    //
+    // The second was starved_callbacks(), counting callbacks that arrived with
+    // nothing still queued. Measured against a real device it fired on very
+    // nearly every callback -- because SDL's get-callback runs PRECISELY WHEN
+    // the stream needs more data, so an empty queue at entry is the normal
+    // steady state and not a fault at all. It was a number that looked like
+    // diagnostics and meant nothing.
+    //
+    // SDL exposes no device underrun counter, so the honest answer is that this
+    // layer cannot measure it. The producer above the sink can: it knows
+    // whether it had audio ready when the callback asked. That is where the
+    // measurement belongs and where it now lives.
+    std::uint64_t callbacks_served() const;
 
 private:
     struct Impl;
