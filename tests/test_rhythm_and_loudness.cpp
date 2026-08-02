@@ -309,6 +309,85 @@ TEST_CASE("beat_count makes real progress in the first few seconds", "[rhythm][b
     CHECK(frames.back().beat_count >= 8u);
 }
 
+TEST_CASE("the estimator never reports an octave of the true tempo confidently",
+          "[rhythm][tempo][46]")
+{
+    // Issue #46. For ~0.7 s after the #44 fix let it start early, the estimator
+    // locked onto EXACTLY HALF the true tempo -- 60.48 against 119.68 -- and
+    // reported confidence 1.00 while doing it.
+    //
+    // Nothing in the suite caught it. "a 120 BPM click track is recovered"
+    // samples the END of the track, by which point the estimate has always
+    // self-corrected, and the warm-up tests above only ask whether bpm is
+    // non-zero, not whether it is right. A wrong answer delivered confidently
+    // for under a second is invisible to both.
+    //
+    // The property, asserted over EVERY frame rather than a sampled one: if the
+    // estimator claims real confidence, it must not be an octave out. Half and
+    // double are checked explicitly because they are the specific failure --
+    // autocorrelation cannot distinguish a period from its harmonics on
+    // evidence alone, since every other beat of a click track is also a beat.
+    AnalysisStage stage;
+    const auto    frames = run(stage, click_track(120.0f, 6.0f));
+    REQUIRE(!frames.empty());
+
+    std::size_t confident = 0;
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        const AudioFrame& f = frames[i];
+        if (f.bpm <= 0.0f || f.bpm_confidence < 0.5f) {
+            continue;
+        }
+        ++confident;
+
+        INFO("frame " << i << " bpm " << f.bpm << " confidence " << f.bpm_confidence);
+
+        // Generous on the tempo itself -- the estimator is quantised by the hop
+        // size and 119.68 is the honest answer for 120 -- but nowhere near wide
+        // enough to admit 60 or 240.
+        CHECK(f.bpm > 90.0f);
+        CHECK(f.bpm < 160.0f);
+    }
+
+    // Proves the loop above actually examined something. A fix that made the
+    // estimator permanently unconfident would pass every CHECK and be useless.
+    INFO("frames examined at confidence >= 0.5: " << confident);
+    CHECK(confident > 0);
+}
+
+TEST_CASE("tempo confidence grows with the evidence behind it", "[rhythm][tempo][46]")
+{
+    // The other half of #46, and the part that made the bug misleading rather
+    // than merely wrong. best_score / r0 measures how PERIODIC the signal is at
+    // the winning lag; it says nothing about how much data supported that lag.
+    // A click track scores ~1.0 at its true period on two periods of evidence
+    // and on twenty, so the raw ratio reported certainty for an estimate resting
+    // on almost nothing.
+    //
+    // Confidence is now scaled by the number of observed periods, so it has to
+    // START LOWER THAN IT ENDS. That is the assertion: not a magic number, but
+    // the direction of travel.
+    AnalysisStage stage;
+    const auto    frames = run(stage, click_track(120.0f, 6.0f));
+
+    float first_confidence = -1.0f;
+    for (const AudioFrame& f : frames) {
+        if (f.bpm > 0.0f) {
+            first_confidence = f.bpm_confidence;
+            break;
+        }
+    }
+    REQUIRE(first_confidence >= 0.0f);
+
+    const float last_confidence = frames.back().bpm_confidence;
+
+    INFO("confidence first " << first_confidence << " -> last " << last_confidence);
+    CHECK(first_confidence < last_confidence);
+
+    // And the first estimate must not claim near-certainty on its first look,
+    // which is precisely what it used to do.
+    CHECK(first_confidence < 0.9f);
+}
+
 // ---------------------------------------------------------------------------
 // Tempo and beat
 // ---------------------------------------------------------------------------

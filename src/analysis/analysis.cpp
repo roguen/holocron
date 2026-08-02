@@ -34,6 +34,25 @@ constexpr float kEpsilon = 1e-12f;
 // frame; only the display value is damped.
 constexpr std::uint32_t kAgcWarmupFrames = std::uint32_t(kFftSize / kHopSize);
 
+// Tempo estimation, issue #46. Three constants, each doing a distinct job.
+//
+// kMinTempoPeriods -- how many times a candidate period must fit in the
+// available history before it is even searched. Two is the smallest number that
+// means "seen to repeat", and one period of evidence is not evidence of a
+// period at all.
+//
+// kFullTempoSupportPeriods -- how many observed periods it takes for confidence
+// to stop being discounted. Four is deliberately modest: the discount exists to
+// stop a thin estimate claiming certainty, not to suppress a good one.
+//
+// kOctaveAcceptRatio -- how nearly a half-lag must match the winner before it
+// is preferred. High, because the test is asymmetric and should only fire on
+// strong evidence: a genuine period's half-lag scores near zero, so anything
+// above ~0.8 of the winner is a harmonic rather than a coincidence.
+constexpr std::size_t kMinTempoPeriods         = 2;
+constexpr float       kFullTempoSupportPeriods = 4.0f;
+constexpr float       kOctaveAcceptRatio       = 0.80f;
+
 // Log mapping used by spectral_centroid and spectral_rolloff. 20 Hz -> 0.0,
 // 24 kHz -> 1.0. Log rather than linear because pitch perception is
 // logarithmic; a linear mapping parks every musical signal in the bottom tenth
@@ -304,21 +323,21 @@ void AnalysisStage::Impl::estimate_tempo()
         return;
     }
 
-    // Estimate from whatever history exists once there is enough for the
-    // LONGEST lag being searched -- not the full ring (issue #44). Waiting for
-    // the full tempo_history_seconds (6 s by default) left the first six
-    // seconds of every track with no beat_count progress at all, because
-    // estimate_tempo() returned unconditionally until then. The autocorrelation
-    // never looks back further than max_lag samples regardless of how much
-    // history exists, so max_lag+1 samples is already sufficient to attempt an
-    // estimate -- roughly one second at the default 60 BPM floor. Confidence
-    // starts low on a short window and rises as more history accumulates,
-    // which is exactly what bpm_confidence exists to communicate; callers are
-    // already told to gate bpm on it rather than trust it unconditionally.
+    // Estimate from whatever history exists rather than waiting for the full
+    // tempo_history_seconds ring (issue #44). Waiting for all 6 s left the first
+    // six seconds of every track with no beat_count progress at all, because
+    // estimate_tempo() returned unconditionally until then.
+    //
+    // The gate that replaced it -- "wait for max_lag samples", one period of the
+    // SLOWEST searched tempo -- is itself now gone, replaced by the per-lag
+    // support rule below (issue #46). It was both too weak and too strong: too
+    // weak because one period of a lag is not evidence for it, which is how the
+    // half-tempo lock got through; too strong because a fast track had to wait
+    // out the slow-tempo floor before anything could be reported at all.
+    //
+    // Whether there is enough history is a question about each CANDIDATE, not
+    // about the window as a whole.
     const std::size_t m = odf_filled;
-    if (int(m) <= max_lag) {
-        return;
-    }
 
     // Oldest-to-newest window of exactly the m samples that exist: indices
     // [0, m) directly before the ring has wrapped (odf_pos == odf_filled in
@@ -353,16 +372,46 @@ void AnalysisStage::Impl::estimate_tempo()
     }
     r0 /= float(m);
 
-    float best_score = 0.0f;
-    int   best_lag   = 0;
-
-    for (int lag = min_lag; lag <= max_lag; ++lag) {
+    auto score_at = [&](int lag) {
         float sum = 0.0f;
         for (std::size_t i = std::size_t(lag); i < m; ++i) {
             sum += at(i) * at(i - std::size_t(lag));
         }
-        sum /= float(m - std::size_t(lag));
+        return sum / float(m - std::size_t(lag));
+    };
 
+    // A LAG MUST FIT AT LEAST TWICE IN THE HISTORY TO BE CONSIDERED (issue #46).
+    //
+    // You cannot claim a period you have not seen repeat. With only one period
+    // of history every lag near the window length correlates well by
+    // construction, and the per-lag normalisation above divides by (m - lag),
+    // so the longest lags are averaged over a handful of terms and are wildly
+    // noisy exactly when they are least supported. Both effects push the
+    // estimate toward spuriously slow tempi.
+    //
+    // This is what actually produced the reported bug. At 1.02 s the estimator
+    // had 96 frames; lag 94 (60.48 BPM) was searched on the strength of two
+    // overlapping samples and won, while the true lag 47 (119.68 BPM) had a
+    // full two periods behind it. Requiring two periods makes lag 94 ineligible
+    // until 2 s, by which point there is enough data for the true period to win
+    // on merit.
+    //
+    // It also makes #44's warm-up BETTER rather than worse. The old gate waited
+    // for max_lag samples -- one period of the SLOWEST searched tempo, ~1.0 s --
+    // before attempting anything. Eligibility is now per-lag, so a fast track
+    // can lock as soon as two of its own periods exist, from ~0.6 s at the
+    // 200 BPM ceiling.
+    const int supported_lag = int(m / kMinTempoPeriods);
+    const int hi            = std::min(max_lag, supported_lag);
+    if (hi < min_lag) {
+        return;
+    }
+
+    float best_score = 0.0f;
+    int   best_lag   = 0;
+
+    for (int lag = min_lag; lag <= hi; ++lag) {
+        const float sum = score_at(lag);
         if (sum > best_score) {
             best_score = sum;
             best_lag   = lag;
@@ -373,9 +422,47 @@ void AnalysisStage::Impl::estimate_tempo()
         return;
     }
 
-    const float confidence = std::clamp(best_score / r0, 0.0f, 1.0f);
+    // OCTAVE CORRECTION: prefer a sub-multiple that scores nearly as well.
+    //
+    // The asymmetry is the whole reason this is sound rather than a fudge. If L
+    // is the true period then 2L also correlates strongly, because every other
+    // beat is still a beat -- but L/2 does NOT, because the halfway points are
+    // between beats and land on nothing. So a strong score at half the winning
+    // lag is evidence the winner was a harmonic; a weak one is evidence it was
+    // genuine. The test can only fire in the direction that is wrong.
+    //
+    // Applied repeatedly, so a lag that is four times the true period is walked
+    // back through 2x to 1x rather than only halfway.
+    int   chosen       = best_lag;
+    float chosen_score = best_score;
+    for (int half = chosen / 2; half >= min_lag; half = chosen / 2) {
+        const float s = score_at(half);
+        if (s < kOctaveAcceptRatio * chosen_score) {
+            break;
+        }
+        chosen       = half;
+        chosen_score = s;
+    }
 
-    const float candidate = 60.0f / (float(best_lag) * kHopSeconds);
+    // CONFIDENCE IS DISCOUNTED BY HOW WELL SUPPORTED THE WINNING LAG IS.
+    //
+    // best_score / r0 measures how PERIODIC the signal is at the winning lag.
+    // It does not measure how uniquely that lag wins, and it does not know how
+    // much evidence there was. A perfectly periodic click track scores ~1.0 at
+    // its true period on two periods of data and on twenty, so the raw ratio
+    // reported full confidence for an estimate resting on almost nothing --
+    // which is precisely what made the original bug misleading rather than
+    // merely wrong.
+    //
+    // Scaling by the number of observed periods makes the reported number
+    // honest about its own evidence. A thin estimate now says it is thin, which
+    // is what callers are already told to gate on.
+    const float periods = float(m) / float(chosen);
+    const float support = std::clamp(periods / kFullTempoSupportPeriods, 0.0f, 1.0f);
+
+    const float confidence = std::clamp(chosen_score / r0, 0.0f, 1.0f) * support;
+
+    const float candidate = 60.0f / (float(chosen) * kHopSeconds);
 
     bpm_confidence = confidence;
     // Hold the last good value rather than jumping around, per section 6.
