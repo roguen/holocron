@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 
 using namespace holocron;
@@ -207,6 +208,152 @@ TEST_CASE("an empty shader is rejected", "[crystal]")
     Crystal     c;
     std::string detail;
     CHECK(load_crystal(s.stem("empty"), c, detail) == CrystalError::kManifestIncomplete);
+}
+
+TEST_CASE("every CrystalError has a distinct description", "[crystal]")
+{
+    // The same guard DecoderError and SinkError already have. Adding an enum
+    // value and forgetting its string leaves a load failure reported as
+    // "unknown", which tells an author nothing at exactly the moment the error
+    // path is supposed to be earning its keep.
+    const CrystalError all[] = {
+        CrystalError::kOk,
+        CrystalError::kManifestNotFound,
+        CrystalError::kShaderNotFound,
+        CrystalError::kManifestUnparseable,
+        CrystalError::kManifestIncomplete,
+        CrystalError::kUnknownField,
+        CrystalError::kDuplicateUniform,
+        CrystalError::kProvenanceIncomplete,
+        CrystalError::kLicenceIncompatible,
+    };
+
+    std::set<std::string> seen;
+    for (const CrystalError e : all) {
+        const std::string s = to_string(e);
+        INFO("description: " << s);
+        CHECK_FALSE(s.empty());
+        CHECK(s != "unknown");
+        CHECK(seen.insert(s).second);
+    }
+}
+
+TEST_CASE("a crystal that declares nothing is taken as first-party", "[crystal][provenance]")
+{
+    // Requiring boilerplate on a scratch crystal would tax the authoring loop
+    // for no benefit, so silence is allowed and means "ours".
+    Scratch s;
+    s.write("quiet.frag", kMinimalFrag);
+    s.write("quiet.toml", "name = \"quiet\"\n");
+
+    Crystal     c;
+    std::string detail;
+    REQUIRE(load_crystal(s.stem("quiet"), c, detail) == CrystalError::kOk);
+    CHECK(c.provenance.empty());
+    CHECK(c.provenance.first_party());
+}
+
+TEST_CASE("a fully declared crystal keeps what it declared", "[crystal][provenance]")
+{
+    Scratch s;
+    s.write("ported.frag", kMinimalFrag);
+    s.write("ported.toml",
+            "name = \"ported\"\n"
+            "author = \"Someone Else\"\n"
+            "license = \"MIT\"\n"
+            "source_url = \"https://example.invalid/shader\"\n");
+
+    Crystal     c;
+    std::string detail;
+    REQUIRE(load_crystal(s.stem("ported"), c, detail) == CrystalError::kOk);
+    CHECK(c.provenance.author == "Someone Else");
+    CHECK(c.provenance.license == "MIT");
+    CHECK_FALSE(c.provenance.first_party());
+}
+
+TEST_CASE("a source_url without an author or a licence is rejected", "[crystal][provenance]")
+{
+    // The failure actually worth catching. Saying where a crystal came from
+    // without saying who wrote it or under what terms looks like the question
+    // was answered when it was not.
+    Scratch s;
+    s.write("half.frag", kMinimalFrag);
+    s.write("half.toml",
+            "name = \"half\"\n"
+            "source_url = \"https://www.shadertoy.com/view/whatever\"\n");
+
+    Crystal     c;
+    std::string detail;
+    CHECK(load_crystal(s.stem("half"), c, detail) == CrystalError::kProvenanceIncomplete);
+    CHECK(detail.find("author") != std::string::npos);
+    CHECK(detail.find("license") != std::string::npos);
+}
+
+TEST_CASE("a present-but-empty provenance key is rejected, not ignored", "[crystal][provenance]")
+{
+    // Empty reads as answered. Omitting the key is honest; filling it with ""
+    // is the same mistake as a metric that cannot report failure.
+    Scratch s;
+    s.write("blank.frag", kMinimalFrag);
+    s.write("blank.toml", "name = \"blank\"\nauthor = \"\"\n");
+
+    Crystal     c;
+    std::string detail;
+    CHECK(load_crystal(s.stem("blank"), c, detail) == CrystalError::kManifestIncomplete);
+}
+
+TEST_CASE("a GPL-incompatible licence is refused at load", "[crystal][provenance]")
+{
+    // Shadertoy's default, and the single most likely way a ported shader
+    // becomes unshippable. Caught here it costs a moment; caught after the
+    // crystal has shipped it cannot be retracted from anyone's fork.
+    Scratch s;
+    s.write("nc.frag", kMinimalFrag);
+    s.write("nc.toml",
+            "name = \"nc\"\n"
+            "author = \"Someone Else\"\n"
+            "license = \"CC-BY-NC-SA-3.0\"\n"
+            "source_url = \"https://www.shadertoy.com/view/whatever\"\n");
+
+    Crystal     c;
+    std::string detail;
+    CHECK(load_crystal(s.stem("nc"), c, detail) == CrystalError::kLicenceIncompatible);
+    CHECK(detail.find("CC-BY-NC-SA-3.0") != std::string::npos);
+}
+
+TEST_CASE("the licence check matches SPDX segments, not substrings", "[crystal][provenance]")
+{
+    // The whole risk of a rule like this is refusing something legitimate.
+    // Segment matching is what keeps it narrow.
+    CHECK(licence_is_incompatible("CC-BY-NC-SA-4.0"));
+    CHECK(licence_is_incompatible("CC-BY-NC"));
+    CHECK(licence_is_incompatible("CC-BY-ND-4.0"));
+
+    CHECK_FALSE(licence_is_incompatible("GPL-3.0-or-later"));
+    CHECK_FALSE(licence_is_incompatible("MIT"));
+    CHECK_FALSE(licence_is_incompatible("CC-BY-SA-4.0"));
+    CHECK_FALSE(licence_is_incompatible("CC0-1.0"));
+    CHECK_FALSE(licence_is_incompatible("BSD-3-Clause"));
+
+    // "NC" and "ND" appear inside these and must not fire.
+    CHECK_FALSE(licence_is_incompatible("NCSA"));
+    CHECK_FALSE(licence_is_incompatible("Sendmail"));
+}
+
+TEST_CASE("the shipped reference crystal declares its provenance", "[crystal][provenance]")
+{
+    // The vault must practise what the schema preaches, or the reference crystal
+    // is an example of the thing being warned against.
+    Crystal     c;
+    std::string detail;
+    INFO(detail);
+    REQUIRE(load_crystal(std::string(HOLOCRON_CRYSTALS_DIR) + "/pulse", c, detail) ==
+            CrystalError::kOk);
+
+    CHECK_FALSE(c.provenance.author.empty());
+    CHECK_FALSE(c.provenance.license.empty());
+    CHECK(c.provenance.first_party());
+    CHECK_FALSE(licence_is_incompatible(c.provenance.license));
 }
 
 TEST_CASE("the shipped reference crystal loads", "[crystal][reference]")

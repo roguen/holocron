@@ -7,6 +7,16 @@
 
 name = "pulse"
 
+# Provenance. First-party, so there is no source_url -- a crystal that names no
+# external source is the project's own.
+#
+# A crystal ported from anywhere else MUST set all three, and the loader refuses
+# a partial declaration. Shadertoy's default is CC BY-NC-SA, which cannot ship in
+# a GPL-3.0-or-later vault; the loader rejects NC and ND terms outright rather
+# than recording them and letting the problem go quiet.
+author  = "Roguen Keller"
+license = "GPL-3.0-or-later"
+
 # Each key is a GLSL uniform in pulse.frag. Each value is a field on AudioFrame,
 # spelled exactly as docs/audio-frame.md spells it.
 #
