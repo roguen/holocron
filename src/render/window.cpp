@@ -191,18 +191,29 @@ bool Window::pump()
             impl_->refresh_size();
             break;
         case SDL_EVENT_KEY_DOWN:
-            // `repeat` filtered, not just tidiness: switching crystal recompiles
-            // a shader, and holding an arrow key down would queue one compile per
-            // repeat at the OS repeat rate.
-            if (e.key.repeat) {
-                break;
-            }
             if (e.key.key == SDLK_ESCAPE) {
-                impl_->quit = true;
+                if (!e.key.repeat) {
+                    impl_->quit = true;
+                }
             } else if (e.key.key == SDLK_LEFT) {
-                impl_->keys[static_cast<std::size_t>(Key::kLeft)] = true;
+                // AUTO-REPEAT FILTERED HERE AND ALLOWED BELOW, which is a real
+                // distinction rather than an inconsistency. Left and right switch
+                // crystal, and each switch recompiles a shader -- holding the key
+                // would queue one compile per repeat at the OS repeat rate.
+                if (!e.key.repeat) {
+                    impl_->keys[static_cast<std::size_t>(Key::kLeft)] = true;
+                }
             } else if (e.key.key == SDLK_RIGHT) {
-                impl_->keys[static_cast<std::size_t>(Key::kRight)] = true;
+                if (!e.key.repeat) {
+                    impl_->keys[static_cast<std::size_t>(Key::kRight)] = true;
+                }
+            } else if (e.key.key == SDLK_UP) {
+                // Up and down nudge a number, which is cheap, and sweeping to
+                // find a bracket is exactly what calibration asks for. Repeat is
+                // the feature here.
+                impl_->keys[static_cast<std::size_t>(Key::kUp)] = true;
+            } else if (e.key.key == SDLK_DOWN) {
+                impl_->keys[static_cast<std::size_t>(Key::kDown)] = true;
             }
             break;
         default:

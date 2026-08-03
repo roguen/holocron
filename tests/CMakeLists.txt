@@ -25,6 +25,7 @@ add_executable(holocron_tests
     test_crystal.cpp
     test_crystal_watch.cpp
     test_vault.cpp
+    test_gatekeeper.cpp
 )
 
 # The shipped vault's location, baked in rather than searched for relative to the
@@ -32,6 +33,7 @@ add_executable(holocron_tests
 # reports success for a directory it never opened.
 target_compile_definitions(holocron_tests PRIVATE
     HOLOCRON_CRYSTALS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../crystals"
+    HOLOCRON_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
 target_link_libraries(holocron_tests
@@ -42,6 +44,7 @@ target_link_libraries(holocron_tests
         holocron::sdl_sink
         holocron::wasapi_sink
         holocron::crystal
+        holocron::config
         holocron::warnings
         Catch2::Catch2WithMain
         # The triple-buffer tests spawn a producer and a consumer thread. On
