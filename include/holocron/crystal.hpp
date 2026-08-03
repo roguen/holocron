@@ -57,6 +57,8 @@ enum class CrystalError : std::uint8_t {
     kManifestIncomplete,    // valid TOML, missing something required
     kUnknownField,          // a uniform bound to a name the contract does not have
     kDuplicateUniform,      // the same uniform name bound twice
+    kProvenanceIncomplete,  // says where it came from without saying who or under what
+    kLicenceIncompatible,   // a licence that cannot ship in a GPL-3.0-or-later vault
 };
 
 const char* to_string(CrystalError e);
@@ -68,16 +70,67 @@ struct UniformBinding {
     const Binding* binding;   // what feeds it, from frame_binding.hpp
 };
 
+// WHERE A CRYSTAL CAME FROM, AND WHY THE SCHEMA CARES
+//
+// The mirror image of not vendoring MilkDrop presets, and easier to get wrong
+// because a ported shader feels like your own work.
+//
+// Shadertoy's default licence for user-posted shaders is CC BY-NC-SA -- non-
+// commercial AND share-alike, and incompatible with GPL-3.0-or-later. A crystal
+// that began life as a copied raymarcher drags a non-commercial obligation into
+// the vault, and six months later nothing in the tree records that it did.
+// Retrofitting provenance onto fifty crystals means archaeology through browser
+// history; declaring it costs three lines while the file is being written.
+//
+// So the three keys are RESERVED: claimed by the schema, validated at load, and
+// not available for a crystal to repurpose.
+//
+//     author     = "roguen"
+//     license    = "GPL-3.0-or-later"    SPDX identifier
+//     source_url = "https://..."         required if not first-party
+//
+// All three are optional, because requiring boilerplate on a scratch crystal
+// would tax the authoring loop for no benefit -- a crystal that says nothing is
+// taken as first-party. What is NOT allowed is a PARTIAL declaration: saying
+// where something came from without saying who wrote it or under what terms is
+// worse than silence, because it looks like the question was answered.
+struct Provenance {
+    std::string author;
+    std::string license;      // SPDX identifier. `license`, not `licence` -- SPDX spells it so.
+    std::string source_url;
+
+    // A crystal that names no external source is the project's own.
+    bool first_party() const { return source_url.empty(); }
+
+    // Nothing declared at all, which is the ordinary case for a crystal written
+    // here and is not an error.
+    bool empty() const { return author.empty() && license.empty() && source_url.empty(); }
+};
+
 struct Crystal {
     std::string name;
     std::string fragment_source;   // the .frag, read whole
 
     std::vector<UniformBinding> uniforms;
 
+    Provenance provenance;
+
     // Where it came from, for error messages and hot reload later.
     std::string manifest_path;
     std::string shader_path;
 };
+
+// Is this SPDX identifier one a GPL-3.0-or-later vault cannot ship?
+//
+// Deliberately narrow: it answers for the specific trap this schema exists to
+// catch -- Creative Commons NonCommercial and NoDerivatives terms, which is what
+// Shadertoy and most shader blogs default to -- and says nothing about the long
+// tail of licence compatibility, which is not a question a string comparison can
+// answer and should not pretend to.
+//
+// Matching is on SPDX segments (`-NC-`, `-ND-`), not substrings, so an
+// identifier that merely contains those letters is not caught by accident.
+bool licence_is_incompatible(const std::string& spdx);
 
 // Load `<stem>.toml` and its sibling `<stem>.frag`.
 //
