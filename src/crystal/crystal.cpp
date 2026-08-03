@@ -23,12 +23,42 @@ const char* to_string(CrystalError e)
     case CrystalError::kManifestIncomplete: return "manifest is missing a required key";
     case CrystalError::kUnknownField:       return "uniform bound to an unknown contract field";
     case CrystalError::kDuplicateUniform:   return "the same uniform is bound twice";
-    case CrystalError::kProvenanceIncomplete:
-        return "provenance is partly declared -- source_url needs author and license too";
-    case CrystalError::kLicenceIncompatible:
-        return "licence cannot ship in a GPL-3.0-or-later vault";
     }
     return "unknown";
+}
+
+bool publishable(const Provenance& p, std::string& out_why)
+{
+    out_why.clear();
+
+    // First-party is always publishable. Most crystals declare nothing at all,
+    // and that is the ordinary case rather than an omission.
+    if (p.first_party()) {
+        return true;
+    }
+
+    if (p.author.empty() || p.license.empty()) {
+        out_why = "adapted from " + p.source_url +
+                  " but does not say who wrote it and under what terms.\n"
+                  "A crystal committed to the vault needs all three:\n"
+                  "  author     = \"...\"\n"
+                  "  license    = \"...\"   SPDX identifier\n"
+                  "  source_url = \"...\"";
+        return false;
+    }
+
+    if (licence_is_incompatible(p.license)) {
+        out_why = "is under " + p.license +
+                  ", which a GPL-3.0-or-later repository cannot carry.\n"
+                  "NonCommercial and NoDerivatives terms conflict with the GPL, which grants "
+                  "commercial use and modification.\n"
+                  "This is Shadertoy's default (CC BY-NC-SA). Keep it in a vault of your own "
+                  "instead -- --vault points anywhere, and private use raises no licence "
+                  "question.";
+        return false;
+    }
+
+    return true;
 }
 
 bool licence_is_incompatible(const std::string& spdx)
@@ -128,8 +158,10 @@ CrystalError load_crystal(const std::string& stem_path, Crystal& out, std::strin
 
     // -- provenance ----------------------------------------------------------
     //
-    // See the Provenance comment in crystal.hpp for why these three are reserved
-    // rather than left to convention.
+    // Read and stored, never judged. Nothing in this block can fail a load: a
+    // crystal on your own disk is yours to draw whatever it says here, and the
+    // publishing rule lives in publishable() where the test suite applies it to
+    // the committed vault. See the Provenance comment in crystal.hpp.
     {
         struct Key {
             const char*  name;
@@ -151,40 +183,10 @@ CrystalError load_crystal(const std::string& stem_path, Crystal& out, std::strin
                 out_detail = manifest_path + ": `" + k.name + "` must be a string";
                 return CrystalError::kManifestIncomplete;
             }
+            // An empty value is taken as absent rather than rejected. It means
+            // the same thing, and there is nothing here worth failing a load
+            // over.
             *k.out = s->get();
-            if (k.out->empty()) {
-                // Present-but-empty is worse than absent: it reads as answered.
-                out_detail = manifest_path + ": `" + k.name +
-                             "` is present but empty -- omit it entirely, or fill it in";
-                return CrystalError::kManifestIncomplete;
-            }
-        }
-
-        // A partial declaration is the failure worth catching. Saying where a
-        // crystal came from without saying who wrote it or under what terms
-        // looks like the question was answered when it was not.
-        if (!out.provenance.source_url.empty() &&
-            (out.provenance.author.empty() || out.provenance.license.empty())) {
-            out_detail = manifest_path + ": `source_url` is set, so `author` and `license` are "
-                                         "required.\nA crystal from somewhere else must say who "
-                                         "wrote it and under what terms:\n"
-                                         "  author     = \"...\"\n"
-                                         "  license    = \"...\"   SPDX identifier\n"
-                                         "  source_url = \"...\"\n";
-            return CrystalError::kProvenanceIncomplete;
-        }
-
-        if (!out.provenance.license.empty() && licence_is_incompatible(out.provenance.license)) {
-            // The whole reason the licence is collected rather than merely
-            // recorded. Caught here it costs a moment; caught after the crystal
-            // has shipped it cannot be retracted from anyone's fork.
-            out_detail = manifest_path + ": `license` is `" + out.provenance.license +
-                         "`, which cannot ship in a GPL-3.0-or-later vault.\n"
-                         "NonCommercial and NoDerivatives terms are incompatible with the GPL, "
-                         "which grants commercial use and modification.\n"
-                         "This is Shadertoy's default (CC BY-NC-SA) and the most common way a "
-                         "ported shader becomes unshippable.";
-            return CrystalError::kLicenceIncompatible;
         }
     }
 
