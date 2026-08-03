@@ -23,8 +23,31 @@ const char* to_string(CrystalError e)
     case CrystalError::kManifestIncomplete: return "manifest is missing a required key";
     case CrystalError::kUnknownField:       return "uniform bound to an unknown contract field";
     case CrystalError::kDuplicateUniform:   return "the same uniform is bound twice";
+    case CrystalError::kProvenanceIncomplete:
+        return "provenance is partly declared -- source_url needs author and license too";
+    case CrystalError::kLicenceIncompatible:
+        return "licence cannot ship in a GPL-3.0-or-later vault";
     }
     return "unknown";
+}
+
+bool licence_is_incompatible(const std::string& spdx)
+{
+    // Segment matching, not substring. SPDX identifiers are hyphen-separated, so
+    // padding both ends lets `-NC-` match "CC-BY-NC-SA-4.0" and "CC-BY-NC" alike
+    // without a bare substring search firing on some future identifier that
+    // merely contains the letters.
+    const std::string padded = "-" + spdx + "-";
+
+    // NonCommercial and NoDerivatives. Both are incompatible with GPL-3.0 --
+    // NC because the GPL grants commercial use, ND because it grants
+    // modification -- and between them they cover Shadertoy's default and
+    // essentially every shader posted with a Creative Commons badge.
+    //
+    // A bare find("NC") would reject NCSA, which is the University of Illinois
+    // licence and perfectly GPL-compatible. Padding both ends and matching on
+    // segments is what keeps this narrow enough to be safe.
+    return padded.find("-NC-") != std::string::npos || padded.find("-ND-") != std::string::npos;
 }
 
 std::string binding_vocabulary()
@@ -101,6 +124,68 @@ CrystalError load_crystal(const std::string& stem_path, Crystal& out, std::strin
     if (out.name.empty()) {
         out_detail = manifest_path + ": `name` must not be empty";
         return CrystalError::kManifestIncomplete;
+    }
+
+    // -- provenance ----------------------------------------------------------
+    //
+    // See the Provenance comment in crystal.hpp for why these three are reserved
+    // rather than left to convention.
+    {
+        struct Key {
+            const char*  name;
+            std::string* out;
+        };
+        const Key keys[] = {
+            {"author", &out.provenance.author},
+            {"license", &out.provenance.license},
+            {"source_url", &out.provenance.source_url},
+        };
+
+        for (const Key& k : keys) {
+            const auto node = tbl[k.name];
+            if (!node) {
+                continue;
+            }
+            const auto* s = node.as_string();
+            if (s == nullptr) {
+                out_detail = manifest_path + ": `" + k.name + "` must be a string";
+                return CrystalError::kManifestIncomplete;
+            }
+            *k.out = s->get();
+            if (k.out->empty()) {
+                // Present-but-empty is worse than absent: it reads as answered.
+                out_detail = manifest_path + ": `" + k.name +
+                             "` is present but empty -- omit it entirely, or fill it in";
+                return CrystalError::kManifestIncomplete;
+            }
+        }
+
+        // A partial declaration is the failure worth catching. Saying where a
+        // crystal came from without saying who wrote it or under what terms
+        // looks like the question was answered when it was not.
+        if (!out.provenance.source_url.empty() &&
+            (out.provenance.author.empty() || out.provenance.license.empty())) {
+            out_detail = manifest_path + ": `source_url` is set, so `author` and `license` are "
+                                         "required.\nA crystal from somewhere else must say who "
+                                         "wrote it and under what terms:\n"
+                                         "  author     = \"...\"\n"
+                                         "  license    = \"...\"   SPDX identifier\n"
+                                         "  source_url = \"...\"\n";
+            return CrystalError::kProvenanceIncomplete;
+        }
+
+        if (!out.provenance.license.empty() && licence_is_incompatible(out.provenance.license)) {
+            // The whole reason the licence is collected rather than merely
+            // recorded. Caught here it costs a moment; caught after the crystal
+            // has shipped it cannot be retracted from anyone's fork.
+            out_detail = manifest_path + ": `license` is `" + out.provenance.license +
+                         "`, which cannot ship in a GPL-3.0-or-later vault.\n"
+                         "NonCommercial and NoDerivatives terms are incompatible with the GPL, "
+                         "which grants commercial use and modification.\n"
+                         "This is Shadertoy's default (CC BY-NC-SA) and the most common way a "
+                         "ported shader becomes unshippable.";
+            return CrystalError::kLicenceIncompatible;
+        }
     }
 
     // -- the shader ----------------------------------------------------------

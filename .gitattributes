@@ -47,7 +47,6 @@ CMakePresets.json       text
 *.yaml                  text
 *.md                    text diff=markdown
 *.txt                   text
-*.toml                  text
 .clang-format           text
 .clang-tidy             text
 .editorconfig           text
@@ -66,6 +65,24 @@ CMakePresets.json       text
 # produce the same key on the Windows target and on Linux CI. Both halves are pinned --
 # pinning only the shader would still let an identical crystal hash differently
 # across platforms.
+#
+# THE MANIFEST HALF IS PINNED BY EXTENSION, NOT BY PATH, AND THAT IS THE FIX
+# FOR A BUG THIS FILE ALREADY HAD.
+#
+# It used to read `vault/**/*.toml`. There is no vault/ directory -- crystals
+# live in crystals/ -- so the rule matched nothing, and manifests fell through to
+# the `* text=auto` baseline while the shaders beside them were correctly pinned.
+# Exactly the split this comment warns against, live in the tree for months.
+#
+# CI could not have caught it: the hygiene job checks that committed files match
+# their attributes, and a rule matching no files is vacuously satisfied. Nor was
+# it visible in a diff -- the committed blob was already LF via text=auto; it was
+# the WORKING TREE that differed, CRLF on Windows and LF on Linux, which is
+# precisely where a cache would read it.
+#
+# Naming an extension rather than a directory means the rule cannot drift out of
+# step with the layout again, which is how it broke the first time. Nothing in
+# this project wants a .toml with CRLF.
 # ---------------------------------------------------------------------------
 
 *.sh                    text eol=lf
@@ -83,7 +100,7 @@ Makefile                text eol=lf
 *.tese                  text eol=lf
 *.glsl                  text eol=lf
 *.inc                   text eol=lf
-vault/**/*.toml         text eol=lf
+*.toml                  text eol=lf
 
 
 # ---------------------------------------------------------------------------
