@@ -105,14 +105,34 @@ before trusting an analysis change.
 ### Building
 
 ```bash
+scripts\build.cmd
+```
+
+That is the whole thing from a clean shell — it finds Visual Studio, CMake,
+Ninja and vcpkg, applies the ordering below, then configures, builds and runs
+`ctest`. `scripts\build.cmd configure` forces a reconfigure; `scripts\build.cmd
+build` skips the tests. Point `HOLOCRON_VCPKG_ROOT` at your vcpkg if it is not
+in `%USERPROFILE%\vcpkg`.
+
+Underneath it is:
+
+```bash
 cmake --preset windows && cmake --build --preset windows && ctest --preset windows
 ```
 
-Needs `VCPKG_ROOT` set and an MSVC environment. **`vcvars64.bat` overwrites
-`VCPKG_ROOT`** with Visual Studio's bundled vcpkg — set it *after* calling
-vcvars, or the manifest resolves against the wrong tree. Ninja must be on `PATH`
-before vcvars runs; appending to `%PATH%` afterwards in the same `cmd` line
-expands the *pre*-vcvars value and wipes the compiler paths.
+Needs `VCPKG_ROOT` set and an MSVC environment, and **the order of the three
+things around it is not free**. Each of these has cost a session at least once,
+which is why the script exists rather than the instructions alone:
+
+- **`vcvars64.bat` overwrites `VCPKG_ROOT`** with Visual Studio's bundled vcpkg
+  — set it *after* calling vcvars, or the manifest resolves against the wrong
+  tree.
+- **Ninja and CMake must be on `PATH` before vcvars runs.** Appending to
+  `%PATH%` afterwards in the same `cmd` line expands the *pre*-vcvars value and
+  wipes the compiler paths back out.
+- **Ninja is inside the Build Tools installation**, not on `PATH`, and its path
+  under `CommonExtensions` has moved between VS versions — search for it rather
+  than hardcoding it.
 
 | | Blocker | State |
 |---|---|---|
