@@ -23,6 +23,7 @@ add_executable(holocron_tests
     test_frame_history.cpp
     test_frame_binding.cpp
     test_crystal.cpp
+    test_crystal_watch.cpp
 )
 
 target_link_libraries(holocron_tests

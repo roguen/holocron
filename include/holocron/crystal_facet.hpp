@@ -64,6 +64,16 @@ public:
     // removed them as unused. Zero on a crystal whose GLSL and manifest agree.
     std::size_t unused_uniforms() const;
 
+    // The value u_time would be given right now, and a way to set it.
+    //
+    // These exist for hot reload, which builds a SECOND facet and swaps it in on
+    // a successful compile. Without carrying the clock across, every save would
+    // restart u_time at zero -- so anything with slow motion in it would jump
+    // back to the beginning at precisely the moment the author is trying to
+    // judge that motion.
+    float elapsed() const;
+    void  set_elapsed(float seconds);
+
     void draw(const AudioFrame& frame, int width, int height);
 
 private:
