@@ -46,12 +46,25 @@ hot reload and the vault all exist and are tested. The undecided part is the
 should inherit from the debug facet, which is an instrument panel. That call is
 the owner's and should not be made from a screenshot.
 
-One number is still unmeasured and deliberately so. `--trim-ms` compensates for
-latency *downstream* of the device clock — the DAC, the HDMI link, the Onkyo's
-own processing — and defaults to **zero**, which means "no trim applied", not
-"no latency exists". §1 and D-004 treat it as a constant measured once by hand;
-`gatekeeper.toml` will own it. Until someone measures it against the real rack,
-the tap is correct to the device clock and no further.
+**`--trim-ms` has now been measured on the rack, and the answer is zero.**
+Verified 2026-08-03 against a percussive track through WASAPI exclusive into the
+Onkyo over HDMI, using a crystal that flashes the whole field on onsets.
+
+**Bracketed, not guessed** — both `+40` and `-40` were judged worse than `0`,
+which is the step that separates a measurement from the first value anyone tried.
+It means "under roughly 20 ms", about as fine as judging a flash against a drum
+by eye can resolve. The reason it lands near zero is that **the trim is a
+difference, not a latency**:
+
+```
+trim = audio latency after the device clock  -  display latency
+```
+
+The judgement is made watching a screen with input lag of its own, pushing the
+opposite way to the DAC, the HDMI link and the receiver's processing. They
+roughly cancel on this rack. **The value therefore belongs to the whole rack and
+not to the receiver** — changing the display, or taking the Onkyo out of a direct
+mode into one doing real processing, invalidates it. Re-measure after either.
 
 **Exclusive mode needs BOTH checkboxes, and the second one is not obvious.**
 *Sound → Playback → the endpoint → Properties → Advanced* has two: "Allow
