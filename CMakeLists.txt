@@ -198,6 +198,7 @@ find_package(tomlplusplus CONFIG REQUIRED)
 add_library(holocron_crystal STATIC
     src/crystal/crystal.cpp
     src/crystal/crystal_watch.cpp
+    src/crystal/vault.cpp
 )
 add_library(holocron::crystal ALIAS holocron_crystal)
 
