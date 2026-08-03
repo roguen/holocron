@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "holocron",
-  "version-string": "0.1.12",
+  "version-string": "0.1.13",
   "description": "GPU music visualization engine that is also the music player",
   "homepage": "https://github.com/roguen/holocron",
   "license": "GPL-3.0-or-later",
