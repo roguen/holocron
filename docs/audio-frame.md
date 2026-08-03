@@ -27,6 +27,18 @@ redefining "bass" — there is only a vault of crystals that all quietly look wr
   `AudioSink` and trimmed by hand in `gatekeeper.toml`. The sink is the platform
   boundary — WASAPI on the target (D-022), SDL3 for a portable stand-in — and the
   tap does not know which it is.
+
+  The device clock gets the tap right up to its own boundary; measured on the
+  rack, placing by position rather than newest-wins corrects **51 ms**. What it
+  cannot see is anything after the sink. The hand trim covers that, and it is a
+  **difference rather than a latency**: `trim = audio latency after the device
+  clock − display latency`, because the judgement is made by watching a screen
+  that has input lag of its own pushing the other way. So the value belongs to a
+  whole rack and not to the receiver, and changing the display invalidates it.
+
+  Measured zero on the rack (2026-08-03) — the two cancel within the ~20 ms a
+  by-eye judgement can resolve. Zero is therefore a result, not an unexamined
+  default, but it means "under roughly 20 ms" rather than "exactly nothing".
 - Publication is a **lock-free triple buffer**. The analysis thread writes into a
   spare slot and atomically swaps; the render thread takes the newest complete
   frame and never blocks, never tears, and never waits on audio.
