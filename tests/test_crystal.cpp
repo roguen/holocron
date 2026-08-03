@@ -224,8 +224,6 @@ TEST_CASE("every CrystalError has a distinct description", "[crystal]")
         CrystalError::kManifestIncomplete,
         CrystalError::kUnknownField,
         CrystalError::kDuplicateUniform,
-        CrystalError::kProvenanceIncomplete,
-        CrystalError::kLicenceIncompatible,
     };
 
     std::set<std::string> seen;
@@ -271,54 +269,70 @@ TEST_CASE("a fully declared crystal keeps what it declared", "[crystal][provenan
     CHECK_FALSE(c.provenance.first_party());
 }
 
-TEST_CASE("a source_url without an author or a licence is rejected", "[crystal][provenance]")
+TEST_CASE("nothing about provenance can stop a crystal loading", "[crystal][provenance]")
 {
-    // The failure actually worth catching. Saying where a crystal came from
-    // without saying who wrote it or under what terms looks like the question
-    // was answered when it was not.
+    // THE POINT OF THE WHOLE ARRANGEMENT. Drawing a crystal on your own machine
+    // is private use and raises no licence question, so the loader has no
+    // opinion about any of this. A loader that refused would be policing
+    // something nobody has a claim over, and would break hot reload for exactly
+    // the person doing the authoring.
     Scratch s;
-    s.write("half.frag", kMinimalFrag);
-    s.write("half.toml",
-            "name = \"half\"\n"
-            "source_url = \"https://www.shadertoy.com/view/whatever\"\n");
 
-    Crystal     c;
-    std::string detail;
-    CHECK(load_crystal(s.stem("half"), c, detail) == CrystalError::kProvenanceIncomplete);
-    CHECK(detail.find("author") != std::string::npos);
-    CHECK(detail.find("license") != std::string::npos);
-}
-
-TEST_CASE("a present-but-empty provenance key is rejected, not ignored", "[crystal][provenance]")
-{
-    // Empty reads as answered. Omitting the key is honest; filling it with ""
-    // is the same mistake as a metric that cannot report failure.
-    Scratch s;
-    s.write("blank.frag", kMinimalFrag);
-    s.write("blank.toml", "name = \"blank\"\nauthor = \"\"\n");
-
-    Crystal     c;
-    std::string detail;
-    CHECK(load_crystal(s.stem("blank"), c, detail) == CrystalError::kManifestIncomplete);
-}
-
-TEST_CASE("a GPL-incompatible licence is refused at load", "[crystal][provenance]")
-{
-    // Shadertoy's default, and the single most likely way a ported shader
-    // becomes unshippable. Caught here it costs a moment; caught after the
-    // crystal has shipped it cannot be retracted from anyone's fork.
-    Scratch s;
-    s.write("nc.frag", kMinimalFrag);
-    s.write("nc.toml",
-            "name = \"nc\"\n"
+    s.write("a.frag", kMinimalFrag);
+    s.write("a.toml",
+            "name = \"a\"\n"
             "author = \"Someone Else\"\n"
             "license = \"CC-BY-NC-SA-3.0\"\n"
             "source_url = \"https://www.shadertoy.com/view/whatever\"\n");
 
-    Crystal     c;
+    s.write("b.frag", kMinimalFrag);
+    s.write("b.toml",
+            "name = \"b\"\n"
+            "source_url = \"https://www.shadertoy.com/view/whatever\"\n");   // partial
+
+    s.write("c.frag", kMinimalFrag);
+    s.write("c.toml", "name = \"c\"\nauthor = \"\"\n");                     // empty value
+
+    Crystal     x;
     std::string detail;
-    CHECK(load_crystal(s.stem("nc"), c, detail) == CrystalError::kLicenceIncompatible);
-    CHECK(detail.find("CC-BY-NC-SA-3.0") != std::string::npos);
+    INFO(detail);
+    CHECK(load_crystal(s.stem("a"), x, detail) == CrystalError::kOk);
+    CHECK(load_crystal(s.stem("b"), x, detail) == CrystalError::kOk);
+    CHECK(load_crystal(s.stem("c"), x, detail) == CrystalError::kOk);
+
+    // An empty value means the same thing as an absent one.
+    CHECK(x.provenance.author.empty());
+}
+
+TEST_CASE("publishing is where the licence rule lives", "[crystal][provenance]")
+{
+    std::string why;
+
+    SECTION("first-party is always publishable, declared or not")
+    {
+        CHECK(publishable(Provenance{}, why));
+        CHECK(why.empty());
+        CHECK(publishable(Provenance{"Roguen Keller", "GPL-3.0-or-later", ""}, why));
+    }
+    SECTION("adapted from elsewhere must say who and under what")
+    {
+        CHECK_FALSE(publishable(Provenance{"", "", "https://example.invalid/s"}, why));
+        CHECK(why.find("author") != std::string::npos);
+        CHECK(why.find("license") != std::string::npos);
+    }
+    SECTION("adapted under compatible terms is fine")
+    {
+        CHECK(publishable(Provenance{"Someone Else", "MIT", "https://example.invalid/s"}, why));
+    }
+    SECTION("NonCommercial cannot be carried by a GPL repository")
+    {
+        CHECK_FALSE(publishable(
+            Provenance{"Someone Else", "CC-BY-NC-SA-3.0", "https://www.shadertoy.com/view/x"},
+            why));
+        CHECK(why.find("CC-BY-NC-SA-3.0") != std::string::npos);
+        // And it says what to do instead, rather than only refusing.
+        CHECK(why.find("vault of your own") != std::string::npos);
+    }
 }
 
 TEST_CASE("the licence check matches SPDX segments, not substrings", "[crystal][provenance]")
@@ -342,8 +356,9 @@ TEST_CASE("the licence check matches SPDX segments, not substrings", "[crystal][
 
 TEST_CASE("the shipped reference crystal declares its provenance", "[crystal][provenance]")
 {
-    // The vault must practise what the schema preaches, or the reference crystal
-    // is an example of the thing being warned against.
+    // Not required of it -- first-party crystals are publishable saying nothing.
+    // It declares anyway because it is the file people copy when starting one of
+    // their own, and it should show the keys being used rather than absent.
     Crystal     c;
     std::string detail;
     INFO(detail);
@@ -353,7 +368,6 @@ TEST_CASE("the shipped reference crystal declares its provenance", "[crystal][pr
     CHECK_FALSE(c.provenance.author.empty());
     CHECK_FALSE(c.provenance.license.empty());
     CHECK(c.provenance.first_party());
-    CHECK_FALSE(licence_is_incompatible(c.provenance.license));
 }
 
 TEST_CASE("the shipped reference crystal loads", "[crystal][reference]")

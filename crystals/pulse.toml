@@ -7,13 +7,17 @@
 
 name = "pulse"
 
-# Provenance. First-party, so there is no source_url -- a crystal that names no
-# external source is the project's own.
+# Provenance. First-party, so there is no source_url.
 #
-# A crystal ported from anywhere else MUST set all three, and the loader refuses
-# a partial declaration. Shadertoy's default is CC BY-NC-SA, which cannot ship in
-# a GPL-3.0-or-later vault; the loader rejects NC and ND terms outright rather
-# than recording them and letting the problem go quiet.
+# Not required -- a crystal that declares nothing is taken as the project's own,
+# and the loader never refuses anything over this. It is filled in here because
+# this is the file people copy when starting a crystal of their own, so the keys
+# should be visible in use.
+#
+# The rule these serve applies only to crystals COMMITTED TO THIS DIRECTORY,
+# which is public and therefore published. A crystal in a vault of your own is
+# private use and raises no licence question at all -- adapt whatever you like
+# and point --vault at it.
 author  = "Roguen Keller"
 license = "GPL-3.0-or-later"
 
