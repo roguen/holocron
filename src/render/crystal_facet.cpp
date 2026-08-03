@@ -160,6 +160,19 @@ bool CrystalFacet::ready() const { return impl_->program != 0 && impl_->vao != 0
 
 std::size_t CrystalFacet::unused_uniforms() const { return impl_->unused; }
 
+float CrystalFacet::elapsed() const
+{
+    const auto now = std::chrono::steady_clock::now();
+    const auto ms  = std::chrono::duration_cast<std::chrono::milliseconds>(now - impl_->start);
+    return static_cast<float>(ms.count()) / 1000.0f;
+}
+
+void CrystalFacet::set_elapsed(float seconds)
+{
+    const auto ms = std::chrono::milliseconds(static_cast<std::int64_t>(seconds * 1000.0f));
+    impl_->start  = std::chrono::steady_clock::now() - ms;
+}
+
 void CrystalFacet::draw(const AudioFrame& frame, int width, int height)
 {
     if (!ready() || width <= 0 || height <= 0) {
@@ -173,9 +186,7 @@ void CrystalFacet::draw(const AudioFrame& frame, int width, int height)
         glUniform2f(impl_->u_resolution, static_cast<float>(width), static_cast<float>(height));
     }
     if (impl_->u_time >= 0) {
-        const auto now = std::chrono::steady_clock::now();
-        const auto ms  = std::chrono::duration_cast<std::chrono::milliseconds>(now - impl_->start);
-        glUniform1f(impl_->u_time, static_cast<float>(ms.count()) / 1000.0f);
+        glUniform1f(impl_->u_time, elapsed());
     }
 
     for (const Impl::Bound& b : impl_->bound) {

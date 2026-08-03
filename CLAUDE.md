@@ -29,6 +29,7 @@ tested:
 | Sink | `WasapiSink` — **exclusive mode verified bit-perfect on the rack**, 160-frame period, plus a shared-mode fallback. `SdlSink` behind it, exercised headless in CI through SDL's dummy driver. Chosen at runtime through the interface. |
 | Render | `Window` (GL 4.5 core, KHR_debug) and `DebugFacet`, drawing every field as bars and markers. |
 | Crystals | **M2 has started.** A crystal is `<stem>.frag` + `<stem>.toml`; the manifest binds uniforms to `AudioFrame` fields BY NAME, validated at load against `frame_binding.hpp`. `CrystalFacet` compiles and draws it. `crystals/pulse` is the reference and a test loads it so it cannot rot. |
+| Hot reload | `CrystalWatch` — saving the `.frag` or `.toml` rebuilds it in place, on by default with `--crystal`. A shader that fails to compile is reported and the running one keeps drawing; `u_time` carries across. |
 | Executables | `holocron` — the player. `holocron-analyze` — the offline harness. |
 
 **All four M1 blockers were resolved on 2026-08-01.** What remains for M1:
@@ -37,9 +38,9 @@ tested:
 bit-perfect, draws, and what it draws is what you are hearing — and it now draws
 a *crystal*, loaded from disk and bound to the contract by name.
 
-**What remains in M2 is judgement, not plumbing.** The format, loader and
-renderer exist and are tested. Hot reload and a multi-crystal vault are
-straightforward and unbuilt. The undecided part is the **visual language**:
+**What remains in M2 is judgement, not plumbing.** The format, loader, renderer
+and hot reload exist and are tested. A multi-crystal vault is straightforward and
+unbuilt. The undecided part is the **visual language**:
 `crystals/pulse` is deliberately honest rather than pretty, and nothing in M2
 should inherit from the debug facet, which is an instrument panel. That call is
 the owner's and should not be made from a screenshot.
