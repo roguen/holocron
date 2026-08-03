@@ -200,6 +200,25 @@ add_library(holocron_crystal STATIC
     src/crystal/crystal_watch.cpp
     src/crystal/vault.cpp
 )
+
+# ---------------------------------------------------------------------------
+# Config
+#
+# gatekeeper.toml. Separate from holocron_crystal despite both reaching for
+# toml++: a crystal manifest and the app config answer to different schemas and
+# have no reason to share a translation unit.
+# ---------------------------------------------------------------------------
+
+add_library(holocron_config STATIC
+    src/config/gatekeeper.cpp
+)
+add_library(holocron::config ALIAS holocron_config)
+
+target_link_libraries(holocron_config
+    PUBLIC  holocron::contract
+    PRIVATE holocron::warnings
+            tomlplusplus::tomlplusplus
+)
 add_library(holocron::crystal ALIAS holocron_crystal)
 
 target_link_libraries(holocron_crystal

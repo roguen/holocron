@@ -31,6 +31,8 @@ tested:
 | Crystals | **M2 has started.** A crystal is `<stem>.frag` + `<stem>.toml`; the manifest binds uniforms to `AudioFrame` fields BY NAME, validated at load against `frame_binding.hpp`. `CrystalFacet` compiles and draws it. `crystals/pulse` is the reference and a test loads it so it cannot rot. |
 | Hot reload | `CrystalWatch` — saving the `.frag` or `.toml` rebuilds it in place, on by default with `--crystal`. A shader that fails to compile is reported and the running one keeps drawing; `u_time` carries across. |
 | Vault | `scan_vault` — `--vault DIR` loads every crystal in a directory, arrow keys move between them. Ordered **by manifest name**, because `directory_iterator` order differs between Windows and Linux. One broken crystal is reported and skipped, never fatal. `--crystal` is a vault of one, so both share a single path. |
+| Config | `gatekeeper.toml`, read at startup. Audio backend, `trim_ms`, window size, vsync, GL debug and the vault path are **live**; the rest of the example file is still specification. Flags beat the file, the file beats the defaults. |
+| Calibration | `holocron <track> --calibrate` draws `instruments/sync` and moves `trim_ms` with the arrow keys **while the track plays**, then prints the lines to paste into `gatekeeper.toml`. |
 | Executables | `holocron` — the player. `holocron-analyze` — the offline harness. |
 
 **All four M1 blockers were resolved on 2026-08-01.** What remains for M1:
@@ -49,6 +51,9 @@ the owner's and should not be made from a screenshot.
 **`--trim-ms` has now been measured on the rack, and the answer is zero.**
 Verified 2026-08-03 against a percussive track through WASAPI exclusive into the
 Onkyo over HDMI, using a crystal that flashes the whole field on onsets.
+
+**Re-measure with `holocron <track> --calibrate`**, which sweeps the value live
+rather than making you restart the player per candidate.
 
 **Bracketed, not guessed** — both `+40` and `-40` were judged worse than `0`,
 which is the step that separates a measurement from the first value anyone tried.

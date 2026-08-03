@@ -67,6 +67,8 @@ constexpr const char* to_string(WindowError e)
 enum class Key : std::uint8_t {
     kLeft = 0,
     kRight,
+    kUp,
+    kDown,
 
     kCount
 };

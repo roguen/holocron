@@ -1,0 +1,14 @@
+# The calibration instrument, loaded by `holocron --calibrate`.
+#
+# It lives in instruments/ rather than in crystals/ on purpose. crystals/ is the
+# VAULT -- the things you actually want to look at, cycled with the arrow keys --
+# and putting a measuring tool in it would mean hitting a strobing white screen
+# every time you paged past. Different directory, different job.
+name = "sync"
+
+author  = "Roguen Keller"
+license = "GPL-3.0-or-later"
+
+[uniforms]
+u_onset = "onset_strength"
+u_beat  = "beat_phase"
