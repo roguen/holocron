@@ -49,6 +49,7 @@
 #include <holocron/audio_frame.hpp>
 #include <holocron/crystal.hpp>
 #include <holocron/crystal_facet.hpp>
+#include <holocron/crystal_watch.hpp>
 #include <holocron/debug_facet.hpp>
 #include <holocron/decoder.hpp>
 #include <holocron/frame_history.hpp>
@@ -63,6 +64,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -92,6 +94,11 @@ struct Options {
     // applied", not "no latency exists".
     double      trim_ms  = 0.0;
     bool        no_audio = false;
+    // Hot reload is ON by default whenever a crystal is drawn, because the
+    // authoring loop is what it exists for and a flag you have to remember is a
+    // flag you forget -- leaving you editing a file the player is ignoring. The
+    // negative form matches --no-audio.
+    bool        no_watch = false;
     bool        help     = false;
 };
 
@@ -121,6 +128,8 @@ Options parse(int argc, char** argv)
             }
         } else if (std::strcmp(a, "--no-audio") == 0) {
             o.no_audio = true;
+        } else if (std::strcmp(a, "--no-watch") == 0) {
+            o.no_watch = true;
         } else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
             o.help = true;
         } else if (a[0] != '-' && o.path == nullptr) {
@@ -144,6 +153,10 @@ void usage()
         "  --trim-ms N    shift the analysis tap N ms earlier, to compensate for\n"
         "                 latency downstream of the device clock (DAC, HDMI,\n"
         "                 receiver). Positive means the picture waits longer\n"
+        "  --no-watch     do not reload the crystal when its files change. With\n"
+        "                 --crystal, saving the .frag or .toml rebuilds it in\n"
+        "                 place by default; a shader that fails to compile is\n"
+        "                 reported and the running one keeps drawing\n"
         "  --no-audio     decode and draw, but open no audio device\n"
         "  --frames N     render exactly N frames then exit\n"
         "  --shot PATH    write the last rendered frame to PATH as a BMP\n"
@@ -155,6 +168,62 @@ void usage()
 }
 
 // ---------------------------------------------------------------------------
+
+// What was loaded and how much of it the shader actually uses.
+//
+// The unused count is worth printing every time rather than only at startup: it
+// is usually an author trying something out, but the other cause is a uniform
+// misspelled in the .frag, which is indistinguishable from the crystal simply
+// ignoring the audio -- and during a reload loop that is exactly the mistake
+// being made and unmade.
+void describe(const char* verb, const Crystal& crystal, const CrystalFacet& facet)
+{
+    std::printf("holocron: %s \"%s\" from %s, %zu uniforms bound\n", verb, crystal.name.c_str(),
+                crystal.manifest_path.c_str(), crystal.uniforms.size());
+    if (facet.unused_uniforms() > 0) {
+        std::printf("holocron: %zu bound uniform(s) unused by the shader "
+                    "(removed by the compiler, or misspelled in the .frag)\n",
+                    facet.unused_uniforms());
+    }
+}
+
+// Rebuild a crystal from disk into a NEW facet, and swap only if it worked.
+//
+// A shader is broken for most of the time an author is editing it. Tearing the
+// live program down before knowing its replacement compiles would blank the
+// screen on every stray semicolon, which would make the reload loop worse than
+// relaunching. So the new facet is built beside the old one and only replaces it
+// on success; on failure the driver's own message is printed -- far more useful
+// than anything invented here -- and what is on screen is left alone.
+//
+// The clock is carried across so u_time does not restart. See
+// CrystalFacet::set_elapsed.
+void reload_crystal(const char* stem, std::unique_ptr<CrystalFacet>& live)
+{
+    Crystal            crystal;
+    std::string        detail;
+    const CrystalError err = load_crystal(stem, crystal, detail);
+    if (err != CrystalError::kOk) {
+        std::fprintf(stderr, "holocron: reload failed -- %s\n%s\nholocron: still drawing the "
+                             "previous crystal\n",
+                     to_string(err), detail.c_str());
+        return;
+    }
+
+    auto        next = std::make_unique<CrystalFacet>();
+    std::string log;
+    if (!next->init(crystal, log)) {
+        std::fprintf(stderr, "holocron: reload failed -- crystal did not build\n%s\n"
+                             "holocron: still drawing the previous crystal\n",
+                     log.c_str());
+        return;
+    }
+
+    next->set_elapsed(live->elapsed());
+    live = std::move(next);   // the old facet's GL objects go here, not before
+
+    describe("reloaded", crystal, *live);
+}
 
 // Two seconds of history at 93.75 Hz, rounded to a power of two. Far more than
 // the lead ever is; the cost is 128 * sizeof(AudioFrame), about 1.4 MB, which is
@@ -447,9 +516,12 @@ int main(int argc, char** argv)
                 audio_started ? sink->period_frames() : 0u,
                 audio_started ? (bit_perfect ? ", BIT-PERFECT" : ", not bit-perfect") : "");
 
-    DebugFacet   facet;
-    CrystalFacet crystal_facet;
-    bool         drawing_crystal = false;
+    DebugFacet facet;
+    // Held by pointer so a hot reload can swap a freshly compiled facet in
+    // without the live one having been torn down first. See reload_crystal.
+    auto                        crystal_facet   = std::make_unique<CrystalFacet>();
+    bool                        drawing_crystal = false;
+    std::optional<CrystalWatch> watch;
 
     if (opt.crystal != nullptr) {
         Crystal     crystal;
@@ -468,7 +540,7 @@ int main(int argc, char** argv)
         }
 
         std::string log;
-        if (!crystal_facet.init(crystal, log)) {
+        if (!crystal_facet->init(crystal, log)) {
             std::fprintf(stderr, "holocron: crystal failed to build\n%s\n", log.c_str());
             window.close();
             if (audio_started) {
@@ -478,15 +550,13 @@ int main(int argc, char** argv)
         }
 
         drawing_crystal = true;
-        std::printf("holocron: crystal \"%s\" from %s, %zu uniforms bound\n",
-                    crystal.name.c_str(), crystal.manifest_path.c_str(),
-                    crystal.uniforms.size());
-        if (crystal_facet.unused_uniforms() > 0) {
-            // Usually harmless, occasionally a misspelled uniform in the .frag,
-            // which otherwise looks exactly like the crystal ignoring the audio.
-            std::printf("holocron: %zu bound uniform(s) unused by the shader "
-                        "(removed by the compiler, or misspelled in the .frag)\n",
-                        crystal_facet.unused_uniforms());
+        describe("crystal", crystal, *crystal_facet);
+
+        if (!opt.no_watch) {
+            watch.emplace(crystal.manifest_path, crystal.shader_path,
+                          std::chrono::steady_clock::now());
+            std::printf("holocron: watching %s and %s -- save either to reload\n",
+                        crystal.manifest_path.c_str(), crystal.shader_path.c_str());
         }
     } else if (!facet.init()) {
         std::fprintf(stderr, "holocron: the debug facet failed to initialise\n");
@@ -580,7 +650,13 @@ int main(int argc, char** argv)
             audio_running && !shared.finished.load(std::memory_order_acquire);
 
         if (drawing_crystal) {
-            crystal_facet.draw(frame, window.width(), window.height());
+            // Polled here rather than on its own thread: rebuilding a program
+            // needs the GL context, which belongs to this thread, and the watch
+            // does no filesystem work until its interval has passed.
+            if (watch && watch->poll(std::chrono::steady_clock::now())) {
+                reload_crystal(opt.crystal, crystal_facet);
+            }
+            crystal_facet->draw(frame, window.width(), window.height());
         } else {
             facet.draw(frame, window.width(), window.height(), playing);
         }
@@ -644,7 +720,7 @@ int main(int argc, char** argv)
         sink->close();
     }
 
-    crystal_facet.shutdown();
+    crystal_facet->shutdown();
     facet.shutdown();
     window.close();
     return 0;
