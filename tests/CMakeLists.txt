@@ -24,6 +24,14 @@ add_executable(holocron_tests
     test_frame_binding.cpp
     test_crystal.cpp
     test_crystal_watch.cpp
+    test_vault.cpp
+)
+
+# The shipped vault's location, baked in rather than searched for relative to the
+# working directory. A test that cannot find its fixture and skips is a test that
+# reports success for a directory it never opened.
+target_compile_definitions(holocron_tests PRIVATE
+    HOLOCRON_CRYSTALS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../crystals"
 )
 
 target_link_libraries(holocron_tests

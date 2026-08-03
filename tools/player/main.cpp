@@ -50,6 +50,7 @@
 #include <holocron/crystal.hpp>
 #include <holocron/crystal_facet.hpp>
 #include <holocron/crystal_watch.hpp>
+#include <holocron/vault.hpp>
 #include <holocron/debug_facet.hpp>
 #include <holocron/decoder.hpp>
 #include <holocron/frame_history.hpp>
@@ -83,6 +84,10 @@ struct Options {
     // Path stem of a crystal to draw instead of the debug facet: "crystals/pulse"
     // loads crystals/pulse.toml and crystals/pulse.frag.
     const char* crystal  = nullptr;
+    // A directory of crystals to move through with the arrow keys. --crystal is
+    // the same machinery with a vault of exactly one, so switching and hot
+    // reload have a single code path rather than two that drift.
+    const char* vault    = nullptr;
     int         frames   = 0;      // 0 = run until the window closes
     int         width    = 1280;
     int         height   = 720;
@@ -117,6 +122,8 @@ Options parse(int argc, char** argv)
             o.height = std::atoi(argv[++i]);
         } else if (std::strcmp(a, "--crystal") == 0 && i + 1 < argc) {
             o.crystal = argv[++i];
+        } else if (std::strcmp(a, "--vault") == 0 && i + 1 < argc) {
+            o.vault = argv[++i];
         } else if (std::strcmp(a, "--trim-ms") == 0 && i + 1 < argc) {
             o.trim_ms = std::atof(argv[++i]);
         } else if (std::strcmp(a, "--sink") == 0 && i + 1 < argc) {
@@ -148,6 +155,8 @@ void usage()
         "\n"
         "  --crystal STEM draw a crystal instead of the debug facet, e.g.\n"
         "                 --crystal crystals/pulse (loads .toml and .frag)\n"
+        "  --vault DIR    draw every crystal in DIR, left and right arrows to\n"
+        "                 move between them, e.g. --vault crystals\n"
         "  --sink S       auto (default), wasapi, or sdl. auto prefers WASAPI\n"
         "                 exclusive, then WASAPI shared, then SDL\n"
         "  --trim-ms N    shift the analysis tap N ms earlier, to compensate for\n"
@@ -187,7 +196,7 @@ void describe(const char* verb, const Crystal& crystal, const CrystalFacet& face
     }
 }
 
-// Rebuild a crystal from disk into a NEW facet, and swap only if it worked.
+// Build a crystal from disk into a NEW facet, and swap only if it worked.
 //
 // A shader is broken for most of the time an author is editing it. Tearing the
 // live program down before knowing its replacement compiles would blank the
@@ -196,33 +205,44 @@ void describe(const char* verb, const Crystal& crystal, const CrystalFacet& face
 // on success; on failure the driver's own message is printed -- far more useful
 // than anything invented here -- and what is on screen is left alone.
 //
-// The clock is carried across so u_time does not restart. See
-// CrystalFacet::set_elapsed.
-void reload_crystal(const char* stem, std::unique_ptr<CrystalFacet>& live)
+// `carry_time` distinguishes the two callers. A RELOAD is the same crystal a
+// moment later, so u_time continues; a SWITCH is a different crystal, which has
+// never been on screen and should start at zero. Getting that backwards would
+// drop an author into the middle of an animation they have not seen the start
+// of.
+//
+// Returns the crystal it swapped in, so the caller can re-point the watch at the
+// files that are now live.
+bool build_crystal(const char* stem, std::unique_ptr<CrystalFacet>& live, bool carry_time,
+                   const char* verb, Crystal& out)
 {
     Crystal            crystal;
     std::string        detail;
     const CrystalError err = load_crystal(stem, crystal, detail);
     if (err != CrystalError::kOk) {
-        std::fprintf(stderr, "holocron: reload failed -- %s\n%s\nholocron: still drawing the "
+        std::fprintf(stderr, "holocron: %s failed -- %s\n%s\nholocron: still drawing the "
                              "previous crystal\n",
-                     to_string(err), detail.c_str());
-        return;
+                     verb, to_string(err), detail.c_str());
+        return false;
     }
 
     auto        next = std::make_unique<CrystalFacet>();
     std::string log;
     if (!next->init(crystal, log)) {
-        std::fprintf(stderr, "holocron: reload failed -- crystal did not build\n%s\n"
+        std::fprintf(stderr, "holocron: %s failed -- crystal did not build\n%s\n"
                              "holocron: still drawing the previous crystal\n",
-                     log.c_str());
-        return;
+                     verb, log.c_str());
+        return false;
     }
 
-    next->set_elapsed(live->elapsed());
+    if (carry_time) {
+        next->set_elapsed(live->elapsed());
+    }
     live = std::move(next);   // the old facet's GL objects go here, not before
 
-    describe("reloaded", crystal, *live);
+    out = crystal;
+    describe(verb, crystal, *live);
+    return true;
 }
 
 // Two seconds of history at 93.75 Hz, rounded to a power of two. Far more than
@@ -517,31 +537,45 @@ int main(int argc, char** argv)
                 audio_started ? (bit_perfect ? ", BIT-PERFECT" : ", not bit-perfect") : "");
 
     DebugFacet facet;
-    // Held by pointer so a hot reload can swap a freshly compiled facet in
-    // without the live one having been torn down first. See reload_crystal.
+    // Held by pointer so a reload or a switch can swap a freshly compiled facet
+    // in without the live one having been torn down first. See build_crystal.
     auto                        crystal_facet   = std::make_unique<CrystalFacet>();
     bool                        drawing_crystal = false;
     std::optional<CrystalWatch> watch;
 
-    if (opt.crystal != nullptr) {
-        Crystal     crystal;
-        std::string detail;
-        const CrystalError err = load_crystal(opt.crystal, crystal, detail);
-        if (err != CrystalError::kOk) {
-            // The detail carries the offending field and the valid vocabulary.
-            // Printing the code alone would tell an author their crystal is
-            // broken without telling them which line to look at.
-            std::fprintf(stderr, "holocron: %s\n%s\n", to_string(err), detail.c_str());
+    // The vault, and where in it we are. --crystal is a vault of one, so there
+    // is one path through the code below rather than a single-crystal case and a
+    // vault case that quietly diverge.
+    std::vector<VaultEntry> vault;
+    std::size_t             current = 0;
+
+    if (opt.vault != nullptr) {
+        std::vector<VaultProblem> problems;
+        vault = scan_vault(opt.vault, problems);
+
+        // Reported but not fatal. One crystal with a typo must not stop the
+        // other twenty being usable -- see vault.hpp.
+        for (const VaultProblem& p : problems) {
+            std::fprintf(stderr, "holocron: skipping %s\n%s\n", p.stem.c_str(), p.detail.c_str());
+        }
+        if (vault.empty()) {
+            std::fprintf(stderr, "holocron: no crystals found in %s\n", opt.vault);
             window.close();
             if (audio_started) {
                 sink->close();
             }
             return 1;
         }
+    } else if (opt.crystal != nullptr) {
+        vault.push_back(VaultEntry{opt.crystal, opt.crystal});
+    }
 
-        std::string log;
-        if (!crystal_facet->init(crystal, log)) {
-            std::fprintf(stderr, "holocron: crystal failed to build\n%s\n", log.c_str());
+    if (!vault.empty()) {
+        Crystal crystal;
+        if (!build_crystal(vault[current].stem.c_str(), crystal_facet, false, "crystal",
+                           crystal)) {
+            // Unlike a reload, there is nothing already on screen to fall back
+            // to, so this one is fatal. build_crystal has already printed why.
             window.close();
             if (audio_started) {
                 sink->close();
@@ -550,8 +584,11 @@ int main(int argc, char** argv)
         }
 
         drawing_crystal = true;
-        describe("crystal", crystal, *crystal_facet);
 
+        if (vault.size() > 1) {
+            std::printf("holocron: vault of %zu crystals -- left and right arrows to move\n",
+                        vault.size());
+        }
         if (!opt.no_watch) {
             watch.emplace(crystal.manifest_path, crystal.shader_path,
                           std::chrono::steady_clock::now());
@@ -650,11 +687,35 @@ int main(int argc, char** argv)
             audio_running && !shared.finished.load(std::memory_order_acquire);
 
         if (drawing_crystal) {
-            // Polled here rather than on its own thread: rebuilding a program
-            // needs the GL context, which belongs to this thread, and the watch
-            // does no filesystem work until its interval has passed.
+            // Switching, then reloading, both here rather than on their own
+            // thread: building a program needs the GL context, which belongs to
+            // this thread.
+            const bool back = window.pressed(Key::kLeft);
+            const bool fwd  = window.pressed(Key::kRight);
+            if (vault.size() > 1 && (back || fwd)) {
+                // Wraps in both directions. Modular arithmetic on the way down
+                // uses + size() rather than - 1 so index 0 does not underflow to
+                // a very large number indeed.
+                current = fwd ? (current + 1) % vault.size()
+                              : (current + vault.size() - 1) % vault.size();
+
+                Crystal crystal;
+                if (build_crystal(vault[current].stem.c_str(), crystal_facet, false, "switched to",
+                                  crystal) &&
+                    watch) {
+                    // The watch has to follow, or an author would edit the
+                    // crystal on screen and see the one they left get reloaded.
+                    watch.emplace(crystal.manifest_path, crystal.shader_path,
+                                  std::chrono::steady_clock::now());
+                }
+            }
+
+            // The watch does no filesystem work until its interval has passed,
+            // so calling it every frame costs nothing.
             if (watch && watch->poll(std::chrono::steady_clock::now())) {
-                reload_crystal(opt.crystal, crystal_facet);
+                Crystal crystal;
+                build_crystal(vault[current].stem.c_str(), crystal_facet, true, "reloaded",
+                              crystal);
             }
             crystal_facet->draw(frame, window.width(), window.height());
         } else {
