@@ -57,6 +57,10 @@ struct Window::Impl {
     int  major   = 0;
     int  minor   = 0;
 
+    // Edges seen during the most recent pump(), cleared at the start of the
+    // next. See Window::pressed.
+    bool keys[static_cast<std::size_t>(Key::kCount)] = {};
+
     void refresh_size()
     {
         SDL_GetWindowSizeInPixels(window, &width, &height);
@@ -173,6 +177,10 @@ bool Window::is_open() const { return impl_->open; }
 
 bool Window::pump()
 {
+    for (bool& k : impl_->keys) {
+        k = false;
+    }
+
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
@@ -183,8 +191,18 @@ bool Window::pump()
             impl_->refresh_size();
             break;
         case SDL_EVENT_KEY_DOWN:
+            // `repeat` filtered, not just tidiness: switching crystal recompiles
+            // a shader, and holding an arrow key down would queue one compile per
+            // repeat at the OS repeat rate.
+            if (e.key.repeat) {
+                break;
+            }
             if (e.key.key == SDLK_ESCAPE) {
                 impl_->quit = true;
+            } else if (e.key.key == SDLK_LEFT) {
+                impl_->keys[static_cast<std::size_t>(Key::kLeft)] = true;
+            } else if (e.key.key == SDLK_RIGHT) {
+                impl_->keys[static_cast<std::size_t>(Key::kRight)] = true;
             }
             break;
         default:
@@ -192,6 +210,11 @@ bool Window::pump()
         }
     }
     return !impl_->quit;
+}
+
+bool Window::pressed(Key k) const
+{
+    return impl_->keys[static_cast<std::size_t>(k)];
 }
 
 void Window::swap()

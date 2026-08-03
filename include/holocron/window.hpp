@@ -57,6 +57,20 @@ constexpr const char* to_string(WindowError e)
     return "unknown";
 }
 
+// The keys the player acts on, and nothing else.
+//
+// Deliberately not a general input system. There is no UI yet -- that is M6 --
+// and inventing a keymap, a binding table and a repeat policy now would be
+// designing against requirements nobody has written down. Two keys are needed to
+// move through a vault, so two keys exist. Widen this when something actually
+// needs it.
+enum class Key : std::uint8_t {
+    kLeft = 0,
+    kRight,
+
+    kCount
+};
+
 struct WindowConfig {
     const char*   title      = "holocron";
     int           width      = 1280;
@@ -85,6 +99,14 @@ public:
     // Pump the OS event queue. Returns false once the user has asked to quit,
     // which is the render loop's termination condition.
     bool pump();
+
+    // Was `k` pressed during the most recent pump()?
+    //
+    // An edge, not a held state: a key held down through twenty frames advances
+    // the vault once, not twenty times. Auto-repeat is filtered out for the same
+    // reason -- switching crystal recompiles a shader, and a repeat rate of 30 Hz
+    // against that is not a feature.
+    bool pressed(Key k) const;
 
     void swap();
 
