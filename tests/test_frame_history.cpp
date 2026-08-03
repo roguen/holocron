@@ -146,6 +146,7 @@ TEST_CASE("FrameHistory never hands back a torn frame under real contention",
     std::atomic<std::uint64_t> torn{0};
     std::atomic<std::uint64_t> ahead{0};
     std::atomic<std::uint64_t> reads{0};
+    std::atomic<std::uint64_t> lapped{0};
 
     std::thread producer([&] {
         for (std::uint64_t k = 0; k < kTotal; ++k) {
@@ -169,11 +170,46 @@ TEST_CASE("FrameHistory never hands back a torn frame under real contention",
                 if (out.a != out.b || out.b != out.c) {
                     torn.fetch_add(1, std::memory_order_relaxed);
                 }
-                if (out.a * 10 > target && out.a != 0) {
-                    // Allowed only when everything held is newer than the
-                    // target, i.e. the oldest-frame fallback. With a target
-                    // 200 us behind the newest and 64 slots of history that
-                    // cannot happen here.
+
+                // WHETHER A FRAME NEWER THAN THE TARGET IS A FAULT DEPENDS ON
+                // WHAT IS STILL IN THE RING, AND THAT HAS TO BE RE-READ.
+                //
+                // This check used to assume the oldest-frame fallback could not
+                // happen here -- 64 slots at 10 us is 640 us of history against
+                // a target only 200 us back. That reasoning holds only if the
+                // published() read above and the select() below happen close
+                // together in time, and nothing makes them.
+                //
+                // The consumer can be descheduled in between. The producer has
+                // nothing throttling it, so if it gets more than ~44 frames
+                // ahead during that gap the target falls off the back and
+                // select() correctly returns the oldest frame it still holds --
+                // which is newer than the target. That is the documented
+                // fallback, not a fault, and asserting it away made this test
+                // fail roughly once per 200,000 frames on a loaded CI runner.
+                //
+                // "FrameHistory keeps only its window and selects within it"
+                // pins that same behaviour deterministically: it laps the ring
+                // and asks for something older than the window, and requires the
+                // frame that comes back to be NEWER than what was asked for. The
+                // old assertion here contradicted it outright.
+                //
+                // N-1, not N. Only N-1 slots are safe to read -- head is
+                // incremented after the write, so the slot at head-N may be the
+                // one the producer is filling right now. Using N here would put
+                // the boundary one frame too far back and leave a narrow band
+                // where the same false failure could still happen, which is the
+                // off-by-one that test names as having broken the first
+                // implementation.
+                const std::uint64_t now_published = h.published();
+                const std::uint64_t oldest_held =
+                    now_published >= kSlots ? (now_published - (kSlots - 1)) * 10 : 0;
+
+                if (target < oldest_held) {
+                    lapped.fetch_add(1, std::memory_order_relaxed);
+                } else if (out.a * 10 > target && out.a != 0) {
+                    // The target WAS still inside the window, so a frame ahead
+                    // of it is a real ordering fault -- the #53 bug itself.
                     ahead.fetch_add(1, std::memory_order_relaxed);
                 }
                 reads.fetch_add(1, std::memory_order_relaxed);
@@ -190,4 +226,10 @@ TEST_CASE("FrameHistory never hands back a torn frame under real contention",
     // Proves the consumer actually ran against a live producer rather than
     // trivially finding nothing to do.
     REQUIRE(reads.load() > 0);
+
+    // And that the ordering check above was not excused every single time.
+    // Without this, a consumer so slow that the ring lapped on every iteration
+    // would satisfy `ahead == 0` by never once evaluating it -- a green test
+    // that had checked nothing, which is worse than a red one.
+    REQUIRE(reads.load() > lapped.load());
 }
