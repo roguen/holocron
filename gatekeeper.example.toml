@@ -106,6 +106,28 @@ device = ""
 # unmeasured for a whole milestone.
 trim_ms = 0.0
 
+# How far the analysis may run ahead of the speakers, in milliseconds.
+#
+# THIS IS THE BUDGET A NEGATIVE trim_ms SPENDS, and it is the setting to reach
+# for when the picture LAGS the sound rather than leading it.
+#
+# A negative trim asks for a frame ahead of the playback point, which can only be
+# drawn if the decoder has already produced it. That is bounded by the PCM ring,
+# so this sizes the ring in TIME. Push trim_ms past this and nothing further
+# happens; the player says so rather than leaving you to wonder whether the trim
+# is working.
+#
+# Periods were the wrong unit, and this used to be sized in them. Sixteen device
+# periods bought about 58 ms in WASAPI exclusive mode and roughly 160 ms in
+# shared mode, so the lead available depended on which backend happened to open.
+#
+# 250 ms comfortably covers a television's input lag, which is the usual reason a
+# picture lags the sound. The cost is decode running further ahead -- about 96 KB
+# of buffer, and a proportionally longer prefill before the first sound.
+#
+# LIVE.
+lead_ms = 250.0
+
 
 # ---------------------------------------------------------------------------
 # [analysis] -- how the numbers behave, NOT what they mean
