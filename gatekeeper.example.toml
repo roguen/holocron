@@ -78,21 +78,36 @@ device = ""
 # receiver. Changing the display, or taking the receiver out of a direct mode
 # into one that does real processing, invalidates it. Re-measure after either.
 #
-# MEASURED ON THE RACK, 2026-08-03: zero, on the RX 6800 into an Onkyo TX-RZ720
-# over HDMI, with WASAPI exclusive at a 160-frame period. Bracketed rather than
-# guessed -- both +40 and -40 were judged worse than 0, which is what makes it a
-# measurement instead of the first value anybody tried.
+# MEASURED ON ONE RACK, 2026-08-03: -85 ms. RX 6800 into an Onkyo TX-RZ720 in
+# DIRECT, out to a BenQ TK800 projector at 4K; WASAPI exclusive, 160-frame
+# period. NEGATIVE, because the projector is slower than the audio path.
 #
-# The two latencies are close enough to cancel within what the method can
-# resolve, which is about 20 ms -- judging a flash against a drum by eye does not
-# do better than that. So zero means "under roughly 20 ms" rather than "exactly
-# nothing".
+# The projector's RATED input lag is 44 ms, and the real figure is about double
+# that. A rated number is measured at 1080p, usually to mid-frame, and does not
+# include 4K/HDR processing or the one-to-two refreshes of vsync'd present
+# pipeline between drawing a frame and it reaching the screen. Expect roughly
+# twice any published input-lag figure, and measure rather than deriving it.
 #
-# HOW TO MEASURE IT: draw something that flashes the WHOLE FIELD on onsets and
-# watch it against a dry, percussive track -- a full-screen flash is far easier
-# to time in peripheral vision than a marker among other moving things, which is
-# what makes this judgeable at all. If the picture leads the sound, raise this.
-# Bracket the answer by confirming a deliberate error either side feels worse;
+# HOW TO MEASURE IT -- and three ways to get this wrong, all learned the hard way:
+#
+#   USE A HARD EDGE, NOT AN ENVELOPE. `--calibrate` draws instruments/sync, whose
+#   left half is a step at the beat wrap. Its right half is driven by
+#   onset_strength, which is ENVELOPED: the envelope peaks after the transient
+#   that caused it, so aligning to it biases the answer positive. That instrument
+#   alone first reported this rack as 0 when it is -85.
+#
+#   DO NOT JUDGE AGAINST A ROTATION. `pulse` spins a six-fold pattern once per
+#   beat, so it looks identical every sixth of a beat and "aligned" is ambiguous
+#   across a twelfth of a beat either way. Judging against it produced -235, a
+#   figure with no physical meaning: it would require the audio path to have
+#   negative latency.
+#
+#   KEEP AWAY FROM THE lead_ms CLAMP. Within a few tens of ms of the budget the
+#   trim is applied on some frames and clamped on others, and the placement
+#   jitters between two values while you try to judge it.
+#
+# Then bracket it, and judge BLIND -- with the value out of view, so a second run
+# cannot anchor on the first. Two independent runs agreeing is the evidence;
 # "the first value I tried" is not a measurement. Percussion makes it obvious and
 # pads hide it completely.
 #
@@ -105,6 +120,28 @@ device = ""
 # restarting the player for every candidate value, which is why this went
 # unmeasured for a whole milestone.
 trim_ms = 0.0
+
+# How far the analysis may run ahead of the speakers, in milliseconds.
+#
+# THIS IS THE BUDGET A NEGATIVE trim_ms SPENDS, and it is the setting to reach
+# for when the picture LAGS the sound rather than leading it.
+#
+# A negative trim asks for a frame ahead of the playback point, which can only be
+# drawn if the decoder has already produced it. That is bounded by the PCM ring,
+# so this sizes the ring in TIME. Push trim_ms past this and nothing further
+# happens; the player says so rather than leaving you to wonder whether the trim
+# is working.
+#
+# Periods were the wrong unit, and this used to be sized in them. Sixteen device
+# periods bought about 58 ms in WASAPI exclusive mode and roughly 160 ms in
+# shared mode, so the lead available depended on which backend happened to open.
+#
+# 250 ms comfortably covers a television's input lag, which is the usual reason a
+# picture lags the sound. The cost is decode running further ahead -- about 96 KB
+# of buffer, and a proportionally longer prefill before the first sound.
+#
+# LIVE.
+lead_ms = 250.0
 
 
 # ---------------------------------------------------------------------------

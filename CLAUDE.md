@@ -48,28 +48,36 @@ hot reload and the vault all exist and are tested. The undecided part is the
 should inherit from the debug facet, which is an instrument panel. That call is
 the owner's and should not be made from a screenshot.
 
-**`--trim-ms` has now been measured on the rack, and the answer is zero.**
-Verified 2026-08-03 against a percussive track through WASAPI exclusive into the
-Onkyo over HDMI, using a crystal that flashes the whole field on onsets.
+**`--trim-ms` is measured: `-85` on this rack.** Verified 2026-08-03, twice and
+**blind** — the value out of view so a second run could not anchor on the first.
+Both landed on the same number. It lives in `gatekeeper.toml`; re-measure with
+`holocron <track> --calibrate`, which sweeps it live rather than making you
+restart the player per candidate.
 
-**Re-measure with `holocron <track> --calibrate`**, which sweeps the value live
-rather than making you restart the player per candidate.
-
-**Bracketed, not guessed** — both `+40` and `-40` were judged worse than `0`,
-which is the step that separates a measurement from the first value anyone tried.
-It means "under roughly 20 ms", about as fine as judging a flash against a drum
-by eye can resolve. The reason it lands near zero is that **the trim is a
-difference, not a latency**:
+Negative because **the trim is a difference, not a latency**:
 
 ```
 trim = audio latency after the device clock  -  display latency
 ```
 
-The judgement is made watching a screen with input lag of its own, pushing the
-opposite way to the DAC, the HDMI link and the receiver's processing. They
-roughly cancel on this rack. **The value therefore belongs to the whole rack and
-not to the receiver** — changing the display, or taking the Onkyo out of a direct
-mode into one doing real processing, invalidates it. Re-measure after either.
+The projector is slower than the audio path, so the picture has to be pulled
+*earlier*. The BenQ TK800's rated input lag is 44 ms and the real figure is about
+double: a rated number is measured at 1080p, usually to mid-frame, and excludes
+4K/HDR processing and the one-to-two refreshes of vsync'd present pipeline.
+**Expect roughly twice any published input-lag figure.** The value belongs to the
+whole rack — changing the projector, the resolution, or the receiver's listening
+mode invalidates it.
+
+**Getting here took three wrong answers, and each has a lesson worth keeping.**
+
+| Reported | Why it was wrong |
+|---|---|
+| `0` | Measured against `onset_strength`, which is **enveloped** — the envelope peaks after the transient, biasing the answer positive by about the attack time. Use a hard edge. |
+| `-235` | Measured against `pulse`'s six-fold rotation, which looks identical every sixth of a beat, so "aligned" is ambiguous across a twelfth of a beat and the sweep has no optimum. The figure was **unphysical** — it needs the audio path to have negative latency. |
+| drifting | A trim measured within a few tens of ms of the `lead_ms` clamp is applied on some frames and clamped on others. Keep well clear of the budget. |
+
+The general lesson: **a measurement is only as good as the thing it is judged
+against.** All three failures were instrument design, not the quantity.
 
 **Exclusive mode needs BOTH checkboxes, and the second one is not obvious.**
 *Sound → Playback → the endpoint → Properties → Advanced* has two: "Allow

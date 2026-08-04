@@ -1,0 +1,22 @@
+# drift -- weather.
+#
+# The first crystal written to be looked at rather than to prove the pipeline
+# works. See the note at the top of drift.frag for the thesis it argues: the
+# picture is a place, not a readout.
+
+name = "drift"
+
+author  = "Roguen Keller"
+license = "GPL-3.0-or-later"
+
+# Every binding here drives a QUALITY rather than a quantity. Nothing on screen
+# has a length you could read a value off, which is the whole distinction from
+# `pulse` -- and `pulse` is right to be what it is, because an instrument and a
+# thing to look at are different jobs.
+[uniforms]
+u_bass     = "bass_norm"
+u_treble   = "treble_norm"
+u_centroid = "spectral_centroid"
+u_beat     = "beat_phase"
+u_onset    = "onset_strength"
+u_width    = "stereo_width"
