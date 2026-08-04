@@ -130,6 +130,7 @@ holocron.exe track.flac                            # play it, drawing every anal
 holocron.exe track.flac --crystal crystals/pulse   # draw a crystal instead
 holocron.exe track.flac --vault crystals           # the whole vault, arrows to move
 holocron.exe track.flac --calibrate                # measure the audio/video trim
+holocron.exe --discover                            # appear in Plexamp's device list
 holocron-analyze.exe track.flac --csv frames.csv   # the offline analysis harness
 ```
 
@@ -143,10 +144,11 @@ What exists:
 | **Tap placement** | The frame on screen is the one the speakers are producing, selected **by position** against the device clock — a measured 51 ms of correction over newest-wins. |
 | **Render** | GL 4.5 core, a debug facet drawing every field, and `CrystalFacet` drawing authored crystals. |
 | **Crystals** | `.frag` + `.toml`, uniforms bound to contract fields **by name** and validated at load. Hot reload, and a vault the arrow keys move through. |
-| **Tests** | **173 cases, green on Windows and Linux.** |
+| **Discovery** | Holocron announces itself over Plex's GDM multicast and appears in Plexamp's device list, with the Companion `/resources` and timeline endpoints served. **Nothing plays over Plex yet.** |
+| **Tests** | **196 cases, green on Windows and Linux.** |
 
-What is *not* done: the compositor, projectM, Plex, and the on-screen UI. And
-within M2, the part that is judgement rather than plumbing — see below.
+What is *not* done: the compositor, projectM, the rest of Plex, and the on-screen
+UI. And within M2, the part that is judgement rather than plumbing — see below.
 
 **The `AudioFrame` contract is signed off** (2026-08-01). Section 9 of
 [`docs/audio-frame.md`](docs/audio-frame.md) records the decisions behind it — the
@@ -169,7 +171,7 @@ field may not change.
 | **M2** | Crystals | Vault loading, the `.frag` + `.toml` crystal format, manifest uniform binding against the contract, hot reload. | **plumbing complete; the visual language is open** |
 | M3 | Compositor | The facet stack: layering, blend modes, transitions, archives. | planned |
 | M4 | projectM | libprojectM 4.x driven as a facet source, reading MilkDrop presets from a user-supplied path. | planned |
-| M5 | **Plex playback target** | **The primary use case.** GDM discovery so Holocron appears in Plexamp's cast list, the Plex Companion control endpoints, timeline reporting, streaming the selected track, and metadata and album art into `TrackContext`. | planned |
+| M5 | **Plex playback target** | **The primary use case.** GDM discovery so Holocron appears in Plexamp's cast list, the Plex Companion control endpoints, timeline reporting, streaming the selected track, and metadata and album art into `TrackContext`. | **discovery works; nothing plays yet** |
 | M6 | On-screen UI | Now-playing and facet control rendered in-app. **Not a library browser** — Plexamp is the browser, and building a second one would be duplicating the better tool. | planned |
 | M7 | eISCP receiver control | Power, input, and volume control of the receiver over the network. | planned |
 | M8 | Android TV | Holocron on the Shield, so the theater does not need the PC powered on. A new platform layer — NDK, OpenGL **ES**, a different audio backend — but the contract, the analysis stage, the crystals and all of M5's protocol work port unchanged. | possible |
@@ -362,6 +364,7 @@ Acquired through vcpkg manifest mode ([`vcpkg.json`](vcpkg.json)), pinned by a
 | libebur128 | BS.1770-4 loudness | MIT (D-024) |
 | glm | vector and matrix types | MIT, required by `track_context.hpp` |
 | Catch2 | tests | BSL-1.0, test-only, never shipped |
+| cpp-httplib | the Plex Companion HTTP endpoints | M5. MIT, header-only. Optional OpenSSL, zlib and brotli features are all off — Companion is plain HTTP on the LAN |
 
 **Not yet acquired:**
 

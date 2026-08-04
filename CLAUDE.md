@@ -53,6 +53,7 @@ tested:
 | Vault | `scan_vault` — `--vault DIR` loads every crystal in a directory, arrow keys move between them. Ordered **by manifest name**, because `directory_iterator` order differs between Windows and Linux. One broken crystal is reported and skipped, never fatal. `--crystal` is a vault of one, so both share a single path. |
 | Config | `gatekeeper.toml`, read at startup. Audio backend, `trim_ms`, window size, vsync, GL debug and the vault path are **live**; the rest of the example file is still specification. Flags beat the file, the file beats the defaults. |
 | Calibration | `holocron <track> --calibrate` draws `instruments/sync` and moves `trim_ms` with the arrow keys **while the track plays**, then prints the lines to paste into `gatekeeper.toml`. |
+| Discovery | **M5 has started.** `GdmResponder` announces over multicast so Holocron appears in Plexamp's device list; `CompanionServer` (cpp-httplib) serves `/resources` and the timeline endpoints. **Nothing plays over Plex yet** — every other `/player/...` path is logged and acknowledged, not acted on. `holocron --discover` runs just this, with no track and no window. |
 | Executables | `holocron` — the player. `holocron-analyze` — the offline harness. |
 
 **All four M1 blockers were resolved on 2026-08-01.** What remains for M1:
@@ -60,6 +61,32 @@ tested:
 **M1's spine is complete and M2 has started.** It decodes, analyses, plays
 bit-perfect, draws, and what it draws is what you are hearing — and it now draws
 a *crystal*, loaded from disk and bound to the contract by name.
+
+**M5 has started ahead of M2's remaining judgement call, on purpose.** D-029 makes
+M5 the milestone that matters, and the riskiest thing in it is not the streaming
+— it is whether the phone can see this machine at all, because the Plex Companion
+protocol is community-documented rather than official. That is now answered:
+[#102](https://github.com/roguen/holocron/issues/102) verified on the rack, with a
+real GDM search answered from the LAN and `/resources` served with a matching
+identity.
+
+**Three things about discovery that are not obvious from the code:**
+
+- **The GDM bytes are copied, not designed.** Field order, the `: ` separator, LF
+  line endings and the absence of a trailing newline all come from
+  `plex-mpv-shim`'s `PlexGDM`. There is no specification to check an answer
+  against, so `test_plex_device.cpp` asserts on whole literal payloads. That is
+  over-specified on purpose: CRLF, a trailing newline or a reordered field
+  produces no compiler error, no wrong-looking string, and no symptom except a
+  device that stops appearing on a phone in another room.
+- **`Name` and `machineIdentifier` each have two spellings.** `Resource-Identifier`
+  over GDM is `machineIdentifier` in `/resources`, and `Name` is `title`. If the
+  identifier announced over multicast disagrees with the one served over HTTP, a
+  client concludes it reached a *different* player and drops the entry — which
+  looks like the device appearing in the list and vanishing a second later.
+- **`plex.machine_identifier` must be saved or the device list grows every run.**
+  Holocron generates one when the key is empty and prints the line to paste, the
+  same pattern `--calibrate` uses for the trim.
 
 **What remains in M2 is judgement, not plumbing.** The format, loader, renderer,
 hot reload and the vault all exist and are tested. The undecided part is the
