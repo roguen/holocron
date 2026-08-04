@@ -232,6 +232,28 @@ screen, because a shader is broken for most of the time it is being edited.
 
 ---
 
+## Calibrating audio/video sync
+
+[`docs/calibrating-sync.md`](docs/calibrating-sync.md) — the procedure, the tone
+generator, and the five instruments that failed before one worked.
+
+```
+scripts\make-calibration-tone.ps1
+holocron.exe calibration-tone.wav --calibrate --trim-ms 0
+```
+
+`trim_ms` is a **difference, not a latency** — audio latency after the device
+clock, minus display latency — so a negative value is normal with any projector,
+and the number belongs to a whole rack rather than to any box in it. It cannot be
+derived from a spec sheet: a display's *rated* input lag is roughly half its real
+contribution.
+
+The one thing worth knowing before trying: **ask "early or late", never "is it
+aligned."** Direction is a judgement the eye can make; coincidence is not, and a
+sweep looking for alignment never converges.
+
+---
+
 ## Contributing
 
 **This project is not accepting code contributions** — see
