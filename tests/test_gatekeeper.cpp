@@ -107,6 +107,73 @@ TEST_CASE("the keys the player acts on are read", "[gatekeeper]")
     CHECK(g.vault == "D:/my-crystals");
 }
 
+TEST_CASE("the plex discovery keys are read", "[gatekeeper]")
+{
+    Scratch     s;
+    Gatekeeper  g;
+    std::string detail;
+
+    const auto p = s.write("[plex]\n"
+                           "discovery = false\n"
+                           "device_name = \"Theater\"\n"
+                           "machine_identifier = \"01234567-89ab-4cde-8f01-23456789abcd\"\n"
+                           "port = 32501\n"
+                           // Still specification, and must remain ignorable
+                           // rather than rejected.
+                           "server = \"http://192.0.2.1:32400\"\n"
+                           "token = \"\"\n");
+
+    INFO(detail);
+    REQUIRE(load_gatekeeper(p, g, detail) == GatekeeperError::kOk);
+    CHECK_FALSE(g.plex_discovery);
+    CHECK(g.plex_device_name == "Theater");
+    CHECK(g.plex_machine_identifier == "01234567-89ab-4cde-8f01-23456789abcd");
+    CHECK(g.plex_port == 32501);
+}
+
+TEST_CASE("an impossible plex port is fatal rather than clamped", "[gatekeeper]")
+{
+    // Clamping would announce a port over GDM that nothing is listening on, and
+    // the device would appear in the list and then refuse every connection --
+    // which is harder to diagnose than a refusal to start.
+    Scratch     s;
+    Gatekeeper  g;
+    std::string detail;
+
+    CHECK(load_gatekeeper(s.write("[plex]\nport = 0\n"), g, detail) ==
+          GatekeeperError::kBadValue);
+    CHECK(load_gatekeeper(s.write("[plex]\nport = 70000\n"), g, detail) ==
+          GatekeeperError::kBadValue);
+    CHECK(load_gatekeeper(s.write("[plex]\nport = -1\n"), g, detail) ==
+          GatekeeperError::kBadValue);
+}
+
+TEST_CASE("an empty plex device name is fatal", "[gatekeeper]")
+{
+    // It announces an entry with no label, and there is no way to tell from the
+    // phone which device it is.
+    Scratch     s;
+    Gatekeeper  g;
+    std::string detail;
+
+    CHECK(load_gatekeeper(s.write("[plex]\ndevice_name = \"\"\n"), g, detail) ==
+          GatekeeperError::kBadValue);
+}
+
+TEST_CASE("an unset machine identifier is accepted, because it is generated", "[gatekeeper]")
+{
+    // Empty is the FIRST-RUN case, not an error: the player generates one and
+    // prints the line to paste back. Rejecting it here would mean a fresh
+    // checkout could not start.
+    Scratch     s;
+    Gatekeeper  g;
+    std::string detail;
+
+    REQUIRE(load_gatekeeper(s.write("[plex]\nmachine_identifier = \"\"\n"), g, detail) ==
+            GatekeeperError::kOk);
+    CHECK(g.plex_machine_identifier.empty());
+}
+
 TEST_CASE("a whole-number trim is accepted as written", "[gatekeeper]")
 {
     // TOML distinguishes 1 from 1.0, and someone recording a trim of exactly

@@ -83,6 +83,32 @@ struct Gatekeeper {
     // [paths]
     std::string vault = "crystals";
 
+    // [plex]
+    //
+    // Prefixed, unlike the sections above, because `name` and `port` on their
+    // own would not survive the next section that wants either word.
+
+    // Whether to announce at all. Off is a real answer: the player is still
+    // usable from the command line, and someone on a network they do not
+    // control may not want it advertising itself.
+    bool plex_discovery = true;
+
+    // What appears in Plexamp's device list.
+    std::string plex_device_name = "Holocron";
+
+    // Must be stable across restarts, or the device list gains a new entry every
+    // run. Empty means "not chosen yet": the player generates one and prints the
+    // line to paste back here, the same way --calibrate reports the trim.
+    //
+    // NOT a secret -- it is broadcast over the LAN in the clear by design, and
+    // is the one key in [plex] that is safe in a screenshot. The token in the
+    // same section is not, which is why this file is gitignored.
+    std::string plex_machine_identifier;
+
+    // The Companion HTTP port, announced over GDM. Clients use what is
+    // announced, so this can be moved if something else holds 32500.
+    int plex_port = 32500;
+
     // So a test can say "this file is exactly the defaults", which is what
     // gatekeeper.example.toml claims about itself in its own header.
     bool operator==(const Gatekeeper&) const = default;

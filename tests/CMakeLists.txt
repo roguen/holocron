@@ -26,6 +26,8 @@ add_executable(holocron_tests
     test_crystal_watch.cpp
     test_vault.cpp
     test_gatekeeper.cpp
+    test_plex_device.cpp
+    test_companion_server.cpp
 )
 
 # The shipped vault's location, baked in rather than searched for relative to the
@@ -34,6 +36,12 @@ add_executable(holocron_tests
 target_compile_definitions(holocron_tests PRIVATE
     HOLOCRON_CRYSTALS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../crystals"
     HOLOCRON_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# httplib.h is not written to our warning discipline and is not ours to fix --
+# the same treatment FFmpeg, SDL, glad and pocketfft already get.
+target_include_directories(holocron_tests SYSTEM PRIVATE
+    $<TARGET_PROPERTY:httplib::httplib,INTERFACE_INCLUDE_DIRECTORIES>
 )
 
 target_link_libraries(holocron_tests
@@ -45,8 +53,12 @@ target_link_libraries(holocron_tests
         holocron::wasapi_sink
         holocron::crystal
         holocron::config
+        holocron::plex
         holocron::warnings
         Catch2::Catch2WithMain
+        # The Companion tests drive a real server over loopback, so they need an
+        # HTTP client. This is the only place outside src/plex that sees httplib.
+        httplib::httplib
         # The triple-buffer tests spawn a producer and a consumer thread. On
         # gcc/libstdc++ std::thread needs an explicit pthread link; MSVC needs
         # nothing and Threads::Threads resolves to a no-op there.

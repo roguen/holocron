@@ -146,6 +146,11 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
 
     read_string(tbl, "paths", "vault", out.vault, bad);
 
+    read_bool(tbl, "plex", "discovery", out.plex_discovery, bad);
+    read_string(tbl, "plex", "device_name", out.plex_device_name, bad);
+    read_string(tbl, "plex", "machine_identifier", out.plex_machine_identifier, bad);
+    read_int(tbl, "plex", "port", out.plex_port, bad);
+
     if (!bad.empty()) {
         out         = Gatekeeper{};
         out_detail  = path + ": " + bad;
@@ -165,6 +170,22 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
         out        = Gatekeeper{};
         return GatekeeperError::kBadValue;
     }
+    if (out.plex_port < 1 || out.plex_port > 65535) {
+        out_detail = path + ": plex.port must be between 1 and 65535";
+        out        = Gatekeeper{};
+        return GatekeeperError::kBadValue;
+    }
+    if (out.plex_device_name.empty()) {
+        // An empty name announces an entry with no label. Plexamp shows it, and
+        // there is no way to tell from the phone which device it is.
+        out_detail = path + ": plex.device_name must not be empty";
+        out        = Gatekeeper{};
+        return GatekeeperError::kBadValue;
+    }
+    // plex.machine_identifier is deliberately NOT checked here. Its format is
+    // the Plex layer's business, and an unusable one only matters when discovery
+    // actually runs -- so the player checks it, where it can also offer the
+    // replacement rather than just refusing to start.
     if (out.lead_ms < 0.0 || out.lead_ms > 2000.0) {
         // Two seconds is far past useful and starts costing real prefill time
         // before the first sound. A negative one is simply meaningless.

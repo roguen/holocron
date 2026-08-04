@@ -47,7 +47,10 @@
 
 #include <holocron/analysis.hpp>
 #include <holocron/audio_frame.hpp>
+#include <holocron/companion_server.hpp>
 #include <holocron/crystal.hpp>
+#include <holocron/gdm_responder.hpp>
+#include <holocron/plex_device.hpp>
 #include <holocron/crystal_facet.hpp>
 #include <holocron/crystal_watch.hpp>
 #include <holocron/gatekeeper.hpp>
@@ -64,10 +67,12 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <optional>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -112,6 +117,15 @@ struct Options {
     // making a typo on purpose.
     bool        list_bindings = false;
     bool        no_audio = false;
+    // Announce over GDM and serve the Companion endpoints, then wait. No track,
+    // no window, no audio device. This is how discovery is checked from the
+    // phone: it isolates "does Holocron appear in the device list" from
+    // everything else the player does, which matters because the protocol is
+    // community-documented and this is the part most likely to be wrong.
+    bool        discover = false;
+    // Turn discovery OFF for a run that would otherwise have it on. The config
+    // key is the durable setting; this is the once-off.
+    bool        no_discover = false;
     // Hot reload is ON by default whenever a crystal is drawn, because the
     // authoring loop is what it exists for and a flag you have to remember is a
     // flag you forget -- leaving you editing a file the player is ignoring. The
@@ -175,6 +189,10 @@ Options parse(int argc, char** argv)
                 o.sink       = Options::kAuto;
                 o.given.sink = true;
             }
+        } else if (std::strcmp(a, "--discover") == 0) {
+            o.discover = true;
+        } else if (std::strcmp(a, "--no-discover") == 0) {
+            o.no_discover = true;
         } else if (std::strcmp(a, "--no-audio") == 0) {
             o.no_audio = true;
         } else if (std::strcmp(a, "--no-watch") == 0) {
@@ -216,6 +234,10 @@ void usage()
         "                 --crystal, saving the .frag or .toml rebuilds it in\n"
         "                 place by default; a shader that fails to compile is\n"
         "                 reported and the running one keeps drawing\n"
+        "  --discover     announce on the LAN so Holocron appears in Plexamp's\n"
+        "                 device list, then wait. No track, no window, no audio.\n"
+        "                 Prints every request the phone makes. Ctrl-C to stop\n"
+        "  --no-discover  do not announce during this run, whatever the config says\n"
         "  --no-audio     decode and draw, but open no audio device\n"
         "  --frames N     render exactly N frames then exit\n"
         "  --shot PATH    write the last rendered frame to PATH as a BMP\n"
@@ -449,6 +471,146 @@ void decode_loop(Shared& s, const char* path, bool feed_audio)
     s.finished.store(true, std::memory_order_release);
 }
 
+// ---------------------------------------------------------------------------
+// Plex discovery
+// ---------------------------------------------------------------------------
+
+std::atomic<bool> g_interrupted{false};
+
+extern "C" void on_interrupt(int)
+{
+    // Nothing but a flag. A signal handler may call almost nothing, and the two
+    // servers are stopped from main() where a mutex and a join are legal.
+    g_interrupted.store(true, std::memory_order_relaxed);
+}
+
+// What Holocron will announce, built from the config.
+PlexDevice device_from(const Gatekeeper& cfg)
+{
+    PlexDevice d;
+    d.name    = cfg.plex_device_name;
+    d.version = holocron_version();
+    d.port    = static_cast<std::uint16_t>(cfg.plex_port);
+
+    if (is_valid_machine_identifier(cfg.plex_machine_identifier)) {
+        d.machine_identifier = cfg.plex_machine_identifier;
+        return d;
+    }
+
+    if (!cfg.plex_machine_identifier.empty()) {
+        std::fprintf(stderr,
+                     "holocron: plex.machine_identifier is not a UUID and cannot be used:\n"
+                     "  %s\n",
+                     cfg.plex_machine_identifier.c_str());
+    }
+
+    // Generated rather than refused, so a first run works with no config at all.
+    // The cost is stated plainly: without saving it, every run is a new device.
+    d.machine_identifier = make_machine_identifier();
+    std::printf("holocron: no saved machine identifier -- generated one for this run only.\n"
+                "  Until it is saved, Plexamp gains a NEW device entry every time\n"
+                "  Holocron starts. Paste this into %s:\n"
+                "\n"
+                "    [plex]\n"
+                "    machine_identifier = \"%s\"\n"
+                "\n",
+                "gatekeeper.toml", d.machine_identifier.c_str());
+    return d;
+}
+
+// Bring both halves up. Either can fail on its own, and which one failed is the
+// whole diagnosis, so they are reported separately rather than as "discovery
+// failed".
+bool start_discovery(const PlexDevice& device, GdmResponder& gdm, CompanionServer& companion)
+{
+    std::string detail;
+
+    const CompanionError cerr = companion.start(device, detail);
+    if (cerr != CompanionError::kOk) {
+        std::fprintf(stderr, "holocron: %s\n  %s\n", to_string(cerr), detail.c_str());
+        return false;
+    }
+
+    // HTTP first, then GDM. The announcement tells clients where to connect, so
+    // announcing before the port is listening invites a connection refused on
+    // the very first probe -- which some clients treat as a dead device rather
+    // than retrying.
+    const GdmError gerr = gdm.start(device, detail);
+    if (gerr != GdmError::kOk) {
+        std::fprintf(stderr, "holocron: %s\n  %s\n", to_string(gerr), detail.c_str());
+        if (gerr == GdmError::kBindFailed) {
+            std::fprintf(stderr,
+                         "  UDP %u is held by another Plex player -- Plex Media Player, a\n"
+                         "  Plex HTPC, or another copy of Holocron. Only one can be\n"
+                         "  discoverable on this machine at a time.\n",
+                         static_cast<unsigned>(kGdmClientUpdatePort));
+        }
+        companion.stop();
+        return false;
+    }
+    if (!detail.empty()) {
+        // start() reports a failed HELLO this way without failing outright.
+        std::fprintf(stderr, "holocron: %s\n", detail.c_str());
+    }
+
+    std::printf("holocron: announcing as \"%s\" (%s)\n", device.name.c_str(),
+                device.machine_identifier.c_str());
+    std::printf("holocron: GDM on UDP %u, Companion on TCP %u, capabilities %s\n",
+                static_cast<unsigned>(kGdmClientUpdatePort), static_cast<unsigned>(device.port),
+                device.capabilities.c_str());
+    return true;
+}
+
+// --discover: hold the two servers up and report what arrives, until Ctrl-C.
+//
+// The counters are the point. With the phone in another room these are the only
+// evidence available, and they separate the two failures that look identical
+// from the sofa: zero replies means the multicast is not reaching this machine,
+// while replies with zero requests means Plexamp heard the announcement and
+// then could not reach the HTTP port.
+int wait_for_discovery(const GdmResponder& gdm, const CompanionServer& companion)
+{
+    std::signal(SIGINT, &on_interrupt);
+    std::signal(SIGTERM, &on_interrupt);
+
+    std::printf("holocron: waiting. Open Plexamp, play something, and cast it here.\n"
+                "holocron: Ctrl-C to stop.\n");
+    std::fflush(stdout);
+
+    std::uint64_t last_replies = 0;
+
+    while (!g_interrupted.load(std::memory_order_relaxed)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+        // Only on change. A heartbeat every tick would bury the request log,
+        // which is the thing actually worth reading here.
+        const std::uint64_t replies = gdm.replies();
+        if (replies != last_replies) {
+            std::printf("holocron: answered %llu search(es)\n",
+                        static_cast<unsigned long long>(replies));
+            std::fflush(stdout);
+            last_replies = replies;
+        }
+    }
+
+    std::printf("\nholocron: %llu search(es) answered, %llu HTTP request(s) served\n",
+                static_cast<unsigned long long>(gdm.replies()),
+                static_cast<unsigned long long>(companion.requests()));
+
+    if (gdm.replies() == 0) {
+        std::printf("holocron: nothing searched for a player. If Plexamp was open, the\n"
+                    "  multicast is not reaching this machine -- check the Windows\n"
+                    "  firewall for UDP %u, and that the phone is on the same subnet\n"
+                    "  rather than a guest network.\n",
+                    static_cast<unsigned>(kGdmClientUpdatePort));
+    } else if (companion.requests() == 0) {
+        std::printf("holocron: searches were answered but nothing connected over HTTP.\n"
+                    "  The announcement is arriving and the Companion port is not\n"
+                    "  reachable -- check the firewall for the TCP port above.\n");
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -463,9 +625,16 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    if (opt.help || opt.path == nullptr) {
+    // --discover needs no track: it is about whether the phone can see this
+    // machine, which has nothing to do with what would be played.
+    if (opt.help || (opt.path == nullptr && !opt.discover)) {
         usage();
         return opt.help ? 0 : 2;
+    }
+
+    if (opt.discover && opt.no_discover) {
+        std::fprintf(stderr, "holocron: --discover and --no-discover contradict each other\n");
+        return 2;
     }
 
     // -- gatekeeper.toml -------------------------------------------------------
@@ -523,6 +692,33 @@ int main(int argc, char** argv)
     if (opt.calibrate && opt.crystal == nullptr) {
         opt.crystal = "instruments/sync";
         opt.vault   = nullptr;
+    }
+
+    // -- Plex discovery (M5, #102) --------------------------------------------
+    //
+    // Started here, before the audio device and before the window, and torn down
+    // by RAII on every exit path below. Nothing downstream depends on it: a
+    // machine that cannot announce still plays a file from the command line, and
+    // that is deliberate -- discovery failing should not cost you the player.
+    //
+    // Nothing plays over Plex yet. This announces the device and answers the
+    // probes; the commands are logged and not acted on.
+    GdmResponder    gdm;
+    CompanionServer companion;
+
+    // --discover always wins here: it cannot be combined with --no-discover
+    // (rejected above), so reaching this with opt.discover set means discovery
+    // is wanted regardless of what the config says.
+    if ((cfg.plex_discovery || opt.discover) && !opt.no_discover) {
+        const PlexDevice device = device_from(cfg);
+        if (!start_discovery(device, gdm, companion) && opt.discover) {
+            // Only fatal when discovery is the whole point of the run.
+            return 1;
+        }
+    }
+
+    if (opt.discover) {
+        return wait_for_discovery(gdm, companion);
     }
 
     // On the HEAP, and this is not a style preference.

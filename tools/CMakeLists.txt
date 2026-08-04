@@ -43,6 +43,7 @@ target_link_libraries(holocron
         holocron::wasapi_sink
         holocron::render
         holocron::config
+        holocron::plex
         holocron::warnings
         # The decode thread is a std::thread; gcc/libstdc++ needs an explicit
         # pthread link for that and MSVC needs nothing.

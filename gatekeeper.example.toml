@@ -241,13 +241,47 @@ log = ""
 
 
 # ---------------------------------------------------------------------------
-# [plex] -- M5. Nothing reads these yet.
+# [plex] -- M5. Discovery is live; the server and token are not read yet.
 # ---------------------------------------------------------------------------
 #
 # THIS SECTION IS WHY gatekeeper.toml IS GITIGNORED. A Plex token grants access
 # to the whole library; once it lands in a public repo that anyone has forked,
 # rewriting history does not retract it.
 [plex]
+
+# Announce on the LAN so Holocron appears in Plexamp's device list.
+#
+# Turning this off is a real answer, not a debugging aid: the player still works
+# from the command line, and on a network you do not control you may simply not
+# want it advertising itself.
+#
+# LIVE. Today also: --discover to test it on its own, --no-discover for one run.
+discovery = true
+
+# What appears in Plexamp's device list. LIVE.
+device_name = "Holocron"
+
+# Identifies this player to Plex clients, and must be STABLE across restarts --
+# with a new one each run, Plexamp's device list gains a new entry every time
+# Holocron starts and none of the old ones ever go away.
+#
+# Leave it empty and Holocron generates one on first run, then prints the line
+# to paste back here. That is the intended way to fill it in; there is nothing
+# to look up.
+#
+# This one is NOT a secret. It is broadcast over the LAN in the clear by design,
+# and is the only key in this section that is safe in a screenshot. The token
+# below is not, which is why this file is gitignored.
+#
+# LIVE.
+machine_identifier = ""
+
+# The port the Companion HTTP endpoints listen on. It is announced over GDM, so
+# clients use whatever is advertised rather than assuming a number -- move it
+# freely if something else on this machine holds 32500.
+#
+# LIVE.
+port = 32500
 
 # The example address is from RFC 5737's documentation range on purpose, so that
 # pasting this template unedited cannot probe a real machine.
