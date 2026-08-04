@@ -306,6 +306,11 @@ struct Shared {
 
     std::atomic<bool>          quit{false};
     std::atomic<bool>          finished{false};
+
+    // Frames padded AFTER the decoder finished, which is the file ending rather
+    // than a fault. Subtracted from the ring's total so the reported underrun
+    // count means only what it claims to. See render_audio.
+    std::atomic<std::uint64_t> drain_padded{0};
     std::atomic<std::uint64_t> published{0};
 };
 
@@ -339,7 +344,33 @@ void render_audio(float* out, std::size_t frames, std::uint16_t channels, void* 
 {
     auto* s = static_cast<Shared*>(user);
     (void)channels;
+
+    // A RING THAT RUNS DRY MID-TRACK AND A RING THAT RUNS DRY AT THE END OF THE
+    // FILE ARE NOT THE SAME EVENT, AND ONE COUNTER FOR BOTH CRIES WOLF.
+    //
+    // Mid-track it is a click and a real defect -- the thing this counter exists
+    // to catch. After the decoder has finished it is simply the file ending: the
+    // ring drains, the callback keeps being called until the sink is stopped,
+    // and a handful of periods get padded. That happens on EVERY complete play,
+    // so reporting it as "THE RING RAN DRY" trains the reader to ignore the one
+    // message that matters.
+    //
+    // Observed as 1169 frames on a full track and reproduced at 401 here; a
+    // frame-capped run that exits mid-track reports zero, which is what gave it
+    // away.
+    //
+    // Two relaxed atomic loads and no allocation, so the audio-path rule holds.
+    const bool          done   = s->finished.load(std::memory_order_acquire);
+    const std::uint64_t before = s->pcm.silence_padded();
+
     s->pcm.read(out, frames);
+
+    if (done) {
+        const std::uint64_t after = s->pcm.silence_padded();
+        if (after > before) {
+            s->drain_padded.fetch_add(after - before, std::memory_order_relaxed);
+        }
+    }
 }
 
 // The decode thread. Owns everything that is not GL and not the audio callback.
@@ -959,10 +990,20 @@ int main(int argc, char** argv)
         // The underrun count comes from the RING, not the sink -- the ring is
         // the only thing that knows whether it had audio when it was asked.
         // Two sink-side metrics were deleted for pretending otherwise.
-        const std::uint64_t dropped = shared.pcm.silence_padded();
-        std::printf("holocron: %llu frames of silence padded%s\n",
-                    static_cast<unsigned long long>(dropped),
-                    dropped == 0 ? " (clean)" : " -- THE RING RAN DRY");
+        const std::uint64_t padded = shared.pcm.silence_padded();
+        const std::uint64_t drain  = shared.drain_padded.load(std::memory_order_relaxed);
+        const std::uint64_t dry    = padded > drain ? padded - drain : 0;
+
+        std::printf("holocron: %llu frames of silence padded mid-track%s\n",
+                    static_cast<unsigned long long>(dry),
+                    dry == 0 ? " (clean)" : " -- THE RING RAN DRY");
+        if (drain > 0) {
+            // Reported, not hidden. It is expected, but a sudden change in it
+            // would still be worth noticing.
+            std::printf("holocron: %llu more padded draining the ring at end of stream "
+                        "(expected)\n",
+                        static_cast<unsigned long long>(drain));
+        }
 
         const SinkClock c = sink->clock();
         if (c.valid) {

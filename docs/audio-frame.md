@@ -36,9 +36,15 @@ redefining "bass" — there is only a vault of crystals that all quietly look wr
   that has input lag of its own pushing the other way. So the value belongs to a
   whole rack and not to the receiver, and changing the display invalidates it.
 
-  Measured zero on the rack (2026-08-03) — the two cancel within the ~20 ms a
-  by-eye judgement can resolve. Zero is therefore a result, not an unexamined
-  default, but it means "under roughly 20 ms" rather than "exactly nothing".
+  Measured **−85 ms** on the rack (2026-08-03), twice and blind. Negative because
+  the projector is slower than the audio path. A display's *rated* input lag is
+  roughly half the real figure — it is measured at 1080p, usually to mid-frame,
+  and excludes 4K/HDR processing and the vsync'd present pipeline — so this must
+  be measured rather than derived from a specification.
+
+  A negative trim asks for a frame **ahead** of the playback point, which exists
+  only because the decoder runs ahead of the device. That budget is the PCM ring,
+  sized by `audio.lead_ms`; past it the request clamps and the placement jitters.
 - Publication is a **lock-free triple buffer**. The analysis thread writes into a
   spare slot and atomically swaps; the render thread takes the newest complete
   frame and never blocks, never tears, and never waits on audio.
