@@ -441,16 +441,11 @@ std::string local_address_towards(const std::string& peer)
     return address;
 }
 
-LinkError register_player(const std::string& token, const std::string& client_identifier,
-                          const std::string& device_name, const std::string& product,
-                          const std::string& version, const std::string& connection_uri,
-                          std::string& out_detail)
+LinkError register_player_impl(const std::string& token, const std::string& client_identifier,
+                               const std::string& device_name, const std::string& product,
+                               const std::string& version, const std::string& connection_uri,
+                               std::string& out_detail)
 {
-    if (token.empty()) {
-        out_detail = "no Plex token; run `holocron --link` first";
-        return LinkError::kRejected;
-    }
-
     // 1. Create or refresh the device. Any authenticated request carrying the
     //    full X-Plex-* header set does it -- there is no dedicated endpoint, and
     //    that is why it is easy to miss: it succeeds as a side effect.
@@ -524,14 +519,38 @@ std::string local_address_towards(const std::string&)
     return {};
 }
 
-LinkError register_player(const std::string&, const std::string&, const std::string&,
-                          const std::string&, const std::string&, const std::string&,
-                          std::string& out_detail)
+LinkError register_player_impl(const std::string&, const std::string&, const std::string&,
+                               const std::string&, const std::string&, const std::string&,
+                               std::string& out_detail)
 {
     out_detail = "built without the WinHTTP path; see plex_link.hpp";
     return LinkError::kUnsupportedPlatform;
 }
 
 #endif  // _WIN32
+
+LinkError register_player(const std::string& token, const std::string& client_identifier,
+                          const std::string& device_name, const std::string& product,
+                          const std::string& version, const std::string& connection_uri,
+                          std::string& out_detail)
+{
+    // THE MISSING-TOKEN CHECK LIVES ABOVE THE PLATFORM SPLIT, AND THAT IS THE
+    // WHOLE POINT.
+    //
+    // It was inside the Windows implementation first, so on any other build the
+    // caller got "linking is only implemented on Windows" for a problem that is
+    // one command away. The Linux CI job caught it -- which is exactly what it
+    // is documented to be for: a free second compiler that sees what MSVC
+    // cannot, including behaviour that only differs off the target.
+    //
+    // The message names the fix. "rejected" on its own would send someone
+    // looking at their network.
+    if (token.empty()) {
+        out_detail = "no Plex token; run `holocron --link` first";
+        return LinkError::kRejected;
+    }
+    return register_player_impl(token, client_identifier, device_name, product, version,
+                                connection_uri, out_detail);
+}
 
 }  // namespace holocron
