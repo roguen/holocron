@@ -109,6 +109,43 @@ struct Gatekeeper {
     // announced, so this can be moved if something else holds 32500.
     int plex_port = 32500;
 
+    // What Holocron claims it can be asked to do.
+    //
+    // Settable because the protocol has no specification and the only test that
+    // means anything is a real phone. Whether a client offers this device can
+    // turn on this string, and finding that out one rebuild at a time is not a
+    // workable loop -- the first attempt shipped without `navigation` and the
+    // device registered with the media server but never appeared in Plexamp.
+    //
+    // Empty means the built-in default, which matches plex-mpv-shim exactly.
+    // Prefer leaving it empty unless testing a specific variation.
+    std::string plex_capabilities;
+
+    // How the device presents itself: "pc", "stb", "mobile", "tv".
+    //
+    // Configurable for the same reason as the capabilities above -- clients
+    // group and filter their device lists by it, and which values a given
+    // client will offer is not written down anywhere. Empty means the default.
+    //
+    // It also stops being a guess at M8: the Shield is an "stb", and that will
+    // be a config change rather than a code change.
+    std::string plex_device_class;
+
+    // THE ONE SECRET IN THIS STRUCT.
+    //
+    // Grants access to the account's libraries. It is why gatekeeper.toml is
+    // gitignored and why CI fails if that file is ever tracked -- once a
+    // credential is in a commit anyone has forked, rewriting history does not
+    // retract it.
+    //
+    // Obtained with `holocron --link`, which never sees a password: the sign-in
+    // happens on Plex's own page in the user's own browser. Empty means not
+    // linked, which is the ordinary state of a fresh checkout.
+    //
+    // Never print this. The player reports whether a token is present, never
+    // what it is.
+    std::string plex_token;
+
     // So a test can say "this file is exactly the defaults", which is what
     // gatekeeper.example.toml claims about itself in its own header.
     bool operator==(const Gatekeeper&) const = default;

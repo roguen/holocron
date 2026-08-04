@@ -90,6 +90,15 @@ public:
     std::uint64_t requests() const;
     std::string   last_path() const;
 
+    // Timeline polls, counted separately and NOT logged individually.
+    //
+    // They are the overwhelming majority of traffic -- 415 of 424 requests in
+    // the first real session -- and printing each one buried the four that
+    // mattered. Counted rather than dropped, because "the phone is polling" and
+    // "the phone has gone away" are different states and the count is the only
+    // thing that tells them apart.
+    std::uint64_t timeline_polls() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

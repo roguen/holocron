@@ -56,11 +56,26 @@ inline constexpr std::uint16_t kCompanionPort = 32500;
 
 // What Holocron claims it can be asked to do.
 //
-// `navigation` is deliberately ABSENT. Holocron has no menu to navigate and
-// D-029 says it will not grow one -- Plexamp is the browser. Claiming a
-// capability that is not implemented would make a client send commands that are
-// silently dropped, which is worse than not offering it.
-inline constexpr const char* kProtocolCapabilities = "timeline,playback,playqueues";
+// THIS MATCHES plex-mpv-shim EXACTLY, INCLUDING `navigation`, AND THAT IS THE
+// POINT.
+//
+// `navigation` was dropped once, on the reasoning that Holocron has no menu and
+// D-029 says it will not grow one, so advertising a capability it does not
+// implement would invite commands it silently discards. That reasoning is sound
+// and it was still the wrong call: the device registered correctly with the
+// media server and did not appear in Plexamp, and the ONLY difference from the
+// known-working reference was this string.
+//
+// The general rule, for a protocol with no specification: **match the reference
+// first, and trim afterwards with evidence.** A deviation that seems obviously
+// harmless cannot be told apart from a protocol mistake when the only feedback
+// available is a device that does or does not show up on a phone.
+//
+// This is the DEFAULT. gatekeeper.toml can override it, so a variation can be
+// tried against the real phone without a rebuild -- which is the only way to
+// experiment on something undocumented at a sensible pace.
+inline constexpr const char* kProtocolCapabilities =
+    "timeline,playback,navigation,playqueues";
 
 // Everything Holocron announces about itself.
 //

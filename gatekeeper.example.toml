@@ -283,6 +283,33 @@ machine_identifier = ""
 # LIVE.
 port = 32500
 
+# What Holocron claims it can be asked to do.
+#
+# EMPTY MEANS THE BUILT-IN DEFAULT, which is `timeline,playback,navigation,
+# playqueues` -- exactly what plex-mpv-shim announces. Leave it empty unless you
+# are deliberately testing a variation.
+#
+# It is settable at all because this protocol has no specification and the only
+# test that means anything is a real phone. Whether a client offers this device
+# can turn on this one string, and finding that out one rebuild at a time is not
+# a workable loop.
+#
+# LIVE.
+capabilities = ""
+
+# How the device presents itself: "pc", "stb", "mobile", or "tv".
+#
+# EMPTY MEANS THE BUILT-IN DEFAULT, which is "pc". Clients group and filter
+# their device lists by this, and which values a given client will offer is not
+# written down anywhere -- so it is settable for the same reason `capabilities`
+# is.
+#
+# It also stops being a guess on the Shield at M8, where the right answer is
+# "stb" and this becomes a config change rather than a code change.
+#
+# LIVE.
+device_class = ""
+
 # The example address is from RFC 5737's documentation range on purpose, so that
 # pasting this template unedited cannot probe a real machine.
 server = "http://192.0.2.1:32400"

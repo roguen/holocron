@@ -51,6 +51,7 @@
 #include <holocron/crystal.hpp>
 #include <holocron/gdm_responder.hpp>
 #include <holocron/plex_device.hpp>
+#include <holocron/plex_link.hpp>
 #include <holocron/crystal_facet.hpp>
 #include <holocron/crystal_watch.hpp>
 #include <holocron/gatekeeper.hpp>
@@ -123,6 +124,9 @@ struct Options {
     // everything else the player does, which matters because the protocol is
     // community-documented and this is the part most likely to be wrong.
     bool        discover = false;
+    // Sign in to a Plex account, print the token line, exit. Needs no track and
+    // no window, same as --discover.
+    bool        link     = false;
     // Turn discovery OFF for a run that would otherwise have it on. The config
     // key is the durable setting; this is the once-off.
     bool        no_discover = false;
@@ -146,7 +150,43 @@ struct Options {
         bool height  = false;
         bool vault   = false;
     } given;
+
+    // AN ARGUMENT THE PARSER DID NOT UNDERSTAND, AND WHY THIS IS NOT OPTIONAL.
+    //
+    // Before #104 an unrecognised option was dropped on the floor, and the
+    // symptom was as far from the cause as it could get: a command copied with a
+    // stray trailing backslash became `--discover\`, which matched nothing,
+    // which left the player with no arguments, which printed usage and exited --
+    // and the question that arrived was "why does Holocron not appear in
+    // Plexamp's device list", about a program that had never run.
+    //
+    // Same principle gatekeeper.toml already follows: a value the program cannot
+    // act on is fatal, because silently carrying on means the thing you asked
+    // for is not happening and nothing says so.
+    const char* bad_option = nullptr;
+    const char* bad_reason = nullptr;
 };
+
+// Options that consume the NEXT argument.
+//
+// Listed so that a known option missing its value can be told apart from an
+// option that does not exist -- `--width` at the end of the line and `--widht`
+// are different mistakes and deserve different messages. Keep in step with the
+// cases below; there is no check that they agree.
+const char* const kValueOptions[] = {
+    "--shot", "--frames", "--width", "--height", "--crystal",
+    "--vault", "--config", "--trim-ms", "--sink",
+};
+
+bool takes_a_value(const char* a)
+{
+    for (const char* opt : kValueOptions) {
+        if (std::strcmp(a, opt) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
 
 Options parse(int argc, char** argv)
 {
@@ -188,9 +228,16 @@ Options parse(int argc, char** argv)
             } else if (std::strcmp(s, "auto") == 0) {
                 o.sink       = Options::kAuto;
                 o.given.sink = true;
+            } else if (o.bad_option == nullptr) {
+                // Previously fell through to the default, so `--sink asio` ran
+                // on WASAPI and said nothing about the backend you asked for.
+                o.bad_option = s;
+                o.bad_reason = "not a backend -- expected auto, wasapi, or sdl";
             }
         } else if (std::strcmp(a, "--discover") == 0) {
             o.discover = true;
+        } else if (std::strcmp(a, "--link") == 0) {
+            o.link = true;
         } else if (std::strcmp(a, "--no-discover") == 0) {
             o.no_discover = true;
         } else if (std::strcmp(a, "--no-audio") == 0) {
@@ -201,6 +248,14 @@ Options parse(int argc, char** argv)
             o.help = true;
         } else if (a[0] != '-' && o.path == nullptr) {
             o.path = a;
+        } else if (o.bad_option == nullptr) {
+            // Reached by anything the cases above did not claim. Only the FIRST
+            // is kept: reporting one clear problem beats a list, and the rest of
+            // the line has not been acted on anyway.
+            o.bad_option = a;
+            o.bad_reason = takes_a_value(a)  ? "needs a value"
+                           : a[0] == '-'     ? "unknown option"
+                                             : "a second track was given, and only one is played";
         }
     }
     return o;
@@ -234,6 +289,11 @@ void usage()
         "                 --crystal, saving the .frag or .toml rebuilds it in\n"
         "                 place by default; a shader that fails to compile is\n"
         "                 reported and the running one keeps drawing\n"
+        "  --link         sign this Holocron in to your Plex account, which is\n"
+        "                 what makes it offerable as a cast target. Prints a\n"
+        "                 link to approve in your browser, then prints the token\n"
+        "                 line to paste into gatekeeper.toml. No password is\n"
+        "                 typed here and none is stored\n"
         "  --discover     announce on the LAN so Holocron appears in Plexamp's\n"
         "                 device list, then wait. No track, no window, no audio.\n"
         "                 Prints every request the phone makes. Ctrl-C to stop\n"
@@ -492,6 +552,16 @@ PlexDevice device_from(const Gatekeeper& cfg)
     d.version = holocron_version();
     d.port    = static_cast<std::uint16_t>(cfg.plex_port);
 
+    // Empty means the built-in default, which matches plex-mpv-shim exactly.
+    // An override exists so a variation can be tried against the real phone
+    // without a rebuild -- see the note on kProtocolCapabilities.
+    if (!cfg.plex_capabilities.empty()) {
+        d.capabilities = cfg.plex_capabilities;
+    }
+    if (!cfg.plex_device_class.empty()) {
+        d.device_class = cfg.plex_device_class;
+    }
+
     if (is_valid_machine_identifier(cfg.plex_machine_identifier)) {
         d.machine_identifier = cfg.plex_machine_identifier;
         return d;
@@ -555,10 +625,133 @@ bool start_discovery(const PlexDevice& device, GdmResponder& gdm, CompanionServe
 
     std::printf("holocron: announcing as \"%s\" (%s)\n", device.name.c_str(),
                 device.machine_identifier.c_str());
-    std::printf("holocron: GDM on UDP %u, Companion on TCP %u, capabilities %s\n",
-                static_cast<unsigned>(kGdmClientUpdatePort), static_cast<unsigned>(device.port),
+    std::printf("holocron: GDM on UDP %u, Companion on TCP %u\n",
+                static_cast<unsigned>(kGdmClientUpdatePort), static_cast<unsigned>(device.port));
+    // Printed on its own line and in full, because these two are what get
+    // varied while working out why a client does or does not offer the device.
+    // Reading them back from the running player beats trusting the config file.
+    std::printf("holocron: device_class %s, capabilities %s\n", device.device_class.c_str(),
                 device.capabilities.c_str());
     return true;
+}
+
+// Register with the Plex ACCOUNT, which is a separate thing from announcing on
+// the LAN and is the half that actually makes the device castable.
+//
+// Established 2026-08-04 by walking it by hand: GDM alone put Holocron in the
+// media server's /clients list and in no controller's cast list. Plex Web
+// cannot do multicast at all, so its list is account-scoped -- and until this
+// runs, Holocron is not on the account.
+//
+// Deliberately NOT fatal. A player that will not start because plex.tv is
+// unreachable is worse than one that plays the file you asked for and says the
+// casting half is unavailable.
+void register_with_account(const Gatekeeper& cfg, const PlexDevice& device)
+{
+    if (cfg.plex_token.empty()) {
+        std::printf("holocron: no Plex token -- discoverable on this network, but NOT\n"
+                    "  offered as a cast target in Plexamp or Plex Web. Run\n"
+                    "  `holocron --link` once to fix that.\n");
+        return;
+    }
+
+    // The address the media server can reach, asked of the routing table. Any
+    // LAN peer would do; the Plex server is simply the one host known to be on
+    // the right side of every interface this machine has.
+    const std::string local = local_address_towards("192.168.1.1");
+    if (local.empty()) {
+        std::fprintf(stderr, "holocron: cannot work out this machine's LAN address; not\n"
+                             "  registering with the account\n");
+        return;
+    }
+
+    const std::string uri =
+        "http://" + local + ":" + std::to_string(static_cast<unsigned>(device.port));
+
+    std::string     detail;
+    const LinkError err = register_player(cfg.plex_token, device.machine_identifier, device.name,
+                                          device.product, device.version, uri, detail);
+    if (err != LinkError::kOk) {
+        std::fprintf(stderr, "holocron: could not register with your Plex account -- %s\n  %s\n",
+                     to_string(err), detail.c_str());
+        return;
+    }
+    std::printf("holocron: registered with your Plex account at %s\n", uri.c_str());
+}
+
+// --link: sign this Holocron in to a Plex account.
+//
+// GDM alone was not enough. Verified 2026-08-04: the device registered correctly
+// with the media server and appeared in neither Plexamp nor Plex Web. Plex Web
+// settles why -- it is a browser app and cannot do multicast at all, so its
+// device list is scoped to the ACCOUNT rather than to the local network.
+//
+// No password is typed here and none is stored. Holocron asks plex.tv for a
+// code; the sign-in happens on Plex's own page in the owner's own browser; what
+// comes back is a token scoped to this device that can be revoked from the
+// account page without touching anything else.
+int run_link(const PlexDevice& device, const char* config_path)
+{
+    std::signal(SIGINT, &on_interrupt);
+
+    PlexPin     pin;
+    std::string detail;
+
+    const LinkError asked = request_pin(device.machine_identifier, device.product, pin, detail);
+    if (asked != LinkError::kOk) {
+        std::fprintf(stderr, "holocron: %s\n  %s\n", to_string(asked), detail.c_str());
+        return 1;
+    }
+
+    // ONE INSTRUCTION, AND IT IS THE URL.
+    //
+    // `strong=true` returns a long code meant to be carried IN the link, not a
+    // four-character PIN to type at plex.tv/link. Offering both would hand over
+    // a 25-character string with an invitation to type it somewhere it does not
+    // work -- which is the same shape of mistake as the trailing backslash in
+    // #104: an instruction that looks right and silently is not.
+    std::printf("\n"
+                "  Open this in a browser signed in to your Plex account, and\n"
+                "  approve \"%s\":\n"
+                "\n"
+                "      %s\n"
+                "\n"
+                "  The code is already in that link; there is nothing to type.\n"
+                "\n"
+                "holocron: waiting for you to approve it. Ctrl-C to give up.\n",
+                device.product.c_str(),
+                link_url(pin, device.machine_identifier, device.product).c_str());
+    std::fflush(stdout);
+
+    // Five minutes. The PIN itself expires around then, so waiting longer would
+    // only mean polling something already dead.
+    const LinkError got = await_token(pin, device.machine_identifier, 300, &g_interrupted, detail);
+
+    if (got != LinkError::kOk) {
+        std::fprintf(stderr, "\nholocron: %s\n  %s\n", to_string(got), detail.c_str());
+        return 1;
+    }
+
+    // PRINTED, not written. Appending to the config would mean this program
+    // rewrites a hand-edited file full of measurements and comments, and the
+    // failure mode of getting that wrong is losing the trim. Same pattern
+    // --calibrate uses.
+    //
+    // It does put a credential in the scrollback, which is the cost. Said out
+    // loud rather than hidden, because the owner is the only one who can decide
+    // whether that matters on this machine.
+    std::printf("\n"
+                "holocron: linked. Paste this into %s:\n"
+                "\n"
+                "    [plex]\n"
+                "    token = \"%s\"\n"
+                "\n"
+                "  THAT IS A CREDENTIAL. It grants access to your Plex library.\n"
+                "  %s is gitignored and must stay that way. Clear this terminal\n"
+                "  when you are done, and revoke it at https://plex.tv/devices\n"
+                "  if it ever gets somewhere it should not be.\n",
+                config_path, pin.auth_token.c_str(), config_path);
+    return 0;
 }
 
 // --discover: hold the two servers up and report what arrives, until Ctrl-C.
@@ -593,9 +786,11 @@ int wait_for_discovery(const GdmResponder& gdm, const CompanionServer& companion
         }
     }
 
-    std::printf("\nholocron: %llu search(es) answered, %llu HTTP request(s) served\n",
+    std::printf("\nholocron: %llu search(es) answered, %llu HTTP request(s) served "
+                "(%llu timeline polls)\n",
                 static_cast<unsigned long long>(gdm.replies()),
-                static_cast<unsigned long long>(companion.requests()));
+                static_cast<unsigned long long>(companion.requests()),
+                static_cast<unsigned long long>(companion.timeline_polls()));
 
     if (gdm.replies() == 0) {
         std::printf("holocron: nothing searched for a player. If Plexamp was open, the\n"
@@ -617,6 +812,16 @@ int main(int argc, char** argv)
 {
     Options opt = parse(argc, argv);
 
+    // Before anything else, including --help and --list-bindings. An argument
+    // the parser did not understand means the command that was typed is not the
+    // command that would run, and every other outcome from here would be a
+    // report about something else. See #104.
+    if (opt.bad_option != nullptr) {
+        std::fprintf(stderr, "holocron: `%s` -- %s\n", opt.bad_option, opt.bad_reason);
+        std::fprintf(stderr, "holocron: --help lists every option\n");
+        return 2;
+    }
+
     // Before the track check on purpose -- asking what you may bind is a
     // question about the contract, not about a file.
     if (opt.list_bindings) {
@@ -627,7 +832,7 @@ int main(int argc, char** argv)
 
     // --discover needs no track: it is about whether the phone can see this
     // machine, which has nothing to do with what would be played.
-    if (opt.help || (opt.path == nullptr && !opt.discover)) {
+    if (opt.help || (opt.path == nullptr && !opt.discover && !opt.link)) {
         usage();
         return opt.help ? 0 : 2;
     }
@@ -706,6 +911,13 @@ int main(int argc, char** argv)
     GdmResponder    gdm;
     CompanionServer companion;
 
+    // Linking comes before discovery: it needs the machine identifier and
+    // nothing else, and a run that is signing in has no business also
+    // announcing itself.
+    if (opt.link) {
+        return run_link(device_from(cfg), opt.config);
+    }
+
     // --discover always wins here: it cannot be combined with --no-discover
     // (rejected above), so reaching this with opt.discover set means discovery
     // is wanted regardless of what the config says.
@@ -715,6 +927,9 @@ int main(int argc, char** argv)
             // Only fatal when discovery is the whole point of the run.
             return 1;
         }
+        // After the HTTP port is listening, so the address being published is
+        // one that already answers.
+        register_with_account(cfg, device);
     }
 
     if (opt.discover) {
