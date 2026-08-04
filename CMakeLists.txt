@@ -315,6 +315,7 @@ add_library(holocron_plex STATIC
     src/plex/plex_device.cpp
     src/plex/gdm_responder.cpp
     src/plex/companion_server.cpp
+    src/plex/plex_link.cpp
 )
 add_library(holocron::plex ALIAS holocron_plex)
 
@@ -335,7 +336,12 @@ target_include_directories(holocron_plex SYSTEM PRIVATE
 target_compile_definitions(holocron_plex PRIVATE HOLOCRON_VERSION="${PROJECT_VERSION}")
 
 if(WIN32)
-    target_link_libraries(holocron_plex PRIVATE ws2_32)
+    # ws2_32 for the GDM sockets. winhttp for the plex.tv link flow: plex.tv is
+    # HTTPS-only, cpp-httplib can only do TLS against OpenSSL, and taking an
+    # OpenSSL dependency for three requests was not worth it when the platform
+    # SDK already ships a client. Same reasoning that keeps WASAPI on avrt and
+    # ole32 rather than a portable audio library. See plex_link.hpp.
+    target_link_libraries(holocron_plex PRIVATE ws2_32 winhttp)
 endif()
 
 # ---------------------------------------------------------------------------

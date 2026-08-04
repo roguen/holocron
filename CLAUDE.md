@@ -70,6 +70,26 @@ protocol is community-documented rather than official. That is now answered:
 real GDM search answered from the LAN and `/resources` served with a matching
 identity.
 
+**Appearing in Plexamp needs FOUR things, and only the first is on the LAN.**
+Established 2026-08-04 by walking the whole chain by hand against a real phone,
+because none of it is documented:
+
+| | What it does | Without it |
+|---|---|---|
+| **GDM announcement** | Puts the player in the media server's `/clients` list | — |
+| **Account token** | `holocron --link`, PIN flow at plex.tv | No account presence at all |
+| **Device with `provides=player`** | Created by *any* authenticated request carrying the full `X-Plex-*` header set | Not a player as far as Plex is concerned |
+| **A published connection** | `PUT /devices/{id}.xml?Connection[][uri]=...` | Device exists, `/api/v2/resources` omits it, **no controller offers it** |
+
+**GDM alone gets you nowhere near a cast list**, which is the opposite of what
+the prior art implies. The thing that settles it: **Plex Web cannot do multicast
+at all** — it is a browser app — so its device list is scoped to the *account*.
+Any player that only announces on the LAN is invisible to it, and to Plexamp.
+
+The fourth step is the one that cost the most time, because the third **succeeds
+silently**: the device shows up in `/devices.xml` looking entirely correct and is
+simply absent from the list controllers actually read.
+
 **Three things about discovery that are not obvious from the code:**
 
 - **The GDM bytes are copied, not designed.** Field order, the `: ` separator, LF
@@ -86,7 +106,13 @@ identity.
   looks like the device appearing in the list and vanishing a second later.
 - **`plex.machine_identifier` must be saved or the device list grows every run.**
   Holocron generates one when the key is empty and prints the line to paste, the
-  same pattern `--calibrate` uses for the trim.
+  same pattern `--calibrate` uses for the trim. It must also be the *same* value
+  used when linking, or the account gains a second Holocron that nothing can
+  reach.
+- **`wait=1` on a timeline poll is a long poll, not a flag to ignore.** Answering
+  immediately turns Plexamp into a hot loop — measured at 415 polls in one
+  session from a player with nothing to report. Hold the connection for ~30 s or
+  until the state actually changes.
 
 **What remains in M2 is judgement, not plumbing.** The format, loader, renderer,
 hot reload and the vault all exist and are tested. The undecided part is the

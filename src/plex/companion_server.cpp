@@ -14,6 +14,8 @@
 #include <httplib.h>
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
@@ -40,7 +42,14 @@ struct CompanionServer::Impl {
 
     std::atomic<bool>            running{false};
     std::atomic<std::uint64_t>   requests{0};
+    std::atomic<std::uint64_t>   polls{0};
     std::atomic<std::uint16_t>   bound_port{0};
+
+    // Woken when there is something new to report on the timeline. Nothing sets
+    // it yet -- no playback -- so a long poll runs to its timeout, which is the
+    // correct behaviour for a player with nothing to say.
+    std::mutex              wake_mutex;
+    std::condition_variable wake;
 
     mutable std::mutex path_mutex;
     std::string        last_path;
@@ -54,9 +63,26 @@ struct CompanionServer::Impl {
     // reporting a problem. test_companion_server.cpp asserts that ordering.
     void install_routes();
 
+    // A timeline poll is not worth a line of output.
+    //
+    // Measured against a real Plexamp: 424 requests in one session, 415 of them
+    // timeline polls. Printing each one buried the FOUR that mattered -- one
+    // playMedia, one stop, two /resources -- in a wall of identical text. The
+    // log exists to show what the phone asks for; a log nobody can read does
+    // not do that.
+    static bool is_timeline_poll(const httplib::Request& req)
+    {
+        return req.path == "/player/timeline/poll";
+    }
+
     void note(const httplib::Request& req)
     {
         requests.fetch_add(1, std::memory_order_relaxed);
+
+        if (is_timeline_poll(req)) {
+            polls.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
 
         std::string path = req.path;
         if (!req.params.empty()) {
@@ -120,6 +146,24 @@ void CompanionServer::Impl::install_routes()
 
     const auto timeline = [self](const httplib::Request& req, httplib::Response& res) {
         self->note(req);
+
+        // HONOUR `wait=1`. IT IS A LONG POLL, NOT A FLAG TO IGNORE.
+        //
+        // Plexamp asks the player to hold the connection until something
+        // changes. Answering instantly turns that into a hot loop: measured at
+        // 415 polls in a single session, one immediately after another, for a
+        // player that had nothing to report. It is the client behaving
+        // correctly against a server that is not.
+        //
+        // Thirty seconds is what other implementations hold for. Waiting on a
+        // condition variable rather than sleeping means this returns the moment
+        // there IS something to say, once there is playback to say it about.
+        const auto wait = req.params.find("wait");
+        if (wait != req.params.end() && wait->second == "1") {
+            std::unique_lock<std::mutex> lock(self->wake_mutex);
+            self->wake.wait_for(lock, std::chrono::seconds(30));
+        }
+
         self->decorate(res);
         res.set_content(stopped_timeline_xml(command_id(req)), "text/xml");
     };
@@ -248,6 +292,11 @@ bool CompanionServer::running() const
 std::uint64_t CompanionServer::requests() const
 {
     return impl_ ? impl_->requests.load(std::memory_order_relaxed) : 0;
+}
+
+std::uint64_t CompanionServer::timeline_polls() const
+{
+    return impl_ ? impl_->polls.load(std::memory_order_relaxed) : 0;
 }
 
 std::string CompanionServer::last_path() const

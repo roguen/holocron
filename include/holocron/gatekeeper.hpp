@@ -131,6 +131,21 @@ struct Gatekeeper {
     // be a config change rather than a code change.
     std::string plex_device_class;
 
+    // THE ONE SECRET IN THIS STRUCT.
+    //
+    // Grants access to the account's libraries. It is why gatekeeper.toml is
+    // gitignored and why CI fails if that file is ever tracked -- once a
+    // credential is in a commit anyone has forked, rewriting history does not
+    // retract it.
+    //
+    // Obtained with `holocron --link`, which never sees a password: the sign-in
+    // happens on Plex's own page in the user's own browser. Empty means not
+    // linked, which is the ordinary state of a fresh checkout.
+    //
+    // Never print this. The player reports whether a token is present, never
+    // what it is.
+    std::string plex_token;
+
     // So a test can say "this file is exactly the defaults", which is what
     // gatekeeper.example.toml claims about itself in its own header.
     bool operator==(const Gatekeeper&) const = default;
