@@ -146,7 +146,43 @@ struct Options {
         bool height  = false;
         bool vault   = false;
     } given;
+
+    // AN ARGUMENT THE PARSER DID NOT UNDERSTAND, AND WHY THIS IS NOT OPTIONAL.
+    //
+    // Before #104 an unrecognised option was dropped on the floor, and the
+    // symptom was as far from the cause as it could get: a command copied with a
+    // stray trailing backslash became `--discover\`, which matched nothing,
+    // which left the player with no arguments, which printed usage and exited --
+    // and the question that arrived was "why does Holocron not appear in
+    // Plexamp's device list", about a program that had never run.
+    //
+    // Same principle gatekeeper.toml already follows: a value the program cannot
+    // act on is fatal, because silently carrying on means the thing you asked
+    // for is not happening and nothing says so.
+    const char* bad_option = nullptr;
+    const char* bad_reason = nullptr;
 };
+
+// Options that consume the NEXT argument.
+//
+// Listed so that a known option missing its value can be told apart from an
+// option that does not exist -- `--width` at the end of the line and `--widht`
+// are different mistakes and deserve different messages. Keep in step with the
+// cases below; there is no check that they agree.
+const char* const kValueOptions[] = {
+    "--shot", "--frames", "--width", "--height", "--crystal",
+    "--vault", "--config", "--trim-ms", "--sink",
+};
+
+bool takes_a_value(const char* a)
+{
+    for (const char* opt : kValueOptions) {
+        if (std::strcmp(a, opt) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
 
 Options parse(int argc, char** argv)
 {
@@ -188,6 +224,11 @@ Options parse(int argc, char** argv)
             } else if (std::strcmp(s, "auto") == 0) {
                 o.sink       = Options::kAuto;
                 o.given.sink = true;
+            } else if (o.bad_option == nullptr) {
+                // Previously fell through to the default, so `--sink asio` ran
+                // on WASAPI and said nothing about the backend you asked for.
+                o.bad_option = s;
+                o.bad_reason = "not a backend -- expected auto, wasapi, or sdl";
             }
         } else if (std::strcmp(a, "--discover") == 0) {
             o.discover = true;
@@ -201,6 +242,14 @@ Options parse(int argc, char** argv)
             o.help = true;
         } else if (a[0] != '-' && o.path == nullptr) {
             o.path = a;
+        } else if (o.bad_option == nullptr) {
+            // Reached by anything the cases above did not claim. Only the FIRST
+            // is kept: reporting one clear problem beats a list, and the rest of
+            // the line has not been acted on anyway.
+            o.bad_option = a;
+            o.bad_reason = takes_a_value(a)  ? "needs a value"
+                           : a[0] == '-'     ? "unknown option"
+                                             : "a second track was given, and only one is played";
         }
     }
     return o;
@@ -492,6 +541,16 @@ PlexDevice device_from(const Gatekeeper& cfg)
     d.version = holocron_version();
     d.port    = static_cast<std::uint16_t>(cfg.plex_port);
 
+    // Empty means the built-in default, which matches plex-mpv-shim exactly.
+    // An override exists so a variation can be tried against the real phone
+    // without a rebuild -- see the note on kProtocolCapabilities.
+    if (!cfg.plex_capabilities.empty()) {
+        d.capabilities = cfg.plex_capabilities;
+    }
+    if (!cfg.plex_device_class.empty()) {
+        d.device_class = cfg.plex_device_class;
+    }
+
     if (is_valid_machine_identifier(cfg.plex_machine_identifier)) {
         d.machine_identifier = cfg.plex_machine_identifier;
         return d;
@@ -555,8 +614,12 @@ bool start_discovery(const PlexDevice& device, GdmResponder& gdm, CompanionServe
 
     std::printf("holocron: announcing as \"%s\" (%s)\n", device.name.c_str(),
                 device.machine_identifier.c_str());
-    std::printf("holocron: GDM on UDP %u, Companion on TCP %u, capabilities %s\n",
-                static_cast<unsigned>(kGdmClientUpdatePort), static_cast<unsigned>(device.port),
+    std::printf("holocron: GDM on UDP %u, Companion on TCP %u\n",
+                static_cast<unsigned>(kGdmClientUpdatePort), static_cast<unsigned>(device.port));
+    // Printed on its own line and in full, because these two are what get
+    // varied while working out why a client does or does not offer the device.
+    // Reading them back from the running player beats trusting the config file.
+    std::printf("holocron: device_class %s, capabilities %s\n", device.device_class.c_str(),
                 device.capabilities.c_str());
     return true;
 }
@@ -616,6 +679,16 @@ int wait_for_discovery(const GdmResponder& gdm, const CompanionServer& companion
 int main(int argc, char** argv)
 {
     Options opt = parse(argc, argv);
+
+    // Before anything else, including --help and --list-bindings. An argument
+    // the parser did not understand means the command that was typed is not the
+    // command that would run, and every other outcome from here would be a
+    // report about something else. See #104.
+    if (opt.bad_option != nullptr) {
+        std::fprintf(stderr, "holocron: `%s` -- %s\n", opt.bad_option, opt.bad_reason);
+        std::fprintf(stderr, "holocron: --help lists every option\n");
+        return 2;
+    }
 
     // Before the track check on purpose -- asking what you may bind is a
     // question about the contract, not about a file.

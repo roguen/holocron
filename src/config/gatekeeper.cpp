@@ -150,6 +150,8 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     read_string(tbl, "plex", "device_name", out.plex_device_name, bad);
     read_string(tbl, "plex", "machine_identifier", out.plex_machine_identifier, bad);
     read_int(tbl, "plex", "port", out.plex_port, bad);
+    read_string(tbl, "plex", "capabilities", out.plex_capabilities, bad);
+    read_string(tbl, "plex", "device_class", out.plex_device_class, bad);
 
     if (!bad.empty()) {
         out         = Gatekeeper{};

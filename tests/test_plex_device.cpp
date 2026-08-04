@@ -59,7 +59,7 @@ TEST_CASE("the identity block is exactly what a Plex client expects", "[plex]")
         "Product: Holocron\n"
         "Protocol: plex\n"
         "Protocol-Version: 1\n"
-        "Protocol-Capabilities: timeline,playback,playqueues\n"
+        "Protocol-Capabilities: timeline,playback,navigation,playqueues\n"
         "Version: 0.1.15\n"
         "Resource-Identifier: 01234567-89ab-4cde-8f01-23456789abcd\n"
         "Device-Class: pc";
@@ -110,14 +110,37 @@ TEST_CASE("other GDM traffic on the same port is not answered", "[plex]")
     REQUIRE_FALSE(is_gdm_search(" M-SEARCH * HTTP/1.0")); // not at the start
 }
 
-TEST_CASE("navigation is not among the announced capabilities", "[plex]")
+TEST_CASE("the default capabilities match plex-mpv-shim exactly", "[plex]")
 {
-    // D-029: Plexamp is the browser and Holocron will not grow a menu. Claiming
-    // `navigation` would make a client send commands that are silently dropped.
+    // NOT a restatement of the builder -- this pins the string against the
+    // reference implementation, which is the only authority there is.
+    //
+    // `navigation` was dropped once on the reasoning that Holocron has no menu
+    // and D-029 says it will not grow one. The device then registered correctly
+    // with the media server and never appeared in Plexamp, and this string was
+    // the only difference from the reference. Whatever the eventual cause turns
+    // out to be, the lesson stands: with no specification to check against, a
+    // deviation that looks harmless is indistinguishable from a protocol
+    // mistake. Match first, trim later with evidence.
+    REQUIRE(std::string(kProtocolCapabilities) == "timeline,playback,navigation,playqueues");
+
     const std::string block = gdm_identity_block(fixture());
-    REQUIRE(block.find("Protocol-Capabilities: timeline,playback,playqueues") !=
+    REQUIRE(block.find("Protocol-Capabilities: timeline,playback,navigation,playqueues") !=
             std::string::npos);
-    REQUIRE(block.find("navigation") == std::string::npos);
+}
+
+TEST_CASE("capabilities can be overridden per device", "[plex]")
+{
+    // gatekeeper.toml can set this, so a variation is testable against a real
+    // phone without a rebuild. Both the GDM block and the HTTP document have to
+    // carry the override, or the two disagree and a client drops the entry.
+    PlexDevice d    = fixture();
+    d.capabilities  = "timeline,playback";
+
+    REQUIRE(gdm_identity_block(d).find("Protocol-Capabilities: timeline,playback\n") !=
+            std::string::npos);
+    REQUIRE(resources_xml(d).find("protocolCapabilities=\"timeline,playback\"") !=
+            std::string::npos);
 }
 
 TEST_CASE("resources uses the Companion attribute names, not the GDM field names",
@@ -134,7 +157,7 @@ TEST_CASE("resources uses the Companion attribute names, not the GDM field names
     REQUIRE(xml.find("deviceClass=\"pc\"") != std::string::npos);
     REQUIRE(xml.find("product=\"Holocron\"") != std::string::npos);
     REQUIRE(xml.find("protocolVersion=\"1\"") != std::string::npos);
-    REQUIRE(xml.find("protocolCapabilities=\"timeline,playback,playqueues\"") !=
+    REQUIRE(xml.find("protocolCapabilities=\"timeline,playback,navigation,playqueues\"") !=
             std::string::npos);
 
     // The GDM spellings must NOT appear.
