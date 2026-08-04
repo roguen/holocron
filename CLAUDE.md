@@ -68,11 +68,16 @@ hot reload and the vault all exist and are tested. The undecided part is the
 should inherit from the debug facet, which is an instrument panel. That call is
 the owner's and should not be made from a screenshot.
 
-**`--trim-ms` is measured: `-85` on this rack.** Verified 2026-08-03, twice and
-**blind** — the value out of view so a second run could not anchor on the first.
-Both landed on the same number. It lives in `gatekeeper.toml`; re-measure with
-`holocron <track> --calibrate`, which sweeps it live rather than making you
-restart the player per candidate.
+**`--trim-ms` is measured: `-90` on this rack.** Bracketed 2026-08-04 against the
+generated click track — clearly early at `-135`, clearly late at `-50`, so the
+estimate is the midpoint **−92.5 ± 42 ms**, recorded as `-90` on the 5 ms grid
+the tool steps in. It lives in `gatekeeper.toml`; re-measure with
+`holocron <track> --calibrate`.
+
+**Three independent estimates agree**, which is what makes it a property of the
+rack rather than of whatever was playing: this bracket gave −92.5, an earlier
+sweep against real music gave −85 (inside the bracket), and the arithmetic —
+rated 44 ms projector lag, roughly doubled — predicts ≈ −88.
 
 Negative because **the trim is a difference, not a latency**:
 

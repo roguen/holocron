@@ -36,11 +36,13 @@ redefining "bass" — there is only a vault of crystals that all quietly look wr
   that has input lag of its own pushing the other way. So the value belongs to a
   whole rack and not to the receiver, and changing the display invalidates it.
 
-  Measured **−85 ms** on the rack (2026-08-03), twice and blind. Negative because
-  the projector is slower than the audio path. A display's *rated* input lag is
-  roughly half the real figure — it is measured at 1080p, usually to mid-frame,
-  and excludes 4K/HDR processing and the vsync'd present pipeline — so this must
-  be measured rather than derived from a specification.
+  Measured **−90 ms** on the rack (2026-08-04), bracketed against a generated
+  click track: clearly early at −135, clearly late at −50, midpoint −92.5 with a
+  resolution of about ±42 ms. Negative because the projector is slower than the
+  audio path. A display's *rated* input lag is roughly half the real figure — it
+  is measured at 1080p, usually to mid-frame, and excludes 4K/HDR processing and
+  the vsync'd present pipeline — so this must be measured rather than derived
+  from a specification.
 
   A negative trim asks for a frame **ahead** of the playback point, which exists
   only because the decoder runs ahead of the device. That budget is the PCM ring,
