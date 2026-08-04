@@ -60,6 +60,20 @@ struct Gatekeeper {
     // zero is a real answer rather than an unset one.
     double trim_ms = 0.0;
 
+    // How far the analysis is allowed to run ahead of the speakers, and so the
+    // BUDGET a negative trim spends.
+    //
+    // A negative trim asks for a frame ahead of the playback point, which only
+    // exists if the decoder has already produced it. That is bounded by the PCM
+    // ring, so this sizes the ring in time rather than in device periods --
+    // periods are the wrong unit, since exclusive mode gives 160 frames and
+    // shared mode gives ~441.
+    //
+    // 250 ms comfortably covers a television's input lag, which is the usual
+    // reason a picture lags the sound. The old sizing bought about 58 ms in
+    // exclusive mode and that turned out to be the binding constraint.
+    double lead_ms = 250.0;
+
     // [render]
     int  width    = 1280;
     int  height   = 720;

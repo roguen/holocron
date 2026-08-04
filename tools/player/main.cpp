@@ -61,6 +61,7 @@
 #include <holocron/triple_buffer.hpp>
 #include <holocron/window.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -105,6 +106,11 @@ struct Options {
     // Draw the calibration instrument and let the arrow keys move the trim while
     // it plays. See the note above the calibration block in main().
     bool        calibrate = false;
+    // Print every field a manifest may bind, and exit. Needs no track and no
+    // window: it is the answer to "what can I write on the right-hand side",
+    // which is otherwise only discoverable by reading frame_binding.hpp or by
+    // making a typo on purpose.
+    bool        list_bindings = false;
     bool        no_audio = false;
     // Hot reload is ON by default whenever a crystal is drawn, because the
     // authoring loop is what it exists for and a flag you have to remember is a
@@ -152,6 +158,8 @@ Options parse(int argc, char** argv)
             o.config = argv[++i];
         } else if (std::strcmp(a, "--calibrate") == 0) {
             o.calibrate = true;
+        } else if (std::strcmp(a, "--list-bindings") == 0) {
+            o.list_bindings = true;
         } else if (std::strcmp(a, "--trim-ms") == 0 && i + 1 < argc) {
             o.trim_ms       = std::atof(argv[++i]);
             o.given.trim_ms = true;
@@ -197,6 +205,8 @@ void usage()
         "                 into gatekeeper.toml when you quit\n"
         "  --config PATH  config file (default gatekeeper.toml). Command-line\n"
         "                 flags override it; it overrides the built-in defaults\n"
+        "  --list-bindings  print every AudioFrame field a manifest may bind,\n"
+        "                 then exit. Needs no track\n"
         "  --sink S       auto (default), wasapi, or sdl. auto prefers WASAPI\n"
         "                 exclusive, then WASAPI shared, then SDL\n"
         "  --trim-ms N    shift the analysis tap N ms earlier, to compensate for\n"
@@ -296,6 +306,11 @@ struct Shared {
 
     std::atomic<bool>          quit{false};
     std::atomic<bool>          finished{false};
+
+    // Frames padded AFTER the decoder finished, which is the file ending rather
+    // than a fault. Subtracted from the ring's total so the reported underrun
+    // count means only what it claims to. See render_audio.
+    std::atomic<std::uint64_t> drain_padded{0};
     std::atomic<std::uint64_t> published{0};
 };
 
@@ -329,7 +344,33 @@ void render_audio(float* out, std::size_t frames, std::uint16_t channels, void* 
 {
     auto* s = static_cast<Shared*>(user);
     (void)channels;
+
+    // A RING THAT RUNS DRY MID-TRACK AND A RING THAT RUNS DRY AT THE END OF THE
+    // FILE ARE NOT THE SAME EVENT, AND ONE COUNTER FOR BOTH CRIES WOLF.
+    //
+    // Mid-track it is a click and a real defect -- the thing this counter exists
+    // to catch. After the decoder has finished it is simply the file ending: the
+    // ring drains, the callback keeps being called until the sink is stopped,
+    // and a handful of periods get padded. That happens on EVERY complete play,
+    // so reporting it as "THE RING RAN DRY" trains the reader to ignore the one
+    // message that matters.
+    //
+    // Observed as 1169 frames on a full track and reproduced at 401 here; a
+    // frame-capped run that exits mid-track reports zero, which is what gave it
+    // away.
+    //
+    // Two relaxed atomic loads and no allocation, so the audio-path rule holds.
+    const bool          done   = s->finished.load(std::memory_order_acquire);
+    const std::uint64_t before = s->pcm.silence_padded();
+
     s->pcm.read(out, frames);
+
+    if (done) {
+        const std::uint64_t after = s->pcm.silence_padded();
+        if (after > before) {
+            s->drain_padded.fetch_add(after - before, std::memory_order_relaxed);
+        }
+    }
 }
 
 // The decode thread. Owns everything that is not GL and not the audio callback.
@@ -413,6 +454,14 @@ void decode_loop(Shared& s, const char* path, bool feed_audio)
 int main(int argc, char** argv)
 {
     Options opt = parse(argc, argv);
+
+    // Before the track check on purpose -- asking what you may bind is a
+    // question about the contract, not about a file.
+    if (opt.list_bindings) {
+        std::printf("Fields a crystal manifest may bind, from frame_binding.hpp:\n\n%s",
+                    binding_vocabulary().c_str());
+        return 0;
+    }
 
     if (opt.help || opt.path == nullptr) {
         usage();
@@ -597,13 +646,43 @@ int main(int argc, char** argv)
             // takes about 15 ms, and four periods of a ~10 ms WASAPI period is
             // only ~40 ms of headroom, so one late wake-up empties it.
             //
-            // Sixteen periods is ~160 ms, roughly ten times the worst-case
-            // sleep. That is the cost of correctness here and it IS a cost: it
-            // is also the upper bound on how far the visuals lead the sound.
-            // The real fix is a device clock to tap against rather than a
-            // deeper buffer, which is WasapiSink's job.
-            shared.pcm.reset(static_cast<std::size_t>(sink->period_frames()) * 16,
-                             info.channels);
+            // Sixteen periods is roughly ten times the worst-case sleep, and
+            // that remains the FLOOR below which the ring starves.
+            //
+            // BUT SIXTEEN PERIODS IS ALSO THE LEAD BUDGET, AND THAT TURNED OUT
+            // TO BE THE BINDING CONSTRAINT.
+            //
+            // The comment here used to end "it is also the upper bound on how
+            // far the visuals lead the sound", treating that as a cost to be
+            // minimised. It is not only a cost -- it is the entire budget for a
+            // NEGATIVE trim, and a negative trim is what a display with real
+            // input lag needs. At WASAPI exclusive with 160-frame periods,
+            // sixteen periods is 2560 frames: about 58 ms, which is why the
+            // measured lead came out at 51 ms and why nudging the trim below
+            // that did nothing at all.
+            //
+            // So the ring is now sized by TIME rather than by device periods.
+            // Periods are the wrong unit for this: exclusive mode gives 160
+            // frames and shared mode gives ~441, so the same multiplier bought
+            // wildly different amounts of lead depending on which backend
+            // happened to open.
+            //
+            // The cost of a deeper ring is decode running further ahead --
+            // about 96 KB of float at the default, and a proportionally longer
+            // prefill before the first sound. Neither is worth optimising
+            // against a picture that visibly lags the music.
+            const std::size_t floor_frames = static_cast<std::size_t>(sink->period_frames()) * 16;
+            const std::size_t lead_frames =
+                static_cast<std::size_t>(cfg.lead_ms *
+                                         static_cast<double>(info.sample_rate) / 1000.0);
+
+            shared.pcm.reset(std::max(floor_frames, lead_frames), info.channels);
+
+            const double budget_ms = 1000.0 * static_cast<double>(shared.pcm.capacity()) /
+                                     static_cast<double>(info.sample_rate);
+            std::printf("holocron: lead budget %.0f ms -- the most a negative --trim-ms can "
+                        "advance the picture\n",
+                        budget_ms);
             audio_started = true;
         }
     }
@@ -742,6 +821,10 @@ int main(int argc, char** argv)
     double       trim_ms = opt.trim_ms;
     std::int64_t trim_us = static_cast<std::int64_t>(trim_ms * 1000.0);
 
+    // How far ahead of the speakers the newest analysis frame currently is.
+    // Updated every frame while a device clock exists; see where it is assigned.
+    double headroom_ms = 0.0;
+
     while (window.pump()) {
         // -- calibration ------------------------------------------------------
         //
@@ -756,7 +839,19 @@ int main(int argc, char** argv)
             if (steps != 0) {
                 trim_ms += 5.0 * static_cast<double>(steps);
                 trim_us = static_cast<std::int64_t>(trim_ms * 1000.0);
-                std::printf("holocron: trim_ms = %.0f\n", trim_ms);
+                // The headroom matters most when going NEGATIVE, which is the
+                // direction taken when the picture lags the sound. Printing it
+                // beside the value is what turns "nudging stopped helping" into
+                // "you have run out of lead", which are indistinguishable
+                // otherwise.
+                if (trim_ms < 0.0 && -trim_ms >= headroom_ms && headroom_ms > 0.0) {
+                    std::printf("holocron: trim_ms = %.0f  -- AT THE FLOOR, only %.0f ms of lead "
+                                "exists; the picture cannot be advanced further\n",
+                                trim_ms, headroom_ms);
+                } else {
+                    std::printf("holocron: trim_ms = %.0f  (lead available: %.0f ms)\n", trim_ms,
+                                headroom_ms);
+                }
                 std::fflush(stdout);
             }
         }
@@ -793,6 +888,17 @@ int main(int argc, char** argv)
                     lead_sum_us += newest_us - static_cast<std::uint64_t>(target);
                     ++lead_n;
                 }
+
+                // HOW MUCH FURTHER THE PICTURE COULD BE ADVANCED, which is the
+                // floor on a NEGATIVE trim and is not obvious from anywhere else.
+                //
+                // A negative trim asks for a frame ahead of the playback point,
+                // and the analysis only runs so far ahead of the speakers.
+                // Past that, select() returns the newest frame it has and
+                // further nudging does nothing at all -- which from the outside
+                // looks identical to the trim having no effect.
+                headroom_ms = (static_cast<double>(newest_us) - static_cast<double>(played_us)) /
+                              1000.0;
             }
         } else {
             // No clock to place anything against -- muted, or a sink that
@@ -884,10 +990,20 @@ int main(int argc, char** argv)
         // The underrun count comes from the RING, not the sink -- the ring is
         // the only thing that knows whether it had audio when it was asked.
         // Two sink-side metrics were deleted for pretending otherwise.
-        const std::uint64_t dropped = shared.pcm.silence_padded();
-        std::printf("holocron: %llu frames of silence padded%s\n",
-                    static_cast<unsigned long long>(dropped),
-                    dropped == 0 ? " (clean)" : " -- THE RING RAN DRY");
+        const std::uint64_t padded = shared.pcm.silence_padded();
+        const std::uint64_t drain  = shared.drain_padded.load(std::memory_order_relaxed);
+        const std::uint64_t dry    = padded > drain ? padded - drain : 0;
+
+        std::printf("holocron: %llu frames of silence padded mid-track%s\n",
+                    static_cast<unsigned long long>(dry),
+                    dry == 0 ? " (clean)" : " -- THE RING RAN DRY");
+        if (drain > 0) {
+            // Reported, not hidden. It is expected, but a sudden change in it
+            // would still be worth noticing.
+            std::printf("holocron: %llu more padded draining the ring at end of stream "
+                        "(expected)\n",
+                        static_cast<unsigned long long>(drain));
+        }
 
         const SinkClock c = sink->clock();
         if (c.valid) {

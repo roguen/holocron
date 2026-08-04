@@ -137,6 +137,7 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
 
     read_string(tbl, "audio", "backend", out.backend, bad);
     read_double(tbl, "audio", "trim_ms", out.trim_ms, bad);
+    read_double(tbl, "audio", "lead_ms", out.lead_ms, bad);
 
     read_int(tbl, "render", "width", out.width, bad);
     read_int(tbl, "render", "height", out.height, bad);
@@ -161,6 +162,13 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     }
     if (out.width <= 0 || out.height <= 0) {
         out_detail = path + ": render.width and render.height must both be positive";
+        out        = Gatekeeper{};
+        return GatekeeperError::kBadValue;
+    }
+    if (out.lead_ms < 0.0 || out.lead_ms > 2000.0) {
+        // Two seconds is far past useful and starts costing real prefill time
+        // before the first sound. A negative one is simply meaningless.
+        out_detail = path + ": audio.lead_ms must be between 0 and 2000";
         out        = Gatekeeper{};
         return GatekeeperError::kBadValue;
     }

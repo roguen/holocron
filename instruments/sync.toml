@@ -4,11 +4,27 @@
 # VAULT -- the things you actually want to look at, cycled with the arrow keys --
 # and putting a measuring tool in it would mean hitting a strobing white screen
 # every time you paged past. Different directory, different job.
+
 name = "sync"
 
 author  = "Roguen Keller"
 license = "GPL-3.0-or-later"
 
+# ONE binding. Every previous version had more, and every extra one was something
+# the eye had to arbitrate rather than information it could use.
+#
+# `onset` is the RAW BOOLEAN, not the envelope: true for one analysis frame at
+# the transient itself, with nothing interpreting between the audio and the
+# pixel.
+#
+# Deliberately absent: onset_strength, whose envelope peaks after the transient
+# and biased this rack's first measurement to 0. beat_phase, whose alignment to
+# the drums varies by over 100 ms between tracks (issue 94). bass_norm, which was
+# used as a kick gate and turned out to be anti-correlated with kicks -- see the
+# note in sync.frag.
+#
+# USE THIS WITH scripts/make-calibration-tone.ps1, not with music. Music does not
+# contain an unambiguous reference: onsets fire several times a second on real
+# material and no listener can tell which one a given flash belonged to.
 [uniforms]
-u_onset = "onset_strength"
-u_beat  = "beat_phase"
+u_hit = "onset"

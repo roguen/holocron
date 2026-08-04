@@ -77,10 +77,17 @@ network settings. Because that last part means server addresses and tokens, a re
 `gatekeeper.toml` is never committed — the redacted template is
 [`gatekeeper.example.toml`](gatekeeper.example.toml).
 
-The template is **ahead of the code**: M1 reaches this behaviour through
-command-line flags and does not read the file yet, which each section notes. It is
-committed anyway because it is the most useful thing a newcomer can read, and
-because it doubles as the specification the loader has to satisfy.
+The template is **partly ahead of the code**. Keys marked `LIVE` are read and
+acted on — the audio backend, the latency trim and lead, window size, vsync, GL
+debug, and the vault path. The rest, including everything under `[plex]` and
+`[analysis]`, is specification the loader has not caught up with, and setting one
+does nothing.
+
+That gap is deliberate rather than an oversight: parsing a key into a struct
+nobody reads would make the config *look* implemented while silently ignoring
+what you set, which is a worse failure than an honest hole.
+
+A command-line flag beats the file; the file beats the built-in default.
 
 Note what it deliberately does **not** offer: band edges, band count, the
 bass/mid/treble crossovers and the analysis rate are fixed `constexpr` and are
@@ -91,24 +98,34 @@ gain response — and may not change what it *means*.
 
 ## Current status
 
-**Pre-M1.** The repository contains a contract and the reasoning behind it. There
-is no build system, no executable, and nothing to run.
+**It plays music and it draws.** M1's spine is complete and M2's plumbing with
+it. Verified on the target hardware: an RX 6800 into an Onkyo TX-RZ720 over
+HDMI, WASAPI **exclusive mode, bit-perfect**, 160 frames per period, no
+dropouts across a full track.
 
-Everything that exists today:
-
+```bash
+scripts\build.cmd                                  # build and test, from a clean shell
+holocron.exe track.flac                            # play it, drawing every analysis field
+holocron.exe track.flac --crystal crystals/pulse   # draw a crystal instead
+holocron.exe track.flac --vault crystals           # the whole vault, arrows to move
+holocron.exe track.flac --calibrate                # measure the audio/video trim
+holocron-analyze.exe track.flac --csv frames.csv   # the offline analysis harness
 ```
-include/holocron/audio_frame.hpp    the crystal-facing audio contract (std-only)
-include/holocron/track_context.hpp  the non-audio half: metadata, art, palette (needs glm)
-docs/audio-frame.md                 the reasoning, and the signed-off §9 decisions
-```
 
-What works today, stated precisely: CI compiles `audio_frame.hpp` under C++20 through
-a generated TU that *includes* it — never directly, since GCC rejects
-`#pragma once in main file` under `-Werror` — under both `g++` and `clang++` at
-`-Wall -Wextra -Werror`, its `static_assert`s pass, and `sizeof(AudioFrame)` is
-pinned at 10768. `track_context.hpp` compiles once glm is on the include path.
-Nothing runs, because there is nothing to run, and no C++ compiler is installed on
-the target machine yet.
+What exists:
+
+| | |
+|---|---|
+| **Contract** | `AudioFrame` signed off and every field populated. `sizeof` pinned so an accidental addition fails the build. |
+| **Analysis** | Spectrum, 32 bands, levels, stereo, spectral descriptors, onsets, tempo, beat and bar phase, BS.1770-4 loudness, at a fixed 93.75 Hz. |
+| **Audio** | FFmpeg decode, a 48 kHz analysis tap, a lock-free PCM ring, and `WasapiSink` (exclusive, bit-perfect) behind an interface with `SdlSink` beside it. |
+| **Tap placement** | The frame on screen is the one the speakers are producing, selected **by position** against the device clock — a measured 51 ms of correction over newest-wins. |
+| **Render** | GL 4.5 core, a debug facet drawing every field, and `CrystalFacet` drawing authored crystals. |
+| **Crystals** | `.frag` + `.toml`, uniforms bound to contract fields **by name** and validated at load. Hot reload, and a vault the arrow keys move through. |
+| **Tests** | **173 cases, green on Windows and Linux.** |
+
+What is *not* done: the compositor, projectM, Plex, and the on-screen UI. And
+within M2, the part that is judgement rather than plumbing — see below.
 
 **The `AudioFrame` contract is signed off** (2026-08-01). Section 9 of
 [`docs/audio-frame.md`](docs/audio-frame.md) records the decisions behind it — the
@@ -128,7 +145,7 @@ field may not change.
 | | Milestone | Scope | Status |
 |---|---|---|---|
 | **M1** | **Spine and audio** | CMake, SDL3 window, GL 4.5 core context, FFmpeg decode, `AudioSink` + `WasapiSink`, the analysis stage that fills `AudioFrame`, the lock-free triple buffer, and a debug facet that draws every field so the numbers can be trusted before anything is built on them. | **the spine is complete** |
-| **M2** | Crystals | Vault loading, the `.frag` + `.toml` crystal format, manifest uniform binding against the contract, hot reload. | **next** |
+| **M2** | Crystals | Vault loading, the `.frag` + `.toml` crystal format, manifest uniform binding against the contract, hot reload. | **plumbing complete; the visual language is open** |
 | M3 | Compositor | The facet stack: layering, blend modes, transitions, archives. | planned |
 | M4 | projectM | libprojectM 4.x driven as a facet source, reading MilkDrop presets from a user-supplied path. | planned |
 | M5 | Plex | Server discovery and auth, library browsing, streaming, metadata and album art fetch and cache, palette extraction into `TrackContext`. | planned |
@@ -172,6 +189,33 @@ differently three more times, with three slightly different smoothing constants.
 Adding a field is safe — old crystals ignore it. Changing the meaning, units, or
 range of an existing field is not, and produces no compiler error: only a vault
 of crystals that all quietly look wrong.
+
+---
+
+## Writing a crystal
+
+[`docs/cutting-crystals.md`](docs/cutting-crystals.md) is the practical guide,
+written for someone who knows GLSL and nothing about this codebase. The shortest
+possible crystal is two files and about ten lines.
+
+`holocron --list-bindings` prints every field a manifest may bind, with its
+range. Three of them will look like bugs if you have not read the guide:
+`loudness_short` reads −70 for the first three seconds of any track,
+`stereo_correlation` is −1..1 rather than 0..1, and `bpm` is 60..200 and should
+be checked against `bpm_confidence` before it is trusted — prefer `beat_phase`.
+
+Save the file and it rebuilds against the music already playing. A shader that
+fails to compile prints the driver's error and leaves the running crystal on
+screen, because a shader is broken for most of the time it is being edited.
+
+---
+
+## Contributing
+
+**This project is not accepting code contributions** — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md). It is one person's music visualizer for one
+rack, public because there is no reason to hide it. Issues and forks are welcome;
+pull requests are not.
 
 ---
 
