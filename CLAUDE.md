@@ -31,6 +31,8 @@ tested:
 | Crystals | **M2 has started.** A crystal is `<stem>.frag` + `<stem>.toml`; the manifest binds uniforms to `AudioFrame` fields BY NAME, validated at load against `frame_binding.hpp`. `CrystalFacet` compiles and draws it. `crystals/pulse` is the reference and a test loads it so it cannot rot. |
 | Hot reload | `CrystalWatch` — saving the `.frag` or `.toml` rebuilds it in place, on by default with `--crystal`. A shader that fails to compile is reported and the running one keeps drawing; `u_time` carries across. |
 | Vault | `scan_vault` — `--vault DIR` loads every crystal in a directory, arrow keys move between them. Ordered **by manifest name**, because `directory_iterator` order differs between Windows and Linux. One broken crystal is reported and skipped, never fatal. `--crystal` is a vault of one, so both share a single path. |
+| Config | `gatekeeper.toml`, read at startup. Audio backend, `trim_ms`, window size, vsync, GL debug and the vault path are **live**; the rest of the example file is still specification. Flags beat the file, the file beats the defaults. |
+| Calibration | `holocron <track> --calibrate` draws `instruments/sync` and moves `trim_ms` with the arrow keys **while the track plays**, then prints the lines to paste into `gatekeeper.toml`. |
 | Executables | `holocron` — the player. `holocron-analyze` — the offline harness. |
 
 **All four M1 blockers were resolved on 2026-08-01.** What remains for M1:
@@ -46,12 +48,28 @@ hot reload and the vault all exist and are tested. The undecided part is the
 should inherit from the debug facet, which is an instrument panel. That call is
 the owner's and should not be made from a screenshot.
 
-One number is still unmeasured and deliberately so. `--trim-ms` compensates for
-latency *downstream* of the device clock — the DAC, the HDMI link, the Onkyo's
-own processing — and defaults to **zero**, which means "no trim applied", not
-"no latency exists". §1 and D-004 treat it as a constant measured once by hand;
-`gatekeeper.toml` will own it. Until someone measures it against the real rack,
-the tap is correct to the device clock and no further.
+**`--trim-ms` has now been measured on the rack, and the answer is zero.**
+Verified 2026-08-03 against a percussive track through WASAPI exclusive into the
+Onkyo over HDMI, using a crystal that flashes the whole field on onsets.
+
+**Re-measure with `holocron <track> --calibrate`**, which sweeps the value live
+rather than making you restart the player per candidate.
+
+**Bracketed, not guessed** — both `+40` and `-40` were judged worse than `0`,
+which is the step that separates a measurement from the first value anyone tried.
+It means "under roughly 20 ms", about as fine as judging a flash against a drum
+by eye can resolve. The reason it lands near zero is that **the trim is a
+difference, not a latency**:
+
+```
+trim = audio latency after the device clock  -  display latency
+```
+
+The judgement is made watching a screen with input lag of its own, pushing the
+opposite way to the DAC, the HDMI link and the receiver's processing. They
+roughly cancel on this rack. **The value therefore belongs to the whole rack and
+not to the receiver** — changing the display, or taking the Onkyo out of a direct
+mode into one doing real processing, invalidates it. Re-measure after either.
 
 **Exclusive mode needs BOTH checkboxes, and the second one is not obvious.**
 *Sound → Playback → the endpoint → Properties → Advanced* has two: "Allow
@@ -146,7 +164,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.1.13`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.1.14`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 

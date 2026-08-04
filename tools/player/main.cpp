@@ -50,6 +50,7 @@
 #include <holocron/crystal.hpp>
 #include <holocron/crystal_facet.hpp>
 #include <holocron/crystal_watch.hpp>
+#include <holocron/gatekeeper.hpp>
 #include <holocron/vault.hpp>
 #include <holocron/debug_facet.hpp>
 #include <holocron/decoder.hpp>
@@ -98,6 +99,12 @@ struct Options {
     // will own it eventually. Zero is the honest default: it means "no trim
     // applied", not "no latency exists".
     double      trim_ms  = 0.0;
+    // Where to read gatekeeper.toml from. Not itself configurable from the file,
+    // for obvious reasons.
+    const char* config   = "gatekeeper.toml";
+    // Draw the calibration instrument and let the arrow keys move the trim while
+    // it plays. See the note above the calibration block in main().
+    bool        calibrate = false;
     bool        no_audio = false;
     // Hot reload is ON by default whenever a crystal is drawn, because the
     // authoring loop is what it exists for and a flag you have to remember is a
@@ -105,6 +112,20 @@ struct Options {
     // negative form matches --no-audio.
     bool        no_watch = false;
     bool        help     = false;
+
+    // WHICH OPTIONS WERE ACTUALLY TYPED.
+    //
+    // Needed because a command-line flag has to beat gatekeeper.toml, and the
+    // fields above cannot tell "the user asked for 1280" from "1280 is the
+    // default". Without this, a width set in the config would be overwritten by
+    // the default every run and the file would look broken.
+    struct Given {
+        bool sink    = false;
+        bool trim_ms = false;
+        bool width   = false;
+        bool height  = false;
+        bool vault   = false;
+    } given;
 };
 
 Options parse(int argc, char** argv)
@@ -117,21 +138,34 @@ Options parse(int argc, char** argv)
         } else if (std::strcmp(a, "--frames") == 0 && i + 1 < argc) {
             o.frames = std::atoi(argv[++i]);
         } else if (std::strcmp(a, "--width") == 0 && i + 1 < argc) {
-            o.width = std::atoi(argv[++i]);
+            o.width       = std::atoi(argv[++i]);
+            o.given.width = true;
         } else if (std::strcmp(a, "--height") == 0 && i + 1 < argc) {
-            o.height = std::atoi(argv[++i]);
+            o.height       = std::atoi(argv[++i]);
+            o.given.height = true;
         } else if (std::strcmp(a, "--crystal") == 0 && i + 1 < argc) {
             o.crystal = argv[++i];
         } else if (std::strcmp(a, "--vault") == 0 && i + 1 < argc) {
-            o.vault = argv[++i];
+            o.vault       = argv[++i];
+            o.given.vault = true;
+        } else if (std::strcmp(a, "--config") == 0 && i + 1 < argc) {
+            o.config = argv[++i];
+        } else if (std::strcmp(a, "--calibrate") == 0) {
+            o.calibrate = true;
         } else if (std::strcmp(a, "--trim-ms") == 0 && i + 1 < argc) {
-            o.trim_ms = std::atof(argv[++i]);
+            o.trim_ms       = std::atof(argv[++i]);
+            o.given.trim_ms = true;
         } else if (std::strcmp(a, "--sink") == 0 && i + 1 < argc) {
             const char* s = argv[++i];
             if (std::strcmp(s, "wasapi") == 0) {
-                o.sink = Options::kWasapi;
+                o.sink       = Options::kWasapi;
+                o.given.sink = true;
             } else if (std::strcmp(s, "sdl") == 0) {
-                o.sink = Options::kSdl;
+                o.sink       = Options::kSdl;
+                o.given.sink = true;
+            } else if (std::strcmp(s, "auto") == 0) {
+                o.sink       = Options::kAuto;
+                o.given.sink = true;
             }
         } else if (std::strcmp(a, "--no-audio") == 0) {
             o.no_audio = true;
@@ -157,6 +191,12 @@ void usage()
         "                 --crystal crystals/pulse (loads .toml and .frag)\n"
         "  --vault DIR    draw every crystal in DIR, left and right arrows to\n"
         "                 move between them, e.g. --vault crystals\n"
+        "  --calibrate    measure --trim-ms. Draws instruments/sync, which flashes\n"
+        "                 the whole field on onsets, and lets UP and DOWN move the\n"
+        "                 trim while the track plays. Prints the line to paste\n"
+        "                 into gatekeeper.toml when you quit\n"
+        "  --config PATH  config file (default gatekeeper.toml). Command-line\n"
+        "                 flags override it; it overrides the built-in defaults\n"
         "  --sink S       auto (default), wasapi, or sdl. auto prefers WASAPI\n"
         "                 exclusive, then WASAPI shared, then SDL\n"
         "  --trim-ms N    shift the analysis tap N ms earlier, to compensate for\n"
@@ -372,11 +412,68 @@ void decode_loop(Shared& s, const char* path, bool feed_audio)
 
 int main(int argc, char** argv)
 {
-    const Options opt = parse(argc, argv);
+    Options opt = parse(argc, argv);
 
     if (opt.help || opt.path == nullptr) {
         usage();
         return opt.help ? 0 : 2;
+    }
+
+    // -- gatekeeper.toml -------------------------------------------------------
+    //
+    // File overrides the built-in defaults; anything actually typed on the
+    // command line overrides the file. A flag is what you reach for to try
+    // something once, so it has to beat a file edited a month ago.
+    //
+    // A missing file is the ordinary case and says so quietly. A file that is
+    // PRESENT and broken is fatal: silently running on defaults because of a
+    // typo would mean the trim you measured stops being applied and nothing says
+    // why -- and the whole point of moving that number into a file is not having
+    // to remember it.
+    // Declared out here, not in the block below: opt.vault may end up pointing
+    // into cfg.vault, so the config has to outlive every use of opt.
+    Gatekeeper  cfg;
+    std::string cfg_detail;
+
+    {
+        const GatekeeperError gerr = load_gatekeeper(opt.config, cfg, cfg_detail);
+
+        if (gerr == GatekeeperError::kUnparseable || gerr == GatekeeperError::kBadValue) {
+            std::fprintf(stderr, "holocron: %s\n%s\n", to_string(gerr), cfg_detail.c_str());
+            return 1;
+        }
+        if (gerr == GatekeeperError::kNotFound) {
+            std::printf("holocron: %s\n", cfg_detail.c_str());
+        } else {
+            std::printf("holocron: config %s\n", opt.config);
+
+            if (!opt.given.trim_ms) {
+                opt.trim_ms = cfg.trim_ms;
+            }
+            if (!opt.given.width) {
+                opt.width = cfg.width;
+            }
+            if (!opt.given.height) {
+                opt.height = cfg.height;
+            }
+            if (!opt.given.vault && opt.crystal == nullptr) {
+                // Only when no crystal was named -- otherwise a vault in the
+                // config would silently outrank an explicit --crystal.
+                opt.vault = cfg.vault.c_str();
+            }
+            if (!opt.given.sink) {
+                opt.sink = cfg.backend == "wasapi" ? Options::kWasapi
+                           : cfg.backend == "sdl"  ? Options::kSdl
+                                                   : Options::kAuto;
+            }
+        }
+    }
+
+    // --calibrate is --crystal instruments/sync with the arrow keys live. Set
+    // here rather than in parse() so an explicit --crystal still wins.
+    if (opt.calibrate && opt.crystal == nullptr) {
+        opt.crystal = "instruments/sync";
+        opt.vault   = nullptr;
     }
 
     // On the HEAP, and this is not a style preference.
@@ -636,9 +733,34 @@ int main(int argc, char** argv)
     std::uint64_t lead_n      = 0;
 
     const std::uint32_t sink_rate = audio_started ? sink->format().sample_rate : 0;
-    const std::int64_t  trim_us   = static_cast<std::int64_t>(opt.trim_ms * 1000.0);
+    // NOT const: --calibrate moves it with the arrow keys while the track plays.
+    //
+    // Restarting the player for every candidate value is what made measuring
+    // this a chore, and a chore is why it went unmeasured for a milestone. The
+    // judgement is a comparison, and a comparison you can make without losing
+    // your place in the track is a different task from one you cannot.
+    double       trim_ms = opt.trim_ms;
+    std::int64_t trim_us = static_cast<std::int64_t>(trim_ms * 1000.0);
 
     while (window.pump()) {
+        // -- calibration ------------------------------------------------------
+        //
+        // Up and down move the trim while the track keeps playing. 5 ms a step
+        // because the judgement itself resolves to roughly 20 ms -- a finer step
+        // would imply a precision the eye cannot supply -- and auto-repeat is
+        // deliberately allowed on these keys so a bracket can be swept by
+        // holding one down.
+        if (opt.calibrate) {
+            const int steps = (window.pressed(Key::kUp) ? 1 : 0) -
+                              (window.pressed(Key::kDown) ? 1 : 0);
+            if (steps != 0) {
+                trim_ms += 5.0 * static_cast<double>(steps);
+                trim_us = static_cast<std::int64_t>(trim_ms * 1000.0);
+                std::printf("holocron: trim_ms = %.0f\n", trim_ms);
+                std::fflush(stdout);
+            }
+        }
+
         // THE FIX FOR #53.
         //
         // Ask the DEVICE where it is, and show the frame whose audio is coming
@@ -739,6 +861,20 @@ int main(int argc, char** argv)
         } else {
             std::fprintf(stderr, "holocron: could not write %s\n", opt.shot);
         }
+    }
+
+    if (opt.calibrate) {
+        // The whole output of a calibration run, in the form it is needed in.
+        // Reporting the number alone would leave the last step -- "which file,
+        // which section, which key" -- as something to look up, and a measurement
+        // that is awkward to record is a measurement that stays in a terminal
+        // scrollback.
+        std::printf("\nholocron: calibration result -- put this in %s\n\n"
+                    "  [audio]\n"
+                    "  trim_ms = %.1f\n\n"
+                    "Remember it belongs to the whole rack, not the receiver: changing the\n"
+                    "display, or leaving a direct listening mode, invalidates it.\n",
+                    opt.config, trim_ms);
     }
 
     std::printf("holocron: %d frames drawn, %llu analysis frames published\n",

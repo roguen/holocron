@@ -227,3 +227,32 @@ TEST_CASE("the shipped vault scans clean", "[vault]")
     CHECK(problems.empty());
     CHECK(v.size() >= 1);
 }
+
+TEST_CASE("every crystal in the shipped vault may be published", "[vault][provenance]")
+{
+    // THE ONLY PLACE A LICENCE IS CHECKED, and it is checked here rather than in
+    // the loader on purpose.
+    //
+    // Committing a crystal to crystals/ publishes it, because this repository is
+    // public -- and publishing is the act copyright actually governs. Drawing one
+    // on your own machine is not, so the loader has no opinion and a crystal
+    // adapted from anywhere can be kept in a vault of your own and drawn freely.
+    //
+    // Which means this test is the whole enforcement surface. If it is deleted,
+    // nothing anywhere checks.
+    std::vector<VaultProblem> problems;
+    const auto                v = scan_vault(HOLOCRON_CRYSTALS_DIR, problems);
+    REQUIRE(v.size() >= 1);
+
+    for (const VaultEntry& e : v) {
+        Crystal     c;
+        std::string detail;
+        INFO("crystal: " << e.name << " (" << e.stem << ")");
+        INFO(detail);
+        REQUIRE(load_crystal(e.stem, c, detail) == CrystalError::kOk);
+
+        std::string why;
+        INFO("why not publishable: " << why);
+        CHECK(publishable(c.provenance, why));
+    }
+}

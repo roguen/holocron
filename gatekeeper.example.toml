@@ -12,10 +12,23 @@
 # Every value here IS the default. Deleting a key is the same as leaving it, so
 # a working config can be as short as the two or three lines you actually changed.
 #
-# STATUS: this file is ahead of the code. M1 does not read it yet -- the
-# behaviour it describes is reached through command-line flags today, noted per
-# section. It is committed now because it is the most useful thing a newcomer can
-# read, and because it doubles as the specification the loader has to satisfy.
+# STATUS: partly read. Keys marked LIVE below are loaded and acted on; the rest
+# are specification the loader has not caught up with, and setting one does
+# nothing at all.
+#
+# That gap is deliberate rather than an oversight. Parsing a key into a struct
+# nobody reads would make the config LOOK implemented while silently ignoring
+# what you set, which is a worse failure than an honest hole -- so a setting that
+# does nothing is left visibly unmarked instead of quietly accepted.
+#
+# PRECEDENCE: a command-line flag beats this file, and this file beats the
+# built-in default. A flag is what you reach for to try something once, so it has
+# to win against a file you edited a month ago.
+#
+# An UNRECOGNISED key is ignored without complaint, because an unedited copy of
+# this template is full of them. A key that IS live and holds a bad value is
+# fatal -- silently falling back to a default would mean the trim you measured
+# stops being applied and nothing says why.
 
 
 # ---------------------------------------------------------------------------
@@ -29,7 +42,7 @@
 # mode is the only bit-perfect path; shared goes through the Windows mixer and is
 # not bit-perfect, though it still provides a real device clock.
 #
-# Today: --sink
+# LIVE. Today also: --sink
 backend = "auto"
 
 # Empty means the system default playback device. Set it to a substring of the
@@ -48,19 +61,49 @@ device = ""
 # "device busy" whenever anything else is playing, which on a desktop is most of
 # the time. Both are needed. Holocron prints which one is missing.
 
-# Output latency DOWNSTREAM of the device clock, in milliseconds: the DAC, the
-# HDMI link, the receiver's own processing. Positive values make the picture wait.
+# Hand trim between what you HEAR and what you SEE, in milliseconds. Positive
+# values make the picture wait.
 #
-# ZERO MEANS "NO TRIM APPLIED", NOT "NO LATENCY EXISTS". The analysis tap is
-# placed against the device clock, which is accurate to what the sink reports and
-# blind to everything after it. docs/audio-frame.md section 1 treats this as a
-# constant measured once by hand.
+# IT IS A DIFFERENCE, NOT A LATENCY, AND THAT IS THE THING TO UNDERSTAND HERE:
 #
-# HOW TO MEASURE IT: play something with a hard, obvious downbeat and watch the
-# beat marker on the debug facet against what you hear. If the picture leads the
-# sound, raise this. Percussion makes it obvious; pads hide it completely.
+#     trim = audio latency after the device clock  -  display latency
 #
-# Today: --trim-ms
+# The analysis tap is placed against the device clock, which is accurate to what
+# the sink reports and blind to everything after it -- the DAC, the HDMI link,
+# the receiver's own processing. But you judge this by watching a SCREEN, and the
+# screen has input lag of its own pushing the other way. What you are trimming is
+# what is left over when those two cancel.
+#
+# The practical consequence: this value belongs to a whole rack, not to the
+# receiver. Changing the display, or taking the receiver out of a direct mode
+# into one that does real processing, invalidates it. Re-measure after either.
+#
+# MEASURED ON THE RACK, 2026-08-03: zero, on the RX 6800 into an Onkyo TX-RZ720
+# over HDMI, with WASAPI exclusive at a 160-frame period. Bracketed rather than
+# guessed -- both +40 and -40 were judged worse than 0, which is what makes it a
+# measurement instead of the first value anybody tried.
+#
+# The two latencies are close enough to cancel within what the method can
+# resolve, which is about 20 ms -- judging a flash against a drum by eye does not
+# do better than that. So zero means "under roughly 20 ms" rather than "exactly
+# nothing".
+#
+# HOW TO MEASURE IT: draw something that flashes the WHOLE FIELD on onsets and
+# watch it against a dry, percussive track -- a full-screen flash is far easier
+# to time in peripheral vision than a marker among other moving things, which is
+# what makes this judgeable at all. If the picture leads the sound, raise this.
+# Bracket the answer by confirming a deliberate error either side feels worse;
+# "the first value I tried" is not a measurement. Percussion makes it obvious and
+# pads hide it completely.
+#
+# LIVE. Today also: --trim-ms.
+#
+# EASIEST WAY TO GET THIS NUMBER: `holocron <track> --calibrate`. It draws the
+# full-field flash described above and lets UP and DOWN move the trim while the
+# track keeps playing, then prints the exact lines to paste back here. Sweeping a
+# bracket without losing your place in the track is a different task from
+# restarting the player for every candidate value, which is why this went
+# unmeasured for a whole milestone.
 trim_ms = 0.0
 
 
@@ -120,12 +163,12 @@ tempo_confidence_floor = 0.25
 # ---------------------------------------------------------------------------
 [render]
 
-# Window size in pixels. Today: --width / --height
+# Window size in pixels. LIVE. Today also: --width / --height
 width  = 1280
 height = 720
 
 # Wait for vertical blank. Off uncaps the frame rate and tears; on is almost
-# always what you want on a television.
+# always what you want on a television. LIVE.
 vsync = true
 
 # Internal render scale. Below 1.0 renders smaller and upscales, which is the
@@ -134,16 +177,22 @@ scale = 1.0
 
 # Ask the driver for a debug context and log GL errors. Cheap, and it turns a
 # silent misuse into a message at the moment it happens rather than a black
-# screen twenty draw calls later.
+# screen twenty draw calls later. LIVE.
 gl_debug = true
 
 
 # ---------------------------------------------------------------------------
-# [paths] -- M2 and later. Nothing reads these yet.
+# [paths] -- only `vault` is read so far.
 # ---------------------------------------------------------------------------
 [paths]
 
 # The crystal vault: the directory holding `.frag` + `.toml` crystal pairs.
+#
+# LIVE. Today also: --vault. An explicit --crystal outranks it, so naming one
+# crystal on the command line does not silently get overruled by this.
+#
+# The calibration instrument deliberately does NOT live here -- instruments/ is
+# separate, so paging through the vault never lands on a strobing white screen.
 vault = "crystals"
 
 # MilkDrop presets for the projectM facet (M4). User-supplied; none ship with
