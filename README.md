@@ -7,12 +7,25 @@ A full-screen GPU music visualization engine that is also the music player.
 ## What this is
 
 Holocron draws full-screen, audio-reactive visuals on the GPU — the lineage is
-Winamp's MilkDrop — and it is also the thing that plays the music. It is a Plex
-client: it browses a Plex Media Server, decodes tracks locally with FFmpeg, sends
-the audio out to the receiver, and drives every visual from that same decoded
-stream. One process owns the whole path from file to speakers to screen.
+Winamp's MilkDrop — and it is also the thing that plays the music. It decodes
+tracks locally with FFmpeg, sends the audio out to the receiver, and drives every
+visual from that same decoded stream. One process owns the whole path from file
+to speakers to screen.
 
-Being the player is not scope creep. There are two reasons for it, and both are
+### The use case it is built for
+
+**You are in Plexamp on your phone. You pick a album, you cast it to the theater,
+and the room fills with music and light.** Holocron is the thing you cast *to*: a
+Plex playback target that appears in Plexamp's device list alongside everything
+else.
+
+There is no Holocron interface to learn and no library to browse twice. Plexamp
+is already a better music browser than anything this project would build, and it
+is the one you already use. Holocron's job starts the moment you press play.
+
+### Why it plays the music rather than listening to it
+
+Being the player is not scope creep. There are three reasons, and all are
 load-bearing:
 
 **There is nothing to capture.** In the theater as it stands today, the source
@@ -29,6 +42,14 @@ listener hears. When the same process decodes, plays, and analyzes, the analysis
 tap can be placed at the playback point minus the output device's latency, so the
 visuals describe what is in the room right now. That is one measured device offset
 for the whole system, not a per-track guess.
+
+**The operating system will not let you listen in anyway.** This was checked
+against the obvious alternative — a visualizer on an Android TV box watching Plex
+play. Android only lets one app capture another's audio if the playing app
+permits it, which is a one-line opt-out entirely at Plex's discretion, and
+Android TV runs a single fullscreen app so there is nowhere for a separate
+visualizer to draw. The platform pushes toward one app that does both, which is
+what this already is.
 
 Nothing is lost on fidelity: decoded FLAC sent as LPCM over HDMI is bit-identical
 to what the receiver would have decoded itself.
@@ -148,9 +169,10 @@ field may not change.
 | **M2** | Crystals | Vault loading, the `.frag` + `.toml` crystal format, manifest uniform binding against the contract, hot reload. | **plumbing complete; the visual language is open** |
 | M3 | Compositor | The facet stack: layering, blend modes, transitions, archives. | planned |
 | M4 | projectM | libprojectM 4.x driven as a facet source, reading MilkDrop presets from a user-supplied path. | planned |
-| M5 | Plex | Server discovery and auth, library browsing, streaming, metadata and album art fetch and cache, palette extraction into `TrackContext`. | planned |
-| M6 | On-screen UI | Now-playing, library browsing, and facet control rendered in-app. | planned |
+| M5 | **Plex playback target** | **The primary use case.** GDM discovery so Holocron appears in Plexamp's cast list, the Plex Companion control endpoints, timeline reporting, streaming the selected track, and metadata and album art into `TrackContext`. | planned |
+| M6 | On-screen UI | Now-playing and facet control rendered in-app. **Not a library browser** — Plexamp is the browser, and building a second one would be duplicating the better tool. | planned |
 | M7 | eISCP receiver control | Power, input, and volume control of the receiver over the network. | planned |
+| M8 | Android TV | Holocron on the Shield, so the theater does not need the PC powered on. A new platform layer — NDK, OpenGL **ES**, a different audio backend — but the contract, the analysis stage, the crystals and all of M5's protocol work port unchanged. | possible |
 
 **M1's spine works end to end.** `holocron` decodes a file, analyses it, plays it
 bit-perfect through WASAPI in exclusive mode, and draws every `AudioFrame` field —

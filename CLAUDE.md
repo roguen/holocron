@@ -1,9 +1,29 @@
 # Holocron — working context
 
 A full-screen GPU music visualization engine that is **also the music player**:
-MilkDrop's lineage, rebuilt as one process that browses Plex, decodes locally with
-FFmpeg, sends LPCM to an AV receiver over HDMI, and drives every visual from that
-same decoded stream.
+MilkDrop's lineage, rebuilt as one process that decodes locally with FFmpeg, sends
+LPCM to an AV receiver over HDMI, and drives every visual from that same decoded
+stream.
+
+**The use case it is built for, decided 2026-08-04:** the owner is in **Plexamp on
+his phone**, picks an album, and **casts it to the theater**. Holocron is the
+thing he casts *to* — a Plex playback target in Plexamp's device list. There is no
+Holocron interface to drive and no second library to browse; Plexamp is already
+the better browser and is the one he uses. Holocron's job starts at play.
+
+That makes **M5 the milestone that matters** — it is what turns this from a thing
+you launch into a thing you cast to. Everything before it is the engine.
+
+**Do not build a library browser.** M6 is now-playing and facet control only.
+Duplicating Plexamp would be building a worse version of the tool the owner
+already prefers.
+
+**The long-term target is the NVIDIA Shield** (Android TV Pro), so the theater
+does not need the PC powered on — tracked as M8 and deliberately *after* M5,
+because the Plex protocol work is pure networking and ports unchanged, while the
+platform layer does not. Doing the protocol on Windows first de-risks the unknown
+half without also fighting a new platform. Windows remains the target until that
+is explicitly revisited (D-022).
 
 Read [`README.md`](README.md) for what it is and
 [`docs/audio-frame.md`](docs/audio-frame.md) for the contract everything depends on.
