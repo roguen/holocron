@@ -10,5 +10,11 @@ author  = "Roguen Keller"
 license = "GPL-3.0-or-later"
 
 [uniforms]
+# The measurement. A boolean, true for one analysis frame at the transient --
+# no envelope and no tracker between the audio and the pixel.
+u_hit   = "onset"
+# For comparison only: the envelope, whose peak lags the transient.
 u_onset = "onset_strength"
+# Reference, deliberately not the thing to calibrate against -- the tracker's
+# phase relative to the drums varies by over 100 ms between tracks.
 u_beat  = "beat_phase"

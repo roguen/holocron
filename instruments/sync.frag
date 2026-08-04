@@ -15,27 +15,41 @@
 in  vec2 v_uv;
 out vec4 frag_colour;
 
+uniform float u_hit;     // onset -- the BOOLEAN, true for one analysis frame
 uniform float u_onset;   // onset_strength -- enveloped, so it decays
 uniform float u_beat;    // beat_phase -- free-running, always safe to read
 
-// TWO CUES, DELIBERATELY DIFFERENT, AND THEY MEASURE DIFFERENT THINGS.
+// THE LEFT HALF IS THE MEASUREMENT. Everything else here is for comparison.
 //
-// The onset cue is driven by onset_strength, which is an ENVELOPE: it rises over
-// a few frames and decays. Good for "is the picture roughly with the music",
-// poor for a hard timing judgement, because an envelope's peak is later than the
-// transient that caused it.
+// Judging a trim needs a visual event at the TRUE TRANSIENT, with a hard edge
+// and no interpretation between the audio and the pixel. Three candidates were
+// tried and only one survives:
 //
-// The beat cue is a STEP at the beat_phase wrap -- no envelope, no easing, one
-// unmistakable instant per beat. That is what a timing judgement actually needs.
+//   onset_strength -- an ENVELOPE. It rises over several frames and decays, so
+//   its peak lands after the transient that caused it. Aligning to that peak
+//   biases the answer positive by about the attack time. This instrument first
+//   reported the rack as 0 when it is nearer -85.
 //
-// This exists because `pulse` turned out to be a bad instrument for the job. Its
-// beat cue is a smooth rotation with six-fold symmetry, so the picture looks
-// identical every sixth of a beat and "aligned" is ambiguous by a twelfth of a
-// beat in either direction -- the eye can settle anywhere across a wide range,
-// which is exactly what a sweep that never finds a clear optimum looks like.
+//   beat_phase -- a TRACKER OUTPUT, and the phase is TRACK-DEPENDENT. Measured
+//   against the nearest strong onset: -10.7 ms on one track, +96 ms on another,
+//   stable within each and differing by over 100 ms between them. The tempo is
+//   right in both cases; where the grid sits relative to the drums is not
+//   reliable. A trim measured this way carries the track's phase error into a
+//   number that is supposed to describe the rack.
 //
-// If the two cues below want DIFFERENT trims, the difference is in the analysis
-// rather than in the rack, and no trim can fix it.
+//   onset -- the BOOLEAN. True for exactly one analysis frame, at the detected
+//   transient. No envelope, no tracker, no interpretation.
+//
+// The boolean wins despite being the one docs/cutting-crystals.md warns against
+// driving a flash from. That warning is about AESTHETICS: at 60 fps against a
+// 93.75 Hz analysis, roughly a third of onsets fall in skipped frames, so it
+// flickers. For a timing measurement that does not matter at all -- a dropped
+// flash is invisible, and every flash that IS drawn sits on the true transient.
+// An unbiased signal that sometimes says nothing beats a biased one that always
+// speaks.
+//
+// If the halves want different trims, the difference is in the analysis rather
+// than in the rack, and no trim can fix it.
 
 void main()
 {
@@ -56,22 +70,27 @@ void main()
     // discrete events, which is the whole requirement.
     float flash = pow(clamp(u_onset, 0.0, 1.0), 3.0);
 
-    // THE BEAT CUE. A hard step over the first slice of the beat -- roughly
-    // 25 ms at 145 BPM, long enough to see and short enough to time. The edge is
-    // the measurement; everything about it is instantaneous on purpose.
+    // THE MEASUREMENT. Raw boolean, so the edge is the transient itself.
+    float hit = step(0.5, u_hit);
+
+    // The beat, kept only as a slow reference for material whose transients are
+    // soft. NOT the thing to calibrate against -- see the note above.
     float beat_hit = 1.0 - step(0.08, u_beat);
 
-    // Split the field so the two cues cannot be confused for one another, and so
-    // a disagreement between them is visible rather than averaged away.
-    //
-    // LEFT is the beat, WHITE. RIGHT is the onset, AMBER. Judge one at a time by
-    // looking at that half; if they need different trims, they will visibly stop
-    // firing together.
+    // LEFT is the onset boolean, WHITE, and it is what you judge.
+    // RIGHT is the onset envelope, AMBER, shown so the bias is visible: it will
+    // visibly lag the white side, and that lag is the attack time.
     float side = step(0.5, v_uv.x);
 
     vec3 c = vec3(0.0);
-    c += vec3(1.0, 1.0, 1.0) * beat_hit * (1.0 - side);
+    c += vec3(1.0, 1.0, 1.0) * hit * (1.0 - side);
     c += vec3(1.0, 0.62, 0.15) * flash * side;
+
+    // The beat sits as a thin band along the bottom, present but out of the way,
+    // so a disagreement with the transients is noticeable without inviting you
+    // to calibrate against it.
+    float band = 1.0 - step(0.06, v_uv.y);
+    c += vec3(0.20, 0.55, 0.95) * beat_hit * band;
 
     // A hairline down the middle so the two halves read as one instrument rather
     // than two, and so there is a fixed thing on screen when nothing is firing.
