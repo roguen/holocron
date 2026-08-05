@@ -1,49 +1,45 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 Roguen Keller
 //
-// holocron -- the spine. The first build that plays a file and draws it.
+// holocron -- the player.
 //
-//   holocron <file> [--no-audio] [--frames N] [--shot out.bmp] [--width W] [--height H]
+//   holocron                     wait to be cast to from Plexamp
+//   holocron <file> [options]    play one file, the old way
+//   holocron --link              sign in to a Plex account
+//   holocron --discover          announce only, no window, for diagnosis
 //
-// WHAT THIS IS
+// WHAT THIS IS NOW
 //
-// Decode -> analysis -> TripleBuffer -> debug facet, with the same decoded
-// audio going out through an AudioSink. Every piece already existed and was
-// tested on its own; this is the first thing that puts them in one process and
-// lets you check whether they agree with each other.
+// A window, a crystal, and a PlaybackSession that can be started and REPLACED.
+// Under D-029 the owner does not launch this with a file -- he is in Plexamp,
+// picks an album, and casts it here. So a run with no track is the normal one:
+// Holocron draws, waits, and the first cast starts it playing.
 //
-// The sink is chosen at RUNTIME through the interface -- WASAPI exclusive if
-// the endpoint permits it, WASAPI shared otherwise, SDL as the portable
-// fallback. That selection is the first time the abstraction from #1 has
-// actually been used rather than merely justified, and the fallback lives here
-// in the caller rather than inside any sink: per #32, a backend that quietly
-// retries elsewhere has broken a promise nobody can detect.
+// A file on the command line still works and is how the analysis, the trim and
+// the crystals all get exercised without a phone in the room. It is now the
+// special case rather than the premise.
 //
-// It is NOT the finished player. There is no playlist, no seeking, no UI, no
-// gatekeeper.toml, and the facet is an instrument panel rather than a crystal.
+// WHAT LIVES WHERE
+//
+// Everything below the picture -- decoder, analysis, PCM ring, device, decode
+// thread -- is in PlaybackSession and not here. This file owns the window, the
+// GL context, the crystal, and the arithmetic that places the analysis frame
+// against the device clock.
 //
 // THREADS, AND WHAT CROSSES BETWEEN THEM
 //
-//   decode thread   owns Decoder, Resampler, AnalysisStage and the PCM ring.
-//                   Publishes AudioFrames into the TripleBuffer.
-//   audio thread    SDL's. Runs SdlSink's callback, which only ever drains the
-//                   PCM ring. No allocation, no locks, no analysis.
-//   main thread     owns the Window and the GL context. Acquires from the
-//                   TripleBuffer and draws.
+//   main thread     owns the Window and the GL context. Reads the session, and
+//                   is the ONLY thread that starts or stops it.
+//   decode thread   owned by the session, one per source.
+//   audio callback  the device's. Drains the PCM ring and nothing else.
+//   GDM thread      answers multicast searches. Touches nothing else.
+//   HTTP workers    cpp-httplib's. Companion handlers run here and only RECORD
+//                   what was asked for -- see CastCommand for why they must not
+//                   act on it themselves.
 //
-// Nothing is shared except the two lock-free structures, which is the entire
-// argument for having built them first.
-//
-// A LIMITATION, STATED RATHER THAN DISCOVERED
-//
-// The visuals LEAD the audio by roughly the depth of the PCM ring, because the
-// analysis runs on audio as it is decoded rather than as it is played.
-// docs/audio-frame.md section 1 places the analysis tap at "the playback point
-// minus output device latency", and doing that properly needs a trustworthy
-// device clock -- which SdlSink explicitly does not have (its clock is derived,
-// see sdl_sink.hpp). So the ring is kept deliberately shallow to keep the lead
-// small, and the real fix arrives with WasapiSink. Tracked as an issue rather
-// than left as a surprise.
+// Nothing is shared except the lock-free structures inside the session and one
+// small mutex-guarded command, which is the entire argument for having built
+// the lock-free pieces first.
 
 #include <holocron/analysis.hpp>
 #include <holocron/audio_frame.hpp>
@@ -58,8 +54,7 @@
 #include <holocron/vault.hpp>
 #include <holocron/debug_facet.hpp>
 #include <holocron/decoder.hpp>
-#include <holocron/frame_history.hpp>
-#include <holocron/pcm_ring.hpp>
+#include <holocron/playback_session.hpp>
 #include <holocron/sdl_sink.hpp>
 #include <holocron/wasapi_sink.hpp>
 #include <holocron/triple_buffer.hpp>
@@ -72,6 +67,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -377,165 +373,70 @@ bool build_crystal(const char* stem, std::unique_ptr<CrystalFacet>& live, bool c
     return true;
 }
 
-// Two seconds of history at 93.75 Hz, rounded to a power of two. Far more than
-// the lead ever is; the cost is 128 * sizeof(AudioFrame), about 1.4 MB, which is
-// nothing against being able to place a frame correctly.
-constexpr std::size_t kHistorySlots = 128;
-
-struct Shared {
-    FrameHistory<AudioFrame, kHistorySlots> frames;
-    PcmRing                                 pcm;
-
-    std::atomic<bool>          quit{false};
-    std::atomic<bool>          finished{false};
-
-    // Frames padded AFTER the decoder finished, which is the file ending rather
-    // than a fault. Subtracted from the ring's total so the reported underrun
-    // count means only what it claims to. See render_audio.
-    std::atomic<std::uint64_t> drain_padded{0};
-    std::atomic<std::uint64_t> published{0};
-};
-
-void on_analysis_frame(const AudioFrame& f, void* user)
-{
-    auto* s = static_cast<Shared*>(user);
-
-    const std::uint64_t k = s->published.fetch_add(1, std::memory_order_relaxed);
-
-    // The instant this frame REPRESENTS, which is the centre of its analysis
-    // window rather than its start.
-    //
-    // Frame k is computed from source samples [k*kHopSize, k*kHopSize +
-    // kFftSize) at kAnalysisRate. Keying on the window's start would place
-    // every frame kFftSize/2 too early -- about 21 ms at the current constants,
-    // which is a fifth of the beat at 120 BPM and would be plainly visible as
-    // the visuals running ahead even after #53 was otherwise fixed.
-    //
-    // Track time, not sample index: the source rate, the analysis rate and the
-    // device rate are three different numbers and time is the only currency
-    // all three agree on.
-    const std::uint64_t centre_samples =
-        (k * static_cast<std::uint64_t>(kHopSize)) + static_cast<std::uint64_t>(kFftSize) / 2;
-    const std::uint64_t position_us =
-        (centre_samples * 1'000'000ULL) / static_cast<std::uint64_t>(kAnalysisRate);
-
-    s->frames.publish(f, position_us);
-}
-
-void render_audio(float* out, std::size_t frames, std::uint16_t channels, void* user)
-{
-    auto* s = static_cast<Shared*>(user);
-    (void)channels;
-
-    // A RING THAT RUNS DRY MID-TRACK AND A RING THAT RUNS DRY AT THE END OF THE
-    // FILE ARE NOT THE SAME EVENT, AND ONE COUNTER FOR BOTH CRIES WOLF.
-    //
-    // Mid-track it is a click and a real defect -- the thing this counter exists
-    // to catch. After the decoder has finished it is simply the file ending: the
-    // ring drains, the callback keeps being called until the sink is stopped,
-    // and a handful of periods get padded. That happens on EVERY complete play,
-    // so reporting it as "THE RING RAN DRY" trains the reader to ignore the one
-    // message that matters.
-    //
-    // Observed as 1169 frames on a full track and reproduced at 401 here; a
-    // frame-capped run that exits mid-track reports zero, which is what gave it
-    // away.
-    //
-    // Two relaxed atomic loads and no allocation, so the audio-path rule holds.
-    const bool          done   = s->finished.load(std::memory_order_acquire);
-    const std::uint64_t before = s->pcm.silence_padded();
-
-    s->pcm.read(out, frames);
-
-    if (done) {
-        const std::uint64_t after = s->pcm.silence_padded();
-        if (after > before) {
-            s->drain_padded.fetch_add(after - before, std::memory_order_relaxed);
-        }
-    }
-}
-
-// The decode thread. Owns everything that is not GL and not the audio callback.
-void decode_loop(Shared& s, const char* path, bool feed_audio)
-{
-    Decoder decoder;
-    if (decoder.open(path) != DecoderError::kOk) {
-        s.finished.store(true, std::memory_order_release);
-        return;
-    }
-
-    const SourceInfo info = decoder.info();
-
-    Resampler resampler;
-    resampler.configure(info.sample_rate, info.channels);
-
-    AnalysisStage analysis;
-    analysis.set_source_sample_rate(info.sample_rate);
-
-    constexpr std::size_t kChunk = 1024;
-    std::vector<float>    native(kChunk * info.channels);
-    std::vector<float>    tapped(resampler.max_output_frames(kChunk) * 2 + 64);
-
-    std::uint64_t decoded_frames = 0;
-
-    while (!s.quit.load(std::memory_order_relaxed)) {
-        // Back-pressure. Without this the decoder races ahead of playback and
-        // the ring stays permanently full, which would make the visuals lead by
-        // the whole file rather than by the ring depth.
-        //
-        // One millisecond, not two, and it still is not a real wait: Windows'
-        // default timer resolution is ~15.6 ms, so ANY short sleep here is
-        // really a ~15 ms sleep. That is the whole reason the ring is sized in
-        // periods below rather than set to something that looked reasonable.
-        if (feed_audio && s.pcm.writable() < kChunk) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            continue;
-        }
-
-        const std::size_t got = decoder.read(native.data(), kChunk);
-        if (got == 0) {
-            break;
-        }
-
-        decoded_frames += got;
-        analysis.set_track_position(
-            static_cast<double>(decoded_frames) / static_cast<double>(info.sample_rate),
-            info.duration_seconds);
-
-        if (feed_audio) {
-            std::size_t written = 0;
-            while (written < got && !s.quit.load(std::memory_order_relaxed)) {
-                written += s.pcm.write(native.data() + (written * info.channels), got - written);
-                if (written < got) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                }
-            }
-        }
-
-        const std::size_t tap =
-            resampler.process(native.data(), got, tapped.data(), tapped.size() / 2);
-        if (tap > 0) {
-            analysis.push(tapped.data(), tap, 2, &on_analysis_frame, &s);
-        }
-
-        // With no audio device there is nothing pacing the decode, so it would
-        // run the whole file in a fraction of a second and the window would
-        // show only the end. Pace it to roughly real time instead.
-        if (!feed_audio) {
-            const auto ms = static_cast<long long>((static_cast<double>(got) /
-                                                    static_cast<double>(info.sample_rate)) * 1000.0);
-            std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-        }
-    }
-
-    s.finished.store(true, std::memory_order_release);
-}
-
 // ---------------------------------------------------------------------------
 // Plex discovery
 // ---------------------------------------------------------------------------
 
 std::atomic<bool> g_interrupted{false};
+
+// A command from the phone, waiting for the render thread to act on it.
+//
+// THE HANDOFF EXISTS BECAUSE OF WHICH THREAD IS ALLOWED TO TOUCH THE SESSION.
+//
+// Companion handlers run on cpp-httplib's worker threads. Calling
+// PlaybackSession::start() from one of them would replace the decoder, the ring
+// and the device while the render thread is reading frames out of them --
+// a data race on every field, and the kind that shows up as an occasional
+// garbage frame rather than a crash.
+//
+// So the handler only RECORDS what was asked for, and the render loop performs
+// it. Same rule the crystal reload already follows: the thread that owns a
+// thing is the thread that changes it.
+struct CastCommand {
+    std::mutex mutex;
+
+    bool         play = false;
+    std::string  url;         // CARRIES A TOKEN. Never printed.
+    std::int64_t offset_ms = 0;
+    NowPlaying   what;
+
+    bool stop = false;
+
+    void request_play(const std::string& stream, std::int64_t offset, const NowPlaying& track)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        play      = true;
+        stop      = false;   // a newer play supersedes a stop that has not run yet
+        url       = stream;
+        offset_ms = offset;
+        what      = track;
+    }
+
+    void request_stop()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        stop = true;
+        play = false;
+    }
+
+    // Returns what to do and clears it, so one command is acted on once.
+    bool take(bool& out_play, bool& out_stop, std::string& out_url, std::int64_t& out_offset,
+              NowPlaying& out_what)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!play && !stop) {
+            return false;
+        }
+        out_play   = play;
+        out_stop   = stop;
+        out_url    = url;
+        out_offset = offset_ms;
+        out_what   = what;
+        play       = false;
+        stop       = false;
+        return true;
+    }
+};
 
 extern "C" void on_interrupt(int)
 {
@@ -830,11 +731,19 @@ int main(int argc, char** argv)
         return 0;
     }
 
-    // --discover needs no track: it is about whether the phone can see this
-    // machine, which has nothing to do with what would be played.
-    if (opt.help || (opt.path == nullptr && !opt.discover && !opt.link)) {
+    // A RUN WITH NO TRACK IS NOW THE NORMAL ONE.
+    //
+    // Under D-029 the owner does not launch Holocron with a file -- he casts to
+    // it from Plexamp. So `holocron` on its own opens the window, draws, and
+    // waits to be cast to, and a track on the command line is the special case
+    // rather than the requirement.
+    //
+    // --discover and --link still need no track for their own reasons: they are
+    // about whether the phone can see this machine, which has nothing to do with
+    // what would be played.
+    if (opt.help) {
         usage();
-        return opt.help ? 0 : 2;
+        return 0;
     }
 
     if (opt.discover && opt.no_discover) {
@@ -910,6 +819,21 @@ int main(int argc, char** argv)
     // probes; the commands are logged and not acted on.
     GdmResponder    gdm;
     CompanionServer companion;
+    CastCommand     cast;
+
+    // Handlers are set BEFORE the server starts, so a command cannot arrive at a
+    // server that has no handler and be silently acknowledged.
+    companion.set_play_handler(
+        [&cast](const PlayRequest& request, const PlexTrack& track, const std::string& url) {
+            NowPlaying what;
+            what.source      = url;
+            what.title       = track.title;
+            what.artist      = track.artist;
+            what.album       = track.album;
+            what.duration_ms = track.duration_ms;
+            cast.request_play(url, request.offset_ms, what);
+        });
+    companion.set_stop_handler([&cast] { cast.request_stop(); });
 
     // Linking comes before discovery: it needs the machine identifier and
     // nothing else, and a run that is signing in has no business also
@@ -936,165 +860,46 @@ int main(int argc, char** argv)
         return wait_for_discovery(gdm, companion);
     }
 
-    // On the HEAP, and this is not a style preference.
+    // -- the playback session ------------------------------------------------
     //
-    // FrameHistory holds its slots inline, so 128 AudioFrames is about 1.38 MB
-    // in one object. Windows' default thread stack is 1 MB, so declaring this
-    // as a local overflows the stack before main() executes a single statement
-    // -- exit code 0xC00000FD, with no output at all and nothing to suggest the
-    // cause. It cost one confusing run to find.
+    // Everything below the picture -- decoder, analysis, PCM ring, device, and
+    // the thread that drives them -- now lives behind one object that can be
+    // STARTED AND REPLACED. That is the restructure D-029 requires: the owner
+    // casts an album, and tracks arrive at arbitrary times rather than being the
+    // one file the whole process was built around.
     //
-    // TripleBuffer never provoked it because three frames is 32 KB. The size
-    // came with keeping history, and history is what #53 required.
-    auto    shared_owner = std::make_unique<Shared>();
-    Shared& shared       = *shared_owner;
+    // The session is created here and started below, because a run with no track
+    // is now legitimate: Holocron waits, and the first cast starts it.
+    SessionConfig sc;
+    sc.lead_ms  = cfg.lead_ms;
+    sc.no_audio = opt.no_audio;
+    sc.backend  = opt.sink == Options::kWasapi ? SessionConfig::Backend::kWasapi
+                  : opt.sink == Options::kSdl  ? SessionConfig::Backend::kSdl
+                                               : SessionConfig::Backend::kAuto;
 
-    // -- audio ---------------------------------------------------------------
+    PlaybackSession session(sc);
 
-    // The sink is chosen at runtime through the interface, which is the first
-    // time anything in this project has actually DONE that rather than merely
-    // being able to. Two backends behind one pointer is what #1's shape was
-    // for.
-    std::unique_ptr<AudioSink> sink;
-    bool        audio_started = false;   // device opened
-    bool        audio_running = false;   // device opened AND pulling
-    bool        bit_perfect   = false;
+    if (opt.path != nullptr) {
+        NowPlaying  what;
+        what.source = opt.path;
+        what.title  = opt.path;
 
-    if (!opt.no_audio) {
-        Decoder probe;
-        if (probe.open(opt.path) != DecoderError::kOk) {
-            std::fprintf(stderr, "holocron: cannot open %s\n", opt.path);
+        std::string detail;
+        const SessionError serr = session.start(opt.path, 0, what, detail);
+        if (serr != SessionError::kOk) {
+            std::fprintf(stderr, "holocron: %s -- %s\n", to_string(serr), opt.path);
             return 1;
         }
-        const SourceInfo info = probe.info();
-        probe.close();
-
-        SinkFormat want;
-        want.sample_rate = info.sample_rate;
-        want.channels    = info.channels;
-        // Ask for the source's own depth. Exclusive mode negotiates DEPTH (see
-        // wasapi_sink.cpp) but never RATE -- that is #32.
-        want.format      = info.is_lossless ? SampleFormat::kInt24 : SampleFormat::kFloat32;
-
-        SinkError err = SinkError::kBackendFailure;
-
-        // Preference order, and the reasoning is in the order itself:
-        //
-        //   1. WASAPI exclusive -- the only bit-perfect path (D-004).
-        //   2. WASAPI shared    -- not bit-perfect, but still IAudioClock, which
-        //                          is the real device clock #53 needs.
-        //   3. SDL              -- portable fallback, derived clock.
-        //
-        // The fallback happens HERE, in the caller, not inside the sink. Per
-        // #32 a sink that quietly retries somewhere else has broken a promise
-        // nobody can detect; a caller that does it and says so has not.
-        if (opt.sink != Options::kSdl && WasapiSink::available()) {
-            auto w = std::make_unique<WasapiSink>();
-            w->set_mode(WasapiMode::kExclusive);
-            err = w->open(want, &render_audio, &shared);
-
-            if (err == SinkError::kExclusiveModeNotPermitted) {
-                // Policy, not capability, and the user can fix it. Saying so is
-                // the entire reason this is a distinct error rather than a bare
-                // failure -- see audio_sink.hpp, which named this case before
-                // any backend existed to return it.
-                std::printf(
-                    "holocron: exclusive mode is disabled for this endpoint, so playback is\n"
-                    "          NOT bit-perfect. Enable it in Sound > Playback > Properties >\n"
-                    "          Advanced > \"Allow applications to take exclusive control\".\n");
-            } else if (err == SinkError::kRateUnavailable) {
-                std::printf("holocron: the endpoint refuses %u Hz in exclusive mode; not\n"
-                            "          resampling behind your back (#32).\n",
-                            info.sample_rate);
-            } else if (err == SinkError::kDeviceBusy) {
-                // Exclusive mode is PERMITTED but something already holds a
-                // stream on this endpoint, and Windows will not preempt it
-                // unless the endpoint is also set to give exclusive-mode
-                // applications priority. That is a second checkbox on the same
-                // property page, and the distinction is invisible unless
-                // something says it out loud.
-                std::printf(
-                    "holocron: exclusive mode is allowed but the endpoint is in use by\n"
-                    "          another application, so playback is NOT bit-perfect. Either\n"
-                    "          close whatever is playing, or tick Sound > Playback >\n"
-                    "          Properties > Advanced > \"Give exclusive mode applications\n"
-                    "          priority\".\n");
-            }
-
-            if (err == SinkError::kOk) {
-                bit_perfect = w->is_bit_perfect();
-                sink        = std::move(w);
-            } else {
-                auto s = std::make_unique<WasapiSink>();
-                s->set_mode(WasapiMode::kShared);
-                err = s->open(want, &render_audio, &shared);
-                if (err == SinkError::kOk) {
-                    bit_perfect = s->is_bit_perfect();
-                    sink        = std::move(s);
-                }
-            }
+        if (!detail.empty()) {
+            // A device that could not be opened the way it was asked for. Not
+            // fatal -- the visuals are the point and the analysis runs anyway --
+            // but silence with no explanation is the worst of both.
+            std::fprintf(stderr, "holocron: audio: %s\n", detail.c_str());
         }
-
-        if (sink == nullptr && opt.sink != Options::kWasapi) {
-            auto s = std::make_unique<SdlSink>();
-            err    = s->open(want, &render_audio, &shared);
-            if (err == SinkError::kOk) {
-                sink = std::move(s);
-            }
-        }
-
-        if (sink == nullptr) {
-            std::fprintf(stderr, "holocron: audio unavailable (%s), continuing muted\n",
-                         to_string(err));
-        } else {
-            // Ring depth is a measured number, not a guess.
-            //
-            // It was four periods first, on the reasoning that shallow keeps
-            // the visual lead small. Running it reported 12,348 frames of
-            // silence padded over seven seconds -- audible, and invisible until
-            // the ring started counting. The cause is Windows' ~15.6 ms default
-            // timer resolution: the decode thread's back-pressure sleep really
-            // takes about 15 ms, and four periods of a ~10 ms WASAPI period is
-            // only ~40 ms of headroom, so one late wake-up empties it.
-            //
-            // Sixteen periods is roughly ten times the worst-case sleep, and
-            // that remains the FLOOR below which the ring starves.
-            //
-            // BUT SIXTEEN PERIODS IS ALSO THE LEAD BUDGET, AND THAT TURNED OUT
-            // TO BE THE BINDING CONSTRAINT.
-            //
-            // The comment here used to end "it is also the upper bound on how
-            // far the visuals lead the sound", treating that as a cost to be
-            // minimised. It is not only a cost -- it is the entire budget for a
-            // NEGATIVE trim, and a negative trim is what a display with real
-            // input lag needs. At WASAPI exclusive with 160-frame periods,
-            // sixteen periods is 2560 frames: about 58 ms, which is why the
-            // measured lead came out at 51 ms and why nudging the trim below
-            // that did nothing at all.
-            //
-            // So the ring is now sized by TIME rather than by device periods.
-            // Periods are the wrong unit for this: exclusive mode gives 160
-            // frames and shared mode gives ~441, so the same multiplier bought
-            // wildly different amounts of lead depending on which backend
-            // happened to open.
-            //
-            // The cost of a deeper ring is decode running further ahead --
-            // about 96 KB of float at the default, and a proportionally longer
-            // prefill before the first sound. Neither is worth optimising
-            // against a picture that visibly lags the music.
-            const std::size_t floor_frames = static_cast<std::size_t>(sink->period_frames()) * 16;
-            const std::size_t lead_frames =
-                static_cast<std::size_t>(cfg.lead_ms *
-                                         static_cast<double>(info.sample_rate) / 1000.0);
-
-            shared.pcm.reset(std::max(floor_frames, lead_frames), info.channels);
-
-            const double budget_ms = 1000.0 * static_cast<double>(shared.pcm.capacity()) /
-                                     static_cast<double>(info.sample_rate);
+        if (session.audio_running()) {
             std::printf("holocron: lead budget %.0f ms -- the most a negative --trim-ms can "
                         "advance the picture\n",
-                        budget_ms);
-            audio_started = true;
+                        session.lead_budget_ms());
         }
     }
 
@@ -1109,9 +914,7 @@ int main(int argc, char** argv)
     const WindowError werr = window.open(wc);
     if (werr != WindowError::kOk) {
         std::fprintf(stderr, "holocron: %s\n", to_string(werr));
-        if (audio_started) {
-            sink->close();
-        }
+        session.stop();
         return 1;
     }
 
@@ -1119,9 +922,11 @@ int main(int argc, char** argv)
                 window.gl_renderer());
     std::printf("holocron: %s\n", window.gl_version());
     std::printf("holocron: audio %s, %u frames per period%s\n",
-                audio_started ? sink->backend_name() : "(none)",
-                audio_started ? sink->period_frames() : 0u,
-                audio_started ? (bit_perfect ? ", BIT-PERFECT" : ", not bit-perfect") : "");
+                session.active() ? session.backend_name() : "(none)",
+                session.period_frames(),
+                session.audio_running()
+                    ? (session.bit_perfect() ? ", BIT-PERFECT" : ", not bit-perfect")
+                    : "");
 
     DebugFacet facet;
     // Held by pointer so a reload or a switch can swap a freshly compiled facet
@@ -1148,9 +953,7 @@ int main(int argc, char** argv)
         if (vault.empty()) {
             std::fprintf(stderr, "holocron: no crystals found in %s\n", opt.vault);
             window.close();
-            if (audio_started) {
-                sink->close();
-            }
+            session.stop();
             return 1;
         }
     } else if (opt.crystal != nullptr) {
@@ -1164,9 +967,7 @@ int main(int argc, char** argv)
             // Unlike a reload, there is nothing already on screen to fall back
             // to, so this one is fatal. build_crystal has already printed why.
             window.close();
-            if (audio_started) {
-                sink->close();
-            }
+            session.stop();
             return 1;
         }
 
@@ -1185,30 +986,8 @@ int main(int argc, char** argv)
     } else if (!facet.init()) {
         std::fprintf(stderr, "holocron: the debug facet failed to initialise\n");
         window.close();
-        if (audio_started) {
-            sink->close();
-        }
+        session.stop();
         return 1;
-    }
-
-    std::thread decoder_thread(decode_loop, std::ref(shared), opt.path, audio_started);
-
-    // Prefill before the device starts pulling.
-    //
-    // Starting the sink first means its opening callbacks arrive at an empty
-    // ring and are answered with silence -- a guaranteed dropout at the top of
-    // every track, which is exactly where it is most noticeable. Waiting costs
-    // a few milliseconds that the window creation above has largely already
-    // spent. The deadline is a safety net for a file that decodes to less than
-    // one ring, not the expected path.
-    if (audio_started) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-        while (std::chrono::steady_clock::now() < deadline &&
-               shared.pcm.readable() < shared.pcm.capacity() / 2 &&
-               !shared.finished.load(std::memory_order_acquire)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        audio_running = sink->start() == SinkError::kOk;
     }
 
     // -- render loop ---------------------------------------------------------
@@ -1222,7 +1001,11 @@ int main(int argc, char** argv)
     std::uint64_t lead_sum_us = 0;   // what the newest-wins frame would have led by
     std::uint64_t lead_n      = 0;
 
-    const std::uint32_t sink_rate = audio_started ? sink->format().sample_rate : 0;
+    // The device rate is no longer needed here: converting the clock into
+    // microseconds is the session's job, since it is the thing that knows which
+    // rate the device actually negotiated. Doing that arithmetic in the render
+    // loop was only ever possible because the loop happened to own the sink.
+
     // NOT const: --calibrate moves it with the arrow keys while the track plays.
     //
     // Restarting the player for every candidate value is what made measuring
@@ -1237,6 +1020,42 @@ int main(int argc, char** argv)
     double headroom_ms = 0.0;
 
     while (window.pump()) {
+        // -- what the phone asked for -----------------------------------------
+        //
+        // Performed HERE rather than in the Companion handler that received it,
+        // because this is the thread that reads the session. See CastCommand.
+        {
+            bool         want_play = false;
+            bool         want_stop = false;
+            std::string  url;
+            std::int64_t offset = 0;
+            NowPlaying   what;
+
+            if (cast.take(want_play, want_stop, url, offset, what)) {
+                if (want_stop) {
+                    session.stop();
+                    std::printf("holocron: stopped\n");
+                    std::fflush(stdout);
+                } else if (want_play) {
+                    std::string        detail;
+                    const SessionError serr = session.start(url, offset, what, detail);
+                    if (serr != SessionError::kOk) {
+                        // NOT fatal. A track that will not open is not a reason
+                        // to lose the window -- the next cast may well work, and
+                        // exiting would take the device out of the list.
+                        std::fprintf(stderr, "holocron: %s -- \"%s\"\n%s\n", to_string(serr),
+                                     what.title.c_str(), detail.c_str());
+                    } else {
+                        // The title, never the URL: the URL carries a token.
+                        std::printf("holocron: playing \"%s\" -- %s%s\n", what.title.c_str(),
+                                    what.artist.c_str(),
+                                    session.bit_perfect() ? " [BIT-PERFECT]" : "");
+                        std::fflush(stdout);
+                    }
+                }
+            }
+        }
+
         // -- calibration ------------------------------------------------------
         //
         // Up and down move the trim while the track keeps playing. 5 ms a step
@@ -1276,25 +1095,20 @@ int main(int argc, char** argv)
         // Section 1 puts the tap at "the playback point minus output device
         // latency". frames_played is the playback point; trim_us is the
         // latency, hand-measured, defaulting to zero.
-        const SinkClock clock = audio_running ? sink->clock() : SinkClock{};
+        std::uint64_t played_us_raw = 0;
+        const bool    have_clock    = session.played_us(played_us_raw);
 
-        if (clock.valid && sink_rate != 0) {
-            const std::int64_t played_us =
-                static_cast<std::int64_t>((clock.frames_played * 1'000'000ULL) / sink_rate);
-            const std::int64_t target = played_us - trim_us;
-            shared.frames.select(target > 0 ? static_cast<std::uint64_t>(target) : 0, frame);
+        if (have_clock) {
+            const auto         played_us = static_cast<std::int64_t>(played_us_raw);
+            const std::int64_t target    = played_us - trim_us;
+            session.select_frame(target > 0 ? static_cast<std::uint64_t>(target) : 0, frame);
 
             // Measure what the OLD behaviour would have shown, so the fix is
             // quantified rather than asserted. The newest frame's position
             // minus the playback point is exactly the lead #53 describes, and
             // it is the number that used to be on screen.
-            const std::uint64_t n = shared.published.load(std::memory_order_relaxed);
-            if (n > 0 && target > 0) {
-                const std::uint64_t newest_us =
-                    ((((n - 1) * static_cast<std::uint64_t>(kHopSize)) +
-                      (static_cast<std::uint64_t>(kFftSize) / 2)) *
-                     1'000'000ULL) /
-                    static_cast<std::uint64_t>(kAnalysisRate);
+            const std::uint64_t newest_us = session.newest_position_us();
+            if (newest_us > 0 && target > 0) {
                 if (newest_us > static_cast<std::uint64_t>(target)) {
                     lead_sum_us += newest_us - static_cast<std::uint64_t>(target);
                     ++lead_n;
@@ -1315,7 +1129,7 @@ int main(int argc, char** argv)
             // No clock to place anything against -- muted, or a sink that
             // cannot report a position. Newest-wins is correct here, and is
             // exactly what the player did everywhere before #53.
-            shared.frames.newest(frame);
+            session.newest_frame(frame);
         }
 
         // Per O-005 / #16 the render thread works on its OWN copy and never
@@ -1323,7 +1137,7 @@ int main(int argc, char** argv)
         // same reason TripleBuffer::front() returns a const reference.
 
         const bool playing =
-            audio_running && !shared.finished.load(std::memory_order_acquire);
+            session.audio_running() && !session.finished();
 
         if (drawing_crystal) {
             // Switching, then reloading, both here rather than on their own
@@ -1366,8 +1180,8 @@ int main(int argc, char** argv)
         if (opt.frames > 0 && rendered >= opt.frames) {
             break;
         }
-        if (opt.frames == 0 && shared.finished.load(std::memory_order_acquire) &&
-            shared.pcm.readable() == 0) {
+        if (opt.frames == 0 && session.active() && session.finished() &&
+            session.pending_frames() == 0) {
             break;
         }
     }
@@ -1396,14 +1210,13 @@ int main(int argc, char** argv)
 
     std::printf("holocron: %d frames drawn, %llu analysis frames published\n",
                 rendered,
-                static_cast<unsigned long long>(shared.published.load()));
-    if (audio_running) {
+                static_cast<unsigned long long>(session.frames_published()));
+    if (session.audio_running()) {
         // The underrun count comes from the RING, not the sink -- the ring is
         // the only thing that knows whether it had audio when it was asked.
         // Two sink-side metrics were deleted for pretending otherwise.
-        const std::uint64_t padded = shared.pcm.silence_padded();
-        const std::uint64_t drain  = shared.drain_padded.load(std::memory_order_relaxed);
-        const std::uint64_t dry    = padded > drain ? padded - drain : 0;
+        const std::uint64_t dry   = session.silence_padded_mid_track();
+        const std::uint64_t drain = session.silence_padded_draining();
 
         std::printf("holocron: %llu frames of silence padded mid-track%s\n",
                     static_cast<unsigned long long>(dry),
@@ -1416,10 +1229,10 @@ int main(int argc, char** argv)
                         static_cast<unsigned long long>(drain));
         }
 
-        const SinkClock c = sink->clock();
-        if (c.valid) {
+        const std::uint64_t played_frames = session.device_frames_played();
+        if (played_frames > 0) {
             std::printf("holocron: device clock reported %llu frames played\n",
-                        static_cast<unsigned long long>(c.frames_played));
+                        static_cast<unsigned long long>(played_frames));
         }
         if (lead_n > 0) {
             // The frame is now chosen by position against the device clock, so
@@ -1432,17 +1245,11 @@ int main(int argc, char** argv)
         }
     }
 
-    // Order matters. Stop the decode thread first so nothing is still writing
-    // into the ring, then stop the sink -- which does not return until its
-    // callback is guaranteed not to be running -- and only then let the ring
-    // and the window go.
-    shared.quit.store(true, std::memory_order_relaxed);
-    decoder_thread.join();
-
-    if (audio_running) {
-        sink->stop();
-        sink->close();
-    }
+    // The session stops the decode thread first so nothing is still writing into
+    // the ring, then stops the sink -- which does not return until its callback
+    // is guaranteed not to be running. That ordering is not optional and is why
+    // it lives in one place rather than being repeated at every exit.
+    session.stop();
 
     crystal_facet->shutdown();
     facet.shutdown();

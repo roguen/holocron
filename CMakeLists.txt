@@ -293,6 +293,33 @@ target_include_directories(holocron_render SYSTEM PRIVATE
 )
 
 # ---------------------------------------------------------------------------
+# Playback session
+#
+# One thing playing: decoder, analysis, PCM ring, device, and the thread that
+# drives them. Lifted out of the player so a track can be REPLACED rather than
+# being the thing the whole process was built around -- which is what casting
+# requires and what everything else M5 owes sits on top of (D-029).
+#
+# No GL and no window here, deliberately. The renderer asks this for a frame and
+# for where the speakers are; it is never asked for anything in return.
+# ---------------------------------------------------------------------------
+
+add_library(holocron_session STATIC
+    src/audio/playback_session.cpp
+)
+add_library(holocron::session ALIAS holocron_session)
+
+target_link_libraries(holocron_session
+    PUBLIC  holocron::contract
+    PRIVATE holocron::warnings
+            holocron::analysis
+            holocron::decoder
+            holocron::sdl_sink
+            holocron::wasapi_sink
+            Threads::Threads
+)
+
+# ---------------------------------------------------------------------------
 # Plex
 #
 # Discovery and the Companion HTTP surface (M5, #102). Split the same way the
