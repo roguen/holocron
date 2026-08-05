@@ -34,7 +34,12 @@ std::string url_encode(const std::string& value)
 
     std::string out;
     out.reserve(value.size());
-    for (const unsigned char c : value) {
+    for (const char raw : value) {
+        // Explicit, because `char` is signed on the Linux job and an implicit
+        // narrowing here is a -Wsign-conversion error under -Werror. The cast is
+        // also the correct thing on its own terms: byte values above 127 must be
+        // percent-encoded as unsigned, not as negative numbers.
+        const auto c = static_cast<unsigned char>(raw);
         // RFC 3986 unreserved. Everything else is escaped, including '/' -- this
         // encodes VALUES, and a value that contains a slash is not a path
         // separator.
