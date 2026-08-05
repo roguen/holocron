@@ -134,18 +134,84 @@ TEST_CASE("the timeline endpoints are not shadowed by the catch-all", "[plex][co
 TEST_CASE("unimplemented player commands are acknowledged rather than refused",
           "[plex][companion]")
 {
-    // Nothing plays yet, but a 404 on a path a client probes can make it
-    // classify the device as broken and stop offering it. See the header.
+    // A 404 on a path a client probes can make it classify the device as broken
+    // and stop offering it. See the header.
+    //
+    // skipNext rather than playMedia: playMedia is implemented now, and a route
+    // that does something real is not a test of the fallback.
     RunningServer s(fixture());
     REQUIRE(s.error == CompanionError::kOk);
 
     auto client = s.client();
-    auto res    = client.Get("/player/playback/playMedia?key=/library/metadata/1");
+    auto res    = client.Get("/player/playback/skipNext?commandID=9");
 
     REQUIRE(res);
     REQUIRE(res->status == 200);
     REQUIRE(res->body.find("<Response") != std::string::npos);
     REQUIRE(res->body.find("code=\"200\"") != std::string::npos);
+}
+
+TEST_CASE("a playMedia that cannot be acted on is refused, not falsely acknowledged",
+          "[plex][companion]")
+{
+    // The opposite of the case above, and the distinction is the point. A path
+    // that is merely unimplemented gets a success envelope so the controller
+    // keeps offering the device. A play command that is genuinely unusable --
+    // here, no address, so nothing says which server to fetch from -- must NOT,
+    // because the controller would show a track playing that never will.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto client = s.client();
+    auto res    = client.Get("/player/playback/playMedia?key=/library/metadata/1&commandID=9");
+
+    REQUIRE(res);
+    REQUIRE(res->body.find("code=\"200\"") == std::string::npos);
+    REQUIRE(res->body.find("<Response") != std::string::npos);
+}
+
+TEST_CASE("the play handler is not called for a command that never parsed",
+          "[plex][companion]")
+{
+    // Otherwise a malformed command would reach the player as a request to play
+    // something with no server and no key, which is a crash waiting to happen in
+    // whatever eventually opens the URL.
+    PlexDevice device = fixture();
+
+    CompanionServer server;
+    bool            called = false;
+    server.set_play_handler([&called](const PlayRequest&, const PlexTrack&, const std::string&) {
+        called = true;
+    });
+
+    std::string detail;
+    REQUIRE(server.start(device, detail) == CompanionError::kOk);
+
+    httplib::Client client("127.0.0.1", server.bound_port());
+    client.set_connection_timeout(2, 0);
+    client.set_read_timeout(2, 0);
+    REQUIRE(client.Get("/player/playback/playMedia?commandID=9"));
+
+    server.stop();
+    REQUIRE_FALSE(called);
+}
+
+TEST_CASE("the stop handler is called", "[plex][companion]")
+{
+    CompanionServer server;
+    bool            stopped = false;
+    server.set_stop_handler([&stopped] { stopped = true; });
+
+    std::string detail;
+    REQUIRE(server.start(fixture(), detail) == CompanionError::kOk);
+
+    httplib::Client client("127.0.0.1", server.bound_port());
+    client.set_connection_timeout(2, 0);
+    client.set_read_timeout(2, 0);
+    REQUIRE(client.Get("/player/playback/stop?commandID=9&type=music"));
+
+    server.stop();
+    REQUIRE(stopped);
 }
 
 TEST_CASE("requests are counted and the last path is recorded", "[plex][companion]")
@@ -164,6 +230,28 @@ TEST_CASE("requests are counted and the last path is recorded", "[plex][companio
     REQUIRE(s.server.requests() == 2);
     REQUIRE(s.server.last_path().find("/player/playback/pause") != std::string::npos);
     REQUIRE(s.server.last_path().find("commandID=3") != std::string::npos);
+}
+
+TEST_CASE("a playback token is never written to the request log", "[plex][companion]")
+{
+    // playMedia carries `token=`, and this log is exactly what gets pasted into
+    // an issue or a chat window -- the first real capture of it was pasted with
+    // the token intact. last_path() is the same string the log line prints, so
+    // asserting on it asserts on the log.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto client = s.client();
+    REQUIRE(client.Get("/player/playback/stop?commandID=1&token=SUPERSECRETVALUE"));
+
+    const std::string logged = s.server.last_path();
+    REQUIRE(logged.find("SUPERSECRETVALUE") == std::string::npos);
+    REQUIRE(logged.find("<redacted>") != std::string::npos);
+
+    // The rest of the line still has to be useful, or redaction has traded one
+    // problem for another.
+    REQUIRE(logged.find("commandID=1") != std::string::npos);
+    REQUIRE(logged.find("/player/playback/stop") != std::string::npos);
 }
 
 TEST_CASE("a CORS preflight is answered", "[plex][companion]")

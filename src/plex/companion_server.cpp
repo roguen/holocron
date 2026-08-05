@@ -21,6 +21,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace holocron {
 
@@ -56,6 +58,23 @@ struct CompanionServer::Impl {
 
     bool routes_installed = false;
 
+    CompanionServer::PlayHandler play_handler;
+    CompanionServer::StopHandler stop_handler;
+
+    // httplib hands back a multimap; the parser takes a flat list so that
+    // nothing in the plex layer has to know which HTTP library is underneath.
+    // Order is preserved, which matters: `containerKey` carries an unencoded `&`
+    // and can therefore appear more than once, and the parser takes the last.
+    static std::vector<std::pair<std::string, std::string>> flatten(const httplib::Params& params)
+    {
+        std::vector<std::pair<std::string, std::string>> out;
+        out.reserve(params.size());
+        for (const auto& [key, value] : params) {
+            out.emplace_back(key, value);
+        }
+        return out;
+    }
+
     // Routes match in REGISTRATION ORDER, so the specific paths go in before the
     // catch-all. If /player/.* were registered first it would swallow the
     // timeline endpoints, and a client asking for a timeline would get a bare
@@ -73,6 +92,22 @@ struct CompanionServer::Impl {
     static bool is_timeline_poll(const httplib::Request& req)
     {
         return req.path == "/player/timeline/poll";
+    }
+
+    // Parameter names whose values must never be logged.
+    //
+    // Matched case-insensitively on a substring, deliberately over-broad: the
+    // cost of redacting something harmless is a slightly less useful log line,
+    // and the cost of missing one is a credential in a paste.
+    static bool is_secret(const std::string& key)
+    {
+        std::string lower;
+        lower.reserve(key.size());
+        for (const char c : key) {
+            lower += static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+        }
+        return lower.find("token") != std::string::npos ||
+               lower.find("password") != std::string::npos;
     }
 
     void note(const httplib::Request& req)
@@ -95,7 +130,16 @@ struct CompanionServer::Impl {
                 first = false;
                 path += key;
                 path += '=';
-                path += value;
+
+                // A PLAYBACK TOKEN IS A CREDENTIAL AND THIS LOG GETS PASTED.
+                //
+                // playMedia carries `token=`, and this transcript is exactly
+                // the thing that ends up in an issue or a chat window -- the
+                // first real capture of it was pasted into a conversation with
+                // the token intact. The play line was already careful to print
+                // the title rather than the URL; this was the hole left open
+                // one layer down.
+                path += is_secret(key) ? "<redacted>" : value;
             }
         }
 
@@ -182,6 +226,65 @@ void CompanionServer::Impl::install_routes()
                        "x-plex-device-name, x-plex-token, x-plex-product, x-plex-version, "
                        "content-type, accept");
         res.set_content("", "text/plain");
+    });
+
+    // playMedia: parse, resolve against the media server, hand over a URL.
+    //
+    // Registered BEFORE the catch-all, like the timeline routes. Resolution
+    // happens here rather than in the handler because it is protocol knowledge:
+    // the player has no business knowing that a Plex item has to be turned into
+    // a Part before anything can open it.
+    self->server.Get("/player/playback/playMedia", [self](const httplib::Request& req,
+                                                          httplib::Response& res) {
+        self->note(req);
+        self->decorate(res);
+
+        PlayRequest request;
+        std::string detail;
+        if (!parse_play_media(flatten(req.params), request, detail)) {
+            std::printf("companion: cannot play that -- %s\n", detail.c_str());
+            std::fflush(stdout);
+            // Answered as an error rather than a bare 200: the controller is
+            // entitled to know the command did not take, and a success envelope
+            // for something that will never play is a lie it cannot detect.
+            res.set_content(response_xml(400, "Bad Request"), "text/xml");
+            return;
+        }
+
+        PlexTrack       track;
+        const HttpError err = resolve_track(request, track, detail);
+        if (err != HttpError::kOk) {
+            std::printf("companion: cannot resolve %s -- %s\n  %s\n", request.key.c_str(),
+                        to_string(err), detail.c_str());
+            std::fflush(stdout);
+            res.set_content(response_xml(500, "Internal Server Error"), "text/xml");
+            return;
+        }
+
+        // The TITLE, never the URL. The URL carries the playback token in its
+        // query string, and this log is pasted into issues and chat windows.
+        std::printf("companion: play \"%s\" -- %s, %s (%s %s, %lld ms in%s)\n",
+                    track.title.c_str(), track.artist.c_str(), track.album.c_str(),
+                    track.codec.c_str(), track.container.c_str(),
+                    static_cast<long long>(request.offset_ms), request.paused ? ", paused" : "");
+        std::fflush(stdout);
+
+        if (self->play_handler) {
+            self->play_handler(request, track, stream_url(request, track.part_key));
+        }
+        res.set_content(response_xml(200, "OK"), "text/xml");
+    });
+
+    self->server.Get("/player/playback/stop", [self](const httplib::Request& req,
+                                                     httplib::Response& res) {
+        self->note(req);
+        self->decorate(res);
+        std::printf("companion: stop\n");
+        std::fflush(stdout);
+        if (self->stop_handler) {
+            self->stop_handler();
+        }
+        res.set_content(response_xml(200, "OK"), "text/xml");
     });
 
     // Everything else under /player: acknowledged, logged, not acted on. See the
@@ -292,6 +395,16 @@ bool CompanionServer::running() const
 std::uint64_t CompanionServer::requests() const
 {
     return impl_ ? impl_->requests.load(std::memory_order_relaxed) : 0;
+}
+
+void CompanionServer::set_play_handler(PlayHandler handler)
+{
+    impl_->play_handler = std::move(handler);
+}
+
+void CompanionServer::set_stop_handler(StopHandler handler)
+{
+    impl_->stop_handler = std::move(handler);
 }
 
 std::uint64_t CompanionServer::timeline_polls() const

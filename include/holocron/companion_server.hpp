@@ -36,8 +36,10 @@
 #pragma once
 
 #include <holocron/plex_device.hpp>
+#include <holocron/plex_playback.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -82,6 +84,27 @@ public:
     // The port actually bound, which equals `device.port` unless that was 0.
     // Zero before start() and after stop().
     std::uint16_t bound_port() const;
+
+    // Called when a controller asks for something to be played.
+    //
+    // The server has already parsed the command AND resolved it against the
+    // media server, so the handler receives a URL that FFmpeg can open plus
+    // enough metadata to say what it is. Resolution lives here rather than in
+    // the handler because it is protocol knowledge, and the player has no
+    // business knowing that a Plex item has to be turned into a Part.
+    //
+    // Runs on an HTTP worker thread, NOT the render thread or the audio
+    // callback. Anything it touches must be safe for that.
+    using PlayHandler = std::function<void(const PlayRequest&, const PlexTrack&,
+                                           const std::string& stream_url)>;
+
+    // Called when a controller asks for playback to stop.
+    using StopHandler = std::function<void()>;
+
+    // Set before start(). Unset handlers mean the command is logged and
+    // acknowledged, which is what happened before anything could play.
+    void set_play_handler(PlayHandler handler);
+    void set_stop_handler(StopHandler handler);
 
     // Requests served since start(), and the last path seen. Both are printed by
     // the player: with the phone in another room, this is the only evidence that

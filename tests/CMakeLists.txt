@@ -29,6 +29,7 @@ add_executable(holocron_tests
     test_plex_device.cpp
     test_companion_server.cpp
     test_plex_link.cpp
+    test_plex_playback.cpp
 )
 
 # The shipped vault's location, baked in rather than searched for relative to the

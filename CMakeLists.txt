@@ -316,6 +316,8 @@ add_library(holocron_plex STATIC
     src/plex/gdm_responder.cpp
     src/plex/companion_server.cpp
     src/plex/plex_link.cpp
+    src/plex/https_client.cpp
+    src/plex/plex_playback.cpp
 )
 add_library(holocron::plex ALIAS holocron_plex)
 
