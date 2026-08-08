@@ -60,6 +60,12 @@
 #include <holocron/triple_buffer.hpp>
 #include <holocron/window.hpp>
 
+#ifdef _WIN32
+// For SetConsoleOutputCP only. Included after every project header so it cannot
+// impose its macros on them.
+#include <windows.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -407,6 +413,17 @@ struct CastCommand {
 
     bool stop = false;
 
+    // Tri-state on purpose: 0 means nothing asked, 1 pause, 2 resume. A plain
+    // bool cannot say "no pause command arrived", and defaulting to either
+    // would silently pause or resume on every frame.
+    int pause = 0;
+
+    void request_pause(bool want_pause)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        pause = want_pause ? 1 : 2;
+    }
+
     void request_play(const std::string& stream, const PlayRequest& req, const NowPlaying& track)
     {
         const std::lock_guard<std::mutex> lock(mutex);
@@ -426,6 +443,15 @@ struct CastCommand {
     }
 
     // Returns what to do and clears it, so one command is acted on once.
+    // 0 = nothing asked, 1 = pause, 2 = resume. Cleared as it is read.
+    int take_pause()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const int asked = pause;
+        pause           = 0;
+        return asked;
+    }
+
     bool take(bool& out_play, bool& out_stop, std::string& out_url, std::int64_t& out_offset,
               NowPlaying& out_what, PlayRequest& out_request)
     {
@@ -718,6 +744,18 @@ int wait_for_discovery(const GdmResponder& gdm, const CompanionServer& companion
 
 int main(int argc, char** argv)
 {
+#ifdef _WIN32
+    // THE CONSOLE IS NOT UTF-8 BY DEFAULT, AND EVERYTHING ELSE HERE IS.
+    //
+    // Sources are compiled with /utf-8 and track metadata arrives as UTF-8 from
+    // the media server, but a Windows console starts on the legacy OEM code
+    // page. The album Ænima therefore printed as `├ånima` -- the bytes were
+    // correct all along and only the display was wrong, which is the most
+    // misleading kind of encoding bug because it looks like a decoding fault
+    // upstream.
+    ::SetConsoleOutputCP(CP_UTF8);
+#endif
+
     Options opt = parse(argc, argv);
 
     // Before anything else, including --help and --list-bindings. An argument
@@ -841,6 +879,7 @@ int main(int argc, char** argv)
             cast.request_play(url, request, what);
         });
     companion.set_stop_handler([&cast] { cast.request_stop(); });
+    companion.set_pause_handler([&cast](bool paused) { cast.request_pause(paused); });
 
     // Linking comes before discovery: it needs the machine identifier and
     // nothing else, and a run that is signing in has no business also
@@ -928,12 +967,19 @@ int main(int argc, char** argv)
     std::printf("holocron: GL %d.%d core on %s\n", window.gl_major(), window.gl_minor(),
                 window.gl_renderer());
     std::printf("holocron: %s\n", window.gl_version());
-    std::printf("holocron: audio %s, %u frames per period%s\n",
-                session.active() ? session.backend_name() : "(none)",
-                session.period_frames(),
-                session.audio_running()
-                    ? (session.bit_perfect() ? ", BIT-PERFECT" : ", not bit-perfect")
-                    : "");
+    // The device does not exist until something is playing, because its format
+    // follows the SOURCE. Saying "audio (none)" here reads as "no audio device
+    // could be opened", which is a different and much worse thing -- and it was
+    // read that way on the first real cast, where BIT-PERFECT was reported
+    // correctly on the playing line and looked absent because of this one.
+    if (session.active()) {
+        std::printf("holocron: audio %s, %u frames per period%s\n", session.backend_name(),
+                    session.period_frames(),
+                    session.bit_perfect() ? ", BIT-PERFECT" : ", not bit-perfect");
+    } else {
+        std::printf("holocron: no track yet -- the audio device opens when one is cast,\n"
+                    "  because its format follows the track\n");
+    }
 
     DebugFacet facet;
     // Held by pointer so a reload or a switch can swap a freshly compiled facet
@@ -1075,14 +1121,39 @@ int main(int argc, char** argv)
                         timeline.protocol           = request.protocol;
                         timeline.duration_ms        = what.duration_ms;
                         timeline.time_ms            = offset;
-                        timeline.state              = TransportState::kPlaying;
+
+                        // HONOUR `paused=1`, WHICH PLEXAMP SENDS ON EVERY CAST.
+                        //
+                        // It means "load this and hold", and playing anyway
+                        // makes the controller's idea of the player diverge
+                        // from the player. Observed consequence: Plexamp stops
+                        // showing a progress bar and takes control back within
+                        // seconds.
+                        session.set_paused(request.paused);
+                        timeline.state = request.paused ? TransportState::kPaused
+                                                        : TransportState::kPlaying;
 
                         // The title, never the URL: the URL carries a token.
-                        std::printf("holocron: playing \"%s\" -- %s%s\n", what.title.c_str(),
-                                    what.artist.c_str(),
+                        std::printf("holocron: %s \"%s\" -- %s%s\n",
+                                    request.paused ? "loaded (paused)" : "playing",
+                                    what.title.c_str(), what.artist.c_str(),
                                     session.bit_perfect() ? " [BIT-PERFECT]" : "");
                         std::fflush(stdout);
                     }
+                }
+            }
+        }
+
+        // A pause or resume that arrived since the last frame. Applied here for
+        // the same reason a play command is: this is the thread that owns the
+        // session.
+        if (const int asked = cast.take_pause(); asked != 0) {
+            const bool want_pause = asked == 1;
+            if (session.active()) {
+                session.set_paused(want_pause);
+                if (timeline.state != TransportState::kStopped) {
+                    timeline.state =
+                        want_pause ? TransportState::kPaused : TransportState::kPlaying;
                 }
             }
         }

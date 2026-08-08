@@ -123,6 +123,7 @@ struct PlaybackSession::Impl {
     bool       audio_started = false;   // device opened
     bool       audio_running = false;   // device opened AND pulling
     bool       bit_perfect   = false;
+    bool       is_paused     = false;
     NowPlaying what;
 
     std::uint32_t rate            = 0;
@@ -417,11 +418,33 @@ void PlaybackSession::stop()
     impl.audio_started = false;
     impl.audio_running = false;
     impl.bit_perfect   = false;
+    impl.is_paused     = false;
     impl.rate            = 0;
     impl.lead_budget     = 0.0;
     impl.start_offset_ms = 0;
     impl.what          = NowPlaying{};
 }
+
+void PlaybackSession::set_paused(bool paused)
+{
+    Impl& impl = *impl_;
+    if (!impl.started || impl.sink == nullptr || impl.is_paused == paused) {
+        return;
+    }
+
+    if (paused) {
+        // stop() rather than close(): the device stays open and its format
+        // stays negotiated, so resuming does not renegotiate and cannot
+        // silently land somewhere that is no longer bit-perfect.
+        impl.sink->stop();
+        impl.audio_running = false;
+    } else {
+        impl.audio_running = impl.sink->start() == SinkError::kOk;
+    }
+    impl.is_paused = paused;
+}
+
+bool PlaybackSession::paused() const { return impl_->is_paused; }
 
 bool PlaybackSession::active() const { return impl_->started; }
 

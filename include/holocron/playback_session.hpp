@@ -126,6 +126,18 @@ public:
     // Stop and release the device. Idempotent, and called by the destructor.
     void stop();
 
+    // Hold or resume the device without tearing the session down.
+    //
+    // The decode thread keeps running and the ring fills to its back-pressure
+    // limit, so resuming is immediate rather than needing another prefill.
+    //
+    // A controller that asks for a track LOADED BUT PAUSED -- which Plexamp does
+    // on every cast, with `paused=1` -- must get exactly that. Playing anyway
+    // makes the controller's idea of the player diverge from the player, and it
+    // responds by taking control back.
+    void set_paused(bool paused);
+    bool paused() const;
+
     // Something has been started and has not been stopped. Says nothing about
     // whether it has reached the end -- see finished().
     bool active() const;

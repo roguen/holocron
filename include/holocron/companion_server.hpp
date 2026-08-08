@@ -101,10 +101,18 @@ public:
     // Called when a controller asks for playback to stop.
     using StopHandler = std::function<void()>;
 
+    // Called when a controller asks to pause or resume. `true` means pause.
+    //
+    // Plexamp sends `paused=1` on the play command itself and then drives
+    // pause/play separately, so both routes have to work or its idea of the
+    // player diverges from the player -- at which point it takes control back.
+    using PauseHandler = std::function<void(bool paused)>;
+
     // Set before start(). Unset handlers mean the command is logged and
     // acknowledged, which is what happened before anything could play.
     void set_play_handler(PlayHandler handler);
     void set_stop_handler(StopHandler handler);
+    void set_pause_handler(PauseHandler handler);
 
     // What to report to a controller that asks.
     //

@@ -274,13 +274,25 @@ std::string timeline_xml(std::string_view command_id, const TimelineState& state
             append_attribute(out, "port", std::to_string(state.port));
             append_attribute(out, "protocol", state.protocol);
 
+            // VOLUME IS REPORTED AND NOT IMPLEMENTED, DELIBERATELY.
+            //
+            // Plexamp sends `setParameters?volume=0` repeatedly on connect and
+            // expects a volume back. Reporting one keeps its model consistent.
+            //
+            // APPLYING it would end bit-perfect output: scaling samples in
+            // software is exactly the "quietly resampling behind your back"
+            // that D-004 and #32 forbid, and this rack has a receiver whose own
+            // volume control is both better and lossless. So `controllable`
+            // below does NOT claim volume, and this always reads 100.
+            append_attribute(out, "volume", "100");
+
             // WHAT THE CONTROLLER MAY OFFER, and it must not overstate.
             //
-            // Only the two that are actually implemented. Listing seekTo or
-            // skipNext here would put buttons on the phone that do nothing when
-            // pressed, which is worse than their absence -- the user cannot tell
-            // a dead button from a broken player.
-            append_attribute(out, "controllable", "playPause,stop");
+            // Only what is actually implemented. Listing seekTo or skipNext
+            // here would put buttons on the phone that do nothing when pressed,
+            // which is worse than their absence -- the user cannot tell a dead
+            // button from a broken player.
+            append_attribute(out, "controllable", "playPause,play,pause,stop");
         }
         out += " />\n";
     }

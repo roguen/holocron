@@ -343,16 +343,38 @@ TEST_CASE("only the music transport is ever playing", "[plex][playback]")
     REQUIRE(xml.find("state=\"playing\"", playing + 1) == std::string::npos);
 }
 
-TEST_CASE("controllable does not claim what is not implemented", "[plex][playback]")
+TEST_CASE("controllable claims exactly what is implemented", "[plex][playback]")
 {
-    // Listing seekTo or skipNext here would put buttons on the phone that do
-    // nothing when pressed, and a dead button is indistinguishable from a broken
-    // player.
+    // Both directions matter. Listing seekTo or skipNext would put buttons on
+    // the phone that do nothing when pressed, and a dead button is
+    // indistinguishable from a broken player. NOT listing pause and play would
+    // hide controls that do work.
     const std::string xml = timeline_xml("7", playing_fixture());
 
-    REQUIRE(xml.find("controllable=\"playPause,stop\"") != std::string::npos);
+    REQUIRE(xml.find("controllable=\"playPause,play,pause,stop\"") != std::string::npos);
     REQUIRE(xml.find("seekTo") == std::string::npos);
     REQUIRE(xml.find("skipNext") == std::string::npos);
+
+    // Volume is REPORTED so the controller's model stays consistent, and is not
+    // in `controllable` because applying it in software would end bit-perfect
+    // output. See the note in timeline_xml.
+    REQUIRE(xml.find("volume=\"100\"") != std::string::npos);
+    REQUIRE(xml.find("controllable=\"playPause,play,pause,stop\"") != std::string::npos);
+}
+
+TEST_CASE("a paused player still reports a position and a track", "[plex][playback]")
+{
+    // Plexamp sends `paused=1` on every cast -- "load this and hold". Reporting
+    // a bare stopped state in response would tell it nothing is loaded, which
+    // is not what it asked for and not what is true.
+    TimelineState paused = playing_fixture();
+    paused.state         = TransportState::kPaused;
+
+    const std::string xml = timeline_xml("7", paused);
+    REQUIRE(xml.find("state=\"paused\"") != std::string::npos);
+    REQUIRE(xml.find("key=\"/library/metadata/56401\"") != std::string::npos);
+    REQUIRE(xml.find("duration=\"364277\"") != std::string::npos);
+    REQUIRE(xml.find("location=\"fullScreenMusic\"") != std::string::npos);
 }
 
 TEST_CASE("a paused timeline says paused and still names the track", "[plex][playback]")

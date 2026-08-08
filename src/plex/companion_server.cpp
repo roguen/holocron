@@ -60,8 +60,15 @@ struct CompanionServer::Impl {
 
     bool routes_installed = false;
 
-    CompanionServer::PlayHandler play_handler;
-    CompanionServer::StopHandler stop_handler;
+    CompanionServer::PlayHandler  play_handler;
+    CompanionServer::StopHandler  stop_handler;
+    CompanionServer::PauseHandler pause_handler;
+
+    bool last_reported_playing()
+    {
+        const std::lock_guard<std::mutex> lock(wake_mutex);
+        return timeline.state == TransportState::kPlaying;
+    }
 
     // httplib hands back a multimap; the parser takes a flat list so that
     // nothing in the plex layer has to know which HTTP library is underneath.
@@ -289,6 +296,30 @@ void CompanionServer::Impl::install_routes()
         res.set_content(response_xml(200, "OK"), "text/xml");
     });
 
+    // pause / play / playPause, all three spellings a controller may use.
+    const auto pause_route = [self](const httplib::Request& req, httplib::Response& res) {
+        self->note(req);
+        self->decorate(res);
+
+        // playPause toggles; the other two are explicit. Toggling against our
+        // own last-reported state rather than against the session keeps this
+        // route free of any dependency on the player.
+        const bool pause = req.path.find("/pause") != std::string::npos ||
+                           (req.path.find("/playPause") != std::string::npos &&
+                            self->last_reported_playing());
+
+        std::printf("companion: %s\n", pause ? "pause" : "play");
+        std::fflush(stdout);
+
+        if (self->pause_handler) {
+            self->pause_handler(pause);
+        }
+        res.set_content(response_xml(200, "OK"), "text/xml");
+    };
+    self->server.Get("/player/playback/pause", pause_route);
+    self->server.Get("/player/playback/play", pause_route);
+    self->server.Get("/player/playback/playPause", pause_route);
+
     self->server.Get("/player/playback/stop", [self](const httplib::Request& req,
                                                      httplib::Response& res) {
         self->note(req);
@@ -419,6 +450,11 @@ void CompanionServer::set_play_handler(PlayHandler handler)
 void CompanionServer::set_stop_handler(StopHandler handler)
 {
     impl_->stop_handler = std::move(handler);
+}
+
+void CompanionServer::set_pause_handler(PauseHandler handler)
+{
+    impl_->pause_handler = std::move(handler);
 }
 
 void CompanionServer::set_timeline(const TimelineState& state)
