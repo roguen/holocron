@@ -55,6 +55,27 @@ struct CompanionServer::Impl {
     std::condition_variable wake;
     TimelineState           timeline;
 
+    // WHY A GENERATION COUNTER AND NOT JUST "HAS IT CHANGED SINCE I ARRIVED".
+    //
+    // The first attempt held every `wait=1` poll until the state changed after
+    // the request arrived. That is wrong, and the symptom was Plexamp spinning
+    // forever on a cast: the client had never seen the CURRENT state, and was
+    // made to wait thirty seconds for a change that had already happened.
+    //
+    // Correct long polling needs to know what the client has already been told.
+    // `generation` bumps on every material change; `answered_generation` records
+    // the newest one actually sent to anybody. A poll returns IMMEDIATELY while
+    // those differ -- there is news outstanding -- and only holds once the
+    // current state has been delivered.
+    //
+    // It is per-server rather than per-client, which is imprecise with several
+    // controllers: the second one to poll may hold when it had news waiting.
+    // Acceptable, because it recovers on the next change and because this player
+    // is cast to from one phone. A per-client version needs client identity
+    // threaded through every poll and is not worth it yet.
+    std::uint64_t generation          = 1;
+    std::uint64_t answered_generation = 0;
+
     mutable std::mutex path_mutex;
     std::string        last_path;
 
@@ -63,6 +84,8 @@ struct CompanionServer::Impl {
     CompanionServer::PlayHandler  play_handler;
     CompanionServer::StopHandler  stop_handler;
     CompanionServer::PauseHandler pause_handler;
+    CompanionServer::QueueHandler queue_handler;
+    CompanionServer::SkipHandler  skip_handler;
 
     bool last_reported_playing()
     {
@@ -217,16 +240,20 @@ void CompanionServer::Impl::install_routes()
 
             const auto wait = req.params.find("wait");
             if (wait != req.params.end() && wait->second == "1") {
-                const TimelineState before = self->timeline;
-                // The predicate is what makes this correct rather than merely
-                // timed: a change that lands between the caller reading the
-                // state and this wait starting is not missed, because the
-                // predicate is evaluated before the wait as well as after.
-                self->wake.wait_for(lock, std::chrono::seconds(30), [self, &before] {
-                    return self->timeline.differs_materially_from(before);
+                // HOLD ONLY IF THE CURRENT STATE HAS ALREADY BEEN DELIVERED.
+                //
+                // The predicate is checked before the wait as well as after, so
+                // a poll that arrives with news outstanding returns at once and
+                // one that arrives up to date waits for the next change. That
+                // ordering is the whole fix: holding unconditionally made a
+                // freshly-cast track invisible for thirty seconds and Plexamp
+                // spun on it.
+                self->wake.wait_for(lock, std::chrono::seconds(30), [self] {
+                    return self->generation != self->answered_generation;
                 });
             }
-            reported = self->timeline;
+            reported                  = self->timeline;
+            self->answered_generation = self->generation;
         }
 
         self->decorate(res);
@@ -295,6 +322,83 @@ void CompanionServer::Impl::install_routes()
         }
         res.set_content(response_xml(200, "OK"), "text/xml");
     });
+
+    // createPlayQueue: build the queue on the server, then start it.
+    //
+    // THIS IS WHAT CASTING AN ALBUM ACTUALLY SENDS. No playMedia arrives at all
+    // -- observed against a real Plexamp -- so a player that acknowledges this
+    // and does nothing leaves the phone spinning forever.
+    self->server.Get("/player/playback/createPlayQueue", [self](const httplib::Request& req,
+                                                                httplib::Response& res) {
+        self->note(req);
+        self->decorate(res);
+
+        PlayRequest request;
+        std::string detail;
+        if (!parse_create_play_queue(flatten(req.params), request, detail)) {
+            std::printf("companion: cannot build a queue -- %s\n", detail.c_str());
+            std::fflush(stdout);
+            res.set_content(response_xml(400, "Bad Request"), "text/xml");
+            return;
+        }
+
+        PlexQueue       queue;
+        const HttpError err =
+            create_play_queue(request, self->device.machine_identifier, queue, detail);
+        if (err != HttpError::kOk) {
+            std::printf("companion: cannot build a queue -- %s\n  %s\n", to_string(err),
+                        detail.c_str());
+            std::fflush(stdout);
+            res.set_content(response_xml(500, "Internal Server Error"), "text/xml");
+            return;
+        }
+
+        std::printf("companion: queue %s -- %zu track(s), starting at %zu (\"%s\")\n",
+                    queue.id.c_str(), queue.tracks.size(), queue.selected,
+                    queue.tracks[queue.selected].title.c_str());
+        std::fflush(stdout);
+
+        if (self->queue_handler) {
+            self->queue_handler(request, queue);
+        }
+        res.set_content(response_xml(200, "OK"), "text/xml");
+    });
+
+    // skipNext / skipPrevious / skipTo.
+    //
+    // `skipTo` is the one that matters most and was the least obvious: after
+    // building a queue, Plexamp sends it to jump to the track you actually
+    // tapped. Ignoring it meant every cast started at track one no matter what
+    // was chosen, which looked like the player having a favourite song.
+    const auto skip_route = [self](const httplib::Request& req, httplib::Response& res) {
+        self->note(req);
+        self->decorate(res);
+
+        int direction = 0;
+        if (req.path.find("skipNext") != std::string::npos) {
+            direction = 1;
+        } else if (req.path.find("skipPrevious") != std::string::npos) {
+            direction = -1;
+        }
+
+        const auto item = req.params.find("playQueueItemID");
+        const auto key  = req.params.find("key");
+
+        std::printf("companion: %s\n", direction == 1    ? "skip next"
+                                       : direction == -1 ? "skip previous"
+                                                         : "skip to a chosen track");
+        std::fflush(stdout);
+
+        if (self->skip_handler) {
+            self->skip_handler(direction,
+                               item == req.params.end() ? std::string{} : item->second,
+                               key == req.params.end() ? std::string{} : key->second);
+        }
+        res.set_content(response_xml(200, "OK"), "text/xml");
+    };
+    self->server.Get("/player/playback/skipNext", skip_route);
+    self->server.Get("/player/playback/skipPrevious", skip_route);
+    self->server.Get("/player/playback/skipTo", skip_route);
 
     // pause / play / playPause, all three spellings a controller may use.
     const auto pause_route = [self](const httplib::Request& req, httplib::Response& res) {
@@ -457,6 +561,16 @@ void CompanionServer::set_pause_handler(PauseHandler handler)
     impl_->pause_handler = std::move(handler);
 }
 
+void CompanionServer::set_queue_handler(QueueHandler handler)
+{
+    impl_->queue_handler = std::move(handler);
+}
+
+void CompanionServer::set_skip_handler(SkipHandler handler)
+{
+    impl_->skip_handler = std::move(handler);
+}
+
 void CompanionServer::set_timeline(const TimelineState& state)
 {
     bool material = false;
@@ -464,6 +578,9 @@ void CompanionServer::set_timeline(const TimelineState& state)
         const std::lock_guard<std::mutex> lock(impl_->wake_mutex);
         material        = state.differs_materially_from(impl_->timeline);
         impl_->timeline = state;
+        if (material) {
+            ++impl_->generation;
+        }
     }
 
     // Notified OUTSIDE the lock, so a woken poll does not immediately block on
