@@ -14,7 +14,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(holocron
-    VERSION 0.1.15
+    VERSION 0.1.16
     DESCRIPTION "GPU music visualization engine that is also the music player"
     LANGUAGES CXX
 )
@@ -291,6 +291,87 @@ target_include_directories(holocron_render SYSTEM PRIVATE
     $<TARGET_PROPERTY:SDL3::Headers,INTERFACE_INCLUDE_DIRECTORIES>
     $<TARGET_PROPERTY:glad::glad,INTERFACE_INCLUDE_DIRECTORIES>
 )
+
+# ---------------------------------------------------------------------------
+# Playback session
+#
+# One thing playing: decoder, analysis, PCM ring, device, and the thread that
+# drives them. Lifted out of the player so a track can be REPLACED rather than
+# being the thing the whole process was built around -- which is what casting
+# requires and what everything else M5 owes sits on top of (D-029).
+#
+# No GL and no window here, deliberately. The renderer asks this for a frame and
+# for where the speakers are; it is never asked for anything in return.
+# ---------------------------------------------------------------------------
+
+add_library(holocron_session STATIC
+    src/audio/playback_session.cpp
+)
+add_library(holocron::session ALIAS holocron_session)
+
+target_link_libraries(holocron_session
+    PUBLIC  holocron::contract
+    PRIVATE holocron::warnings
+            holocron::analysis
+            holocron::decoder
+            holocron::sdl_sink
+            holocron::wasapi_sink
+            Threads::Threads
+)
+
+# ---------------------------------------------------------------------------
+# Plex
+#
+# Discovery and the Companion HTTP surface (M5, #102). Split the same way the
+# crystal library is split against GL: plex_device.cpp is pure -- identity, the
+# exact GDM bytes, the XML documents -- and has no socket, no server and no
+# network in it, so the part most likely to be wrong is the part that is fully
+# testable in CI on both platforms.
+#
+# The two socket-bearing translation units are the containment boundary. winsock
+# and cpp-httplib appear in exactly those files and in no header, which is the
+# same rule FFmpeg, SDL and GL are already held to.
+#
+# ws2_32 is a Windows system library; there is no vcpkg dependency for the
+# sockets themselves.
+# ---------------------------------------------------------------------------
+
+find_package(httplib CONFIG REQUIRED)
+
+add_library(holocron_plex STATIC
+    src/plex/plex_device.cpp
+    src/plex/gdm_responder.cpp
+    src/plex/companion_server.cpp
+    src/plex/plex_link.cpp
+    src/plex/https_client.cpp
+    src/plex/plex_playback.cpp
+)
+add_library(holocron::plex ALIAS holocron_plex)
+
+target_link_libraries(holocron_plex
+    PUBLIC  holocron::contract
+    PRIVATE holocron::warnings
+            httplib::httplib
+            Threads::Threads
+)
+
+target_include_directories(holocron_plex SYSTEM PRIVATE
+    $<TARGET_PROPERTY:httplib::httplib,INTERFACE_INCLUDE_DIRECTORIES>
+)
+
+# The version Holocron announces over GDM, taken from project() rather than
+# written out again. #38 already tracks three places the version has to be kept
+# in step by hand; this deliberately does not become a fourth.
+target_compile_definitions(holocron_plex PRIVATE HOLOCRON_VERSION="${PROJECT_VERSION}")
+
+if(WIN32)
+    # ws2_32 for the GDM sockets. winhttp for the plex.tv link flow: plex.tv is
+    # HTTPS-only, cpp-httplib can only do TLS against OpenSSL, and taking an
+    # OpenSSL dependency for three requests was not worth it when the platform
+    # SDK already ships a client. Same reasoning that keeps WASAPI on avrt and
+    # ole32 rather than a portable audio library. See plex_link.hpp.
+    target_link_libraries(holocron_plex PRIVATE ws2_32 winhttp)
+endif()
 
 # ---------------------------------------------------------------------------
 

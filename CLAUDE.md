@@ -31,10 +31,17 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: M1 — everything but the audio device and the renderer
+## Status: M5 — Holocron is a cast target, and it plays what it is sent
 
-**It plays audio and it draws.** Verified on the rack: GL 4.5 core on the Radeon
-RX 6800, WASAPI at 441 frames per period, zero dropouts. What exists and is
+**You can cast to it from Plexamp.** Confirmed on the phone 2026-08-04. The
+device appears in the list, a play command resolves against the media server,
+and a `PlaybackSession` starts from the resulting URL.
+
+**What is NOT confirmed: audible output from a real cast.** The cast path was
+exercised with `--no-audio`; the file path is verified bit-perfect. That gap is
+the first thing to close.
+
+M1's spine and M2's plumbing are complete underneath it. What exists and is
 tested:
 
 | | |
@@ -53,13 +60,72 @@ tested:
 | Vault | `scan_vault` — `--vault DIR` loads every crystal in a directory, arrow keys move between them. Ordered **by manifest name**, because `directory_iterator` order differs between Windows and Linux. One broken crystal is reported and skipped, never fatal. `--crystal` is a vault of one, so both share a single path. |
 | Config | `gatekeeper.toml`, read at startup. Audio backend, `trim_ms`, window size, vsync, GL debug and the vault path are **live**; the rest of the example file is still specification. Flags beat the file, the file beats the defaults. |
 | Calibration | `holocron <track> --calibrate` draws `instruments/sync` and moves `trim_ms` with the arrow keys **while the track plays**, then prints the lines to paste into `gatekeeper.toml`. |
+| Discovery | `GdmResponder` announces over multicast; `CompanionServer` (cpp-httplib) serves `/resources`, the timeline endpoints and `playMedia`. `holocron --discover` runs discovery alone, headless, for diagnosis. |
+| Account | `holocron --link` signs in through the plex.tv PIN flow — **no password is ever typed into Holocron**. Registration and connection publishing then happen at every startup. |
+| Playback | `PlaybackSession` owns the decoder, analysis, ring, device and decode thread, and can be **started and replaced**. A cast starts one; `stop` stops it. `holocron` with no track opens the window and waits to be cast to. |
 | Executables | `holocron` — the player. `holocron-analyze` — the offline harness. |
+
+**What M5 still owes:** timeline reporting (Plexamp is told `stopped` even while
+playing, so its scrubber never moves and it never learns a track ended), queue
+advance, transport controls, and metadata/album art/palette into `TrackContext`.
 
 **All four M1 blockers were resolved on 2026-08-01.** What remains for M1:
 
 **M1's spine is complete and M2 has started.** It decodes, analyses, plays
 bit-perfect, draws, and what it draws is what you are hearing — and it now draws
 a *crystal*, loaded from disk and bound to the contract by name.
+
+**M5 has started ahead of M2's remaining judgement call, on purpose.** D-029 makes
+M5 the milestone that matters, and the riskiest thing in it is not the streaming
+— it is whether the phone can see this machine at all, because the Plex Companion
+protocol is community-documented rather than official. That is now answered:
+[#102](https://github.com/roguen/holocron/issues/102) verified on the rack, with a
+real GDM search answered from the LAN and `/resources` served with a matching
+identity.
+
+**Appearing in Plexamp needs FOUR things, and only the first is on the LAN.**
+Established 2026-08-04 by walking the whole chain by hand against a real phone,
+because none of it is documented:
+
+| | What it does | Without it |
+|---|---|---|
+| **GDM announcement** | Puts the player in the media server's `/clients` list | — |
+| **Account token** | `holocron --link`, PIN flow at plex.tv | No account presence at all |
+| **Device with `provides=player`** | Created by *any* authenticated request carrying the full `X-Plex-*` header set | Not a player as far as Plex is concerned |
+| **A published connection** | `PUT /devices/{id}.xml?Connection[][uri]=...` | Device exists, `/api/v2/resources` omits it, **no controller offers it** |
+
+**GDM alone gets you nowhere near a cast list**, which is the opposite of what
+the prior art implies. The thing that settles it: **Plex Web cannot do multicast
+at all** — it is a browser app — so its device list is scoped to the *account*.
+Any player that only announces on the LAN is invisible to it, and to Plexamp.
+
+The fourth step is the one that cost the most time, because the third **succeeds
+silently**: the device shows up in `/devices.xml` looking entirely correct and is
+simply absent from the list controllers actually read.
+
+**Three things about discovery that are not obvious from the code:**
+
+- **The GDM bytes are copied, not designed.** Field order, the `: ` separator, LF
+  line endings and the absence of a trailing newline all come from
+  `plex-mpv-shim`'s `PlexGDM`. There is no specification to check an answer
+  against, so `test_plex_device.cpp` asserts on whole literal payloads. That is
+  over-specified on purpose: CRLF, a trailing newline or a reordered field
+  produces no compiler error, no wrong-looking string, and no symptom except a
+  device that stops appearing on a phone in another room.
+- **`Name` and `machineIdentifier` each have two spellings.** `Resource-Identifier`
+  over GDM is `machineIdentifier` in `/resources`, and `Name` is `title`. If the
+  identifier announced over multicast disagrees with the one served over HTTP, a
+  client concludes it reached a *different* player and drops the entry — which
+  looks like the device appearing in the list and vanishing a second later.
+- **`plex.machine_identifier` must be saved or the device list grows every run.**
+  Holocron generates one when the key is empty and prints the line to paste, the
+  same pattern `--calibrate` uses for the trim. It must also be the *same* value
+  used when linking, or the account gains a second Holocron that nothing can
+  reach.
+- **`wait=1` on a timeline poll is a long poll, not a flag to ignore.** Answering
+  immediately turns Plexamp into a hot loop — measured at 415 polls in one
+  session from a player with nothing to report. Hold the connection for ~30 s or
+  until the state actually changes.
 
 **What remains in M2 is judgement, not plumbing.** The format, loader, renderer,
 hot reload and the vault all exist and are tested. The undecided part is the
@@ -197,7 +263,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.1.15`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.1.16`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 

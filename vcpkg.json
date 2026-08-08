@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "holocron",
-  "version-string": "0.1.15",
+  "version-string": "0.1.16",
   "description": "GPU music visualization engine that is also the music player",
   "homepage": "https://github.com/roguen/holocron",
   "license": "GPL-3.0-or-later",
@@ -16,6 +16,7 @@
     "catch2": "BSL-1.0, GPL-compatible. Test-only, hence the feature.",
     "tomlplusplus": "MIT, header-only. Crystal manifests (M2), and gatekeeper.toml when a loader exists. TOML rather than JSON because these files are edited by hand by crystal authors: comments survive, trailing commas are not an error, and a typo in a key is a parse error at a named line rather than a silently-ignored member.",
     "glad": "MIT. The GL function loader for the 4.5 core context (D-012). Issue #13 proposed committing glad2's generated output under third_party/ to avoid version drift; the manifest gets the same guarantee -- glad is pinned by the same builtin-baseline as everything else and moves only when the baseline does -- without carrying generated code in the tree. Features are explicit: 'loader' and 'gl-api-45', so nothing above 4.5 is even declared and a 4.6-only call is a compile error rather than a runtime surprise on a lesser GPU.",
+    "cpp-httplib": "MIT, header-only. The Plex Companion HTTP surface (M5). default-features is FALSE deliberately: the port's optional features are OpenSSL, zlib and brotli, and none of them applies here -- Companion is plain HTTP on the LAN, and pulling OpenSSL in for a server that will never terminate TLS would add a large dependency and its licence exception handling for nothing. Hand-rolling was considered and rejected: the endpoints themselves are simple GETs, but HTTP request parsing is not, and this is a protocol with no specification to check an answer against, so a parsing bug would present as 'the device does not appear' with no way to tell it apart from a protocol mistake.",
     "sdl3": "Zlib AND MIT AND Apache-2.0, GPL-compatible. The first sink backend (#1) and, later, the window and GL 4.5 context. default-features is FALSE, which costs nothing on the target: every one of the port's default features (ibus, wayland, x11) is platform-gated to Linux, so Windows resolves to the same set either way. Turning them off spares the Linux CI job a chain of system dev packages for a platform that is a second compiler, not a deployment target (D-022). SDL's built-in dummy audio driver needs no feature and no hardware, which is how the sink is exercised headless on both platforms."
   },
 
@@ -28,6 +29,10 @@
         "avformat",
         "swresample"
       ]
+    },
+    {
+      "name": "cpp-httplib",
+      "default-features": false
     },
     "glm",
     "libebur128",
