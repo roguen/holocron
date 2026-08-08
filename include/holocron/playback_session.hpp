@@ -154,6 +154,17 @@ public:
     // The frame whose audio is coming out of the speakers at `target_us`.
     void select_frame(std::uint64_t target_us, AudioFrame& out) const;
 
+    // How far into the TRACK playback has reached, in milliseconds.
+    //
+    // INCLUDES the offset the session was started at, which is the whole
+    // subtlety: the device clock counts from where decoding began, so a track
+    // resumed 90 seconds in would otherwise report 0 and make a controller's
+    // scrubber jump back to the start the moment it resumed.
+    //
+    // Zero when there is no device clock; a controller shows a stalled scrubber
+    // rather than a wrong one.
+    std::int64_t track_position_ms() const;
+
     // The newest frame produced, for when there is no clock to place against.
     bool newest_frame(AudioFrame& out) const;
 

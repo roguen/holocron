@@ -106,6 +106,17 @@ public:
     void set_play_handler(PlayHandler handler);
     void set_stop_handler(StopHandler handler);
 
+    // What to report to a controller that asks.
+    //
+    // Call this whenever the player's state changes -- and it is cheap enough to
+    // call every frame, which is the intended use: the position moves
+    // continuously and there is no sensible event to hang it on.
+    //
+    // A long poll (`wait=1`) is woken only when the new state differs
+    // MATERIALLY from the old, which excludes the position. Waking on position
+    // would return the hot loop that honouring `wait=1` was meant to fix.
+    void set_timeline(const TimelineState& state);
+
     // Requests served since start(), and the last path seen. Both are printed by
     // the player: with the phone in another room, this is the only evidence that
     // Plexamp got as far as HTTP at all, which distinguishes "the multicast is

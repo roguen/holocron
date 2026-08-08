@@ -49,6 +49,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -102,6 +103,73 @@ struct PlexTrack {
 
     bool operator==(const PlexTrack&) const = default;
 };
+
+// ---------------------------------------------------------------------------
+// Telling a controller what is happening
+//
+// A controller polls the player for a timeline and shows what comes back: the
+// scrubber, the now-playing, and -- the part that matters most -- whether the
+// track ended, which is how it knows to send the next one.
+//
+// Until this existed the player answered `stopped` to every poll even while
+// audio was coming out. Plexamp therefore showed nothing playing, never moved
+// its scrubber, and never advanced a queue.
+// ---------------------------------------------------------------------------
+
+enum class TransportState : std::uint8_t {
+    kStopped = 0,
+    kPaused,
+    kPlaying,
+};
+
+// The wire spelling. Plex's own values, lower case.
+const char* to_string(TransportState state);
+
+// What the player reports about itself.
+//
+// The server fields are carried through from the play command rather than
+// remembered separately: a controller matches the timeline against the request
+// it sent, and a timeline that names a different server than the one asked for
+// is treated as a different playback.
+struct TimelineState {
+    TransportState state = TransportState::kStopped;
+
+    // Where in the track, and how long it is. MILLISECONDS, and the position
+    // must INCLUDE any start offset -- a resumed track that reports its
+    // position relative to where decoding began makes a controller's scrubber
+    // jump back to zero the moment it resumes.
+    std::int64_t time_ms     = 0;
+    std::int64_t duration_ms = 0;
+
+    // What is playing, in the controller's terms.
+    std::string key;
+    std::string container_key;
+
+    // Which server it came from.
+    std::string   machine_identifier;
+    std::string   address;
+    std::uint16_t port     = 32400;
+    std::string   protocol = "https";
+
+    bool operator==(const TimelineState&) const = default;
+
+    // Whether the difference between these two is worth waking a long poll for.
+    //
+    // POSITION IS DELIBERATELY EXCLUDED. It changes every frame, and waking on
+    // it would turn a 30-second long poll back into the hot loop that honouring
+    // `wait=1` was meant to fix -- 415 polls in one session, measured. A
+    // controller advances its own scrubber between polls; what it cannot guess
+    // is that the track changed or stopped.
+    bool differs_materially_from(const TimelineState& other) const;
+};
+
+// The timeline document for `state`, echoing `command_id`.
+//
+// Always reports all three transports -- music, video and photo. A controller
+// asks about all of them at once and expects all of them back; omitting the two
+// that are permanently stopped reads as a malformed answer rather than as a
+// player that does not do video.
+std::string timeline_xml(std::string_view command_id, const TimelineState& state);
 
 // Decode a playMedia query string.
 //

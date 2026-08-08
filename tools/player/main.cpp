@@ -400,16 +400,22 @@ struct CastCommand {
     std::int64_t offset_ms = 0;
     NowPlaying   what;
 
+    // Kept whole so the timeline can name the same item and the same server the
+    // controller asked for. A timeline that names something else is treated as a
+    // different playback and the controller stops following it.
+    PlayRequest request;
+
     bool stop = false;
 
-    void request_play(const std::string& stream, std::int64_t offset, const NowPlaying& track)
+    void request_play(const std::string& stream, const PlayRequest& req, const NowPlaying& track)
     {
         const std::lock_guard<std::mutex> lock(mutex);
         play      = true;
         stop      = false;   // a newer play supersedes a stop that has not run yet
         url       = stream;
-        offset_ms = offset;
+        offset_ms = req.offset_ms;
         what      = track;
+        request   = req;
     }
 
     void request_stop()
@@ -421,19 +427,20 @@ struct CastCommand {
 
     // Returns what to do and clears it, so one command is acted on once.
     bool take(bool& out_play, bool& out_stop, std::string& out_url, std::int64_t& out_offset,
-              NowPlaying& out_what)
+              NowPlaying& out_what, PlayRequest& out_request)
     {
         const std::lock_guard<std::mutex> lock(mutex);
         if (!play && !stop) {
             return false;
         }
-        out_play   = play;
-        out_stop   = stop;
-        out_url    = url;
-        out_offset = offset_ms;
-        out_what   = what;
-        play       = false;
-        stop       = false;
+        out_play    = play;
+        out_stop    = stop;
+        out_url     = url;
+        out_offset  = offset_ms;
+        out_what    = what;
+        out_request = request;
+        play        = false;
+        stop        = false;
         return true;
     }
 };
@@ -831,7 +838,7 @@ int main(int argc, char** argv)
             what.artist      = track.artist;
             what.album       = track.album;
             what.duration_ms = track.duration_ms;
-            cast.request_play(url, request.offset_ms, what);
+            cast.request_play(url, request, what);
         });
     companion.set_stop_handler([&cast] { cast.request_stop(); });
 
@@ -1019,6 +1026,10 @@ int main(int argc, char** argv)
     // Updated every frame while a device clock exists; see where it is assigned.
     double headroom_ms = 0.0;
 
+    // What the controller is told. Owned by this thread, published to the
+    // Companion server once per frame.
+    TimelineState timeline;
+
     while (window.pump()) {
         // -- what the phone asked for -----------------------------------------
         //
@@ -1030,10 +1041,14 @@ int main(int argc, char** argv)
             std::string  url;
             std::int64_t offset = 0;
             NowPlaying   what;
+            PlayRequest  request;
 
-            if (cast.take(want_play, want_stop, url, offset, what)) {
+            if (cast.take(want_play, want_stop, url, offset, what, request)) {
                 if (want_stop) {
                     session.stop();
+                    // Cleared, not merely set to stopped: the next poll must not
+                    // still name a track that is no longer playing.
+                    timeline = TimelineState{};
                     std::printf("holocron: stopped\n");
                     std::fflush(stdout);
                 } else if (want_play) {
@@ -1043,9 +1058,25 @@ int main(int argc, char** argv)
                         // NOT fatal. A track that will not open is not a reason
                         // to lose the window -- the next cast may well work, and
                         // exiting would take the device out of the list.
+                        timeline = TimelineState{};
                         std::fprintf(stderr, "holocron: %s -- \"%s\"\n%s\n", to_string(serr),
                                      what.title.c_str(), detail.c_str());
                     } else {
+                        // Carried through from the REQUEST rather than
+                        // remembered separately: a controller matches the
+                        // timeline against what it asked for, and one naming a
+                        // different item or server is treated as a different
+                        // playback and ignored.
+                        timeline.key                = request.key;
+                        timeline.container_key      = request.container_key;
+                        timeline.machine_identifier = request.machine_identifier;
+                        timeline.address            = request.address;
+                        timeline.port               = request.port;
+                        timeline.protocol           = request.protocol;
+                        timeline.duration_ms        = what.duration_ms;
+                        timeline.time_ms            = offset;
+                        timeline.state              = TransportState::kPlaying;
+
                         // The title, never the URL: the URL carries a token.
                         std::printf("holocron: playing \"%s\" -- %s%s\n", what.title.c_str(),
                                     what.artist.c_str(),
@@ -1055,6 +1086,35 @@ int main(int argc, char** argv)
                 }
             }
         }
+
+        // -- tell the controller where we are ---------------------------------
+        //
+        // Every frame. The position moves continuously and there is no sensible
+        // event to hang it on, so this is a cheap mutex-guarded copy rather than
+        // something clever. A long poll is only woken when the state changes
+        // MATERIALLY -- see TimelineState::differs_materially_from, which
+        // excludes the position for exactly this reason.
+        if (timeline.state != TransportState::kStopped) {
+            if (session.active() && session.finished() && session.pending_frames() == 0) {
+                // THE TRACK ENDED, AND SAYING SO IS THE POINT.
+                //
+                // A controller learns a queue should advance by seeing the
+                // player go from playing to stopped. Until this reported
+                // anything but `stopped`, that transition never happened and
+                // nothing ever advanced.
+                session.stop();
+                timeline = TimelineState{};
+                std::printf("holocron: track ended\n");
+                std::fflush(stdout);
+            } else {
+                const std::int64_t at = session.track_position_ms();
+                if (at > 0) {
+                    timeline.time_ms = at;
+                }
+            }
+        }
+        companion.set_timeline(timeline);
+
 
         // -- calibration ------------------------------------------------------
         //
