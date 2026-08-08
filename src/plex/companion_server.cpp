@@ -47,19 +47,28 @@ struct CompanionServer::Impl {
     std::atomic<std::uint64_t>   polls{0};
     std::atomic<std::uint16_t>   bound_port{0};
 
-    // Woken when there is something new to report on the timeline. Nothing sets
-    // it yet -- no playback -- so a long poll runs to its timeout, which is the
-    // correct behaviour for a player with nothing to say.
+    // Woken when there is something new to report on the timeline.
+    //
+    // The mutex guards `timeline` as well as the condition, so a poll never
+    // reads a half-updated state.
     std::mutex              wake_mutex;
     std::condition_variable wake;
+    TimelineState           timeline;
 
     mutable std::mutex path_mutex;
     std::string        last_path;
 
     bool routes_installed = false;
 
-    CompanionServer::PlayHandler play_handler;
-    CompanionServer::StopHandler stop_handler;
+    CompanionServer::PlayHandler  play_handler;
+    CompanionServer::StopHandler  stop_handler;
+    CompanionServer::PauseHandler pause_handler;
+
+    bool last_reported_playing()
+    {
+        const std::lock_guard<std::mutex> lock(wake_mutex);
+        return timeline.state == TransportState::kPlaying;
+    }
 
     // httplib hands back a multimap; the parser takes a flat list so that
     // nothing in the plex layer has to know which HTTP library is underneath.
@@ -188,7 +197,7 @@ void CompanionServer::Impl::install_routes()
         res.set_content(resources_xml(self->device), "text/xml");
     });
 
-    const auto timeline = [self](const httplib::Request& req, httplib::Response& res) {
+    const auto timeline_route = [self](const httplib::Request& req, httplib::Response& res) {
         self->note(req);
 
         // HONOUR `wait=1`. IT IS A LONG POLL, NOT A FLAG TO IGNORE.
@@ -201,19 +210,31 @@ void CompanionServer::Impl::install_routes()
         //
         // Thirty seconds is what other implementations hold for. Waiting on a
         // condition variable rather than sleeping means this returns the moment
-        // there IS something to say, once there is playback to say it about.
-        const auto wait = req.params.find("wait");
-        if (wait != req.params.end() && wait->second == "1") {
+        // the state actually changes.
+        TimelineState reported;
+        {
             std::unique_lock<std::mutex> lock(self->wake_mutex);
-            self->wake.wait_for(lock, std::chrono::seconds(30));
+
+            const auto wait = req.params.find("wait");
+            if (wait != req.params.end() && wait->second == "1") {
+                const TimelineState before = self->timeline;
+                // The predicate is what makes this correct rather than merely
+                // timed: a change that lands between the caller reading the
+                // state and this wait starting is not missed, because the
+                // predicate is evaluated before the wait as well as after.
+                self->wake.wait_for(lock, std::chrono::seconds(30), [self, &before] {
+                    return self->timeline.differs_materially_from(before);
+                });
+            }
+            reported = self->timeline;
         }
 
         self->decorate(res);
-        res.set_content(stopped_timeline_xml(command_id(req)), "text/xml");
+        res.set_content(timeline_xml(command_id(req), reported), "text/xml");
     };
-    self->server.Get("/player/timeline/poll", timeline);
-    self->server.Get("/player/timeline/subscribe", timeline);
-    self->server.Get("/player/timeline/unsubscribe", timeline);
+    self->server.Get("/player/timeline/poll", timeline_route);
+    self->server.Get("/player/timeline/subscribe", timeline_route);
+    self->server.Get("/player/timeline/unsubscribe", timeline_route);
 
     // CORS preflight. Plexamp's web-derived stack sends these, and an
     // unanswered preflight fails the request that would have followed it.
@@ -274,6 +295,30 @@ void CompanionServer::Impl::install_routes()
         }
         res.set_content(response_xml(200, "OK"), "text/xml");
     });
+
+    // pause / play / playPause, all three spellings a controller may use.
+    const auto pause_route = [self](const httplib::Request& req, httplib::Response& res) {
+        self->note(req);
+        self->decorate(res);
+
+        // playPause toggles; the other two are explicit. Toggling against our
+        // own last-reported state rather than against the session keeps this
+        // route free of any dependency on the player.
+        const bool pause = req.path.find("/pause") != std::string::npos ||
+                           (req.path.find("/playPause") != std::string::npos &&
+                            self->last_reported_playing());
+
+        std::printf("companion: %s\n", pause ? "pause" : "play");
+        std::fflush(stdout);
+
+        if (self->pause_handler) {
+            self->pause_handler(pause);
+        }
+        res.set_content(response_xml(200, "OK"), "text/xml");
+    };
+    self->server.Get("/player/playback/pause", pause_route);
+    self->server.Get("/player/playback/play", pause_route);
+    self->server.Get("/player/playback/playPause", pause_route);
 
     self->server.Get("/player/playback/stop", [self](const httplib::Request& req,
                                                      httplib::Response& res) {
@@ -405,6 +450,31 @@ void CompanionServer::set_play_handler(PlayHandler handler)
 void CompanionServer::set_stop_handler(StopHandler handler)
 {
     impl_->stop_handler = std::move(handler);
+}
+
+void CompanionServer::set_pause_handler(PauseHandler handler)
+{
+    impl_->pause_handler = std::move(handler);
+}
+
+void CompanionServer::set_timeline(const TimelineState& state)
+{
+    bool material = false;
+    {
+        const std::lock_guard<std::mutex> lock(impl_->wake_mutex);
+        material        = state.differs_materially_from(impl_->timeline);
+        impl_->timeline = state;
+    }
+
+    // Notified OUTSIDE the lock, so a woken poll does not immediately block on
+    // the mutex this thread is still holding.
+    //
+    // Only on a material change. This is called every frame, and notifying on
+    // every position update would wake every waiting poll ~60 times a second --
+    // the hot loop again, wearing a condition variable.
+    if (material) {
+        impl_->wake.notify_all();
+    }
 }
 
 std::uint64_t CompanionServer::timeline_polls() const

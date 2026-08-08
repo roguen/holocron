@@ -101,10 +101,29 @@ public:
     // Called when a controller asks for playback to stop.
     using StopHandler = std::function<void()>;
 
+    // Called when a controller asks to pause or resume. `true` means pause.
+    //
+    // Plexamp sends `paused=1` on the play command itself and then drives
+    // pause/play separately, so both routes have to work or its idea of the
+    // player diverges from the player -- at which point it takes control back.
+    using PauseHandler = std::function<void(bool paused)>;
+
     // Set before start(). Unset handlers mean the command is logged and
     // acknowledged, which is what happened before anything could play.
     void set_play_handler(PlayHandler handler);
     void set_stop_handler(StopHandler handler);
+    void set_pause_handler(PauseHandler handler);
+
+    // What to report to a controller that asks.
+    //
+    // Call this whenever the player's state changes -- and it is cheap enough to
+    // call every frame, which is the intended use: the position moves
+    // continuously and there is no sensible event to hang it on.
+    //
+    // A long poll (`wait=1`) is woken only when the new state differs
+    // MATERIALLY from the old, which excludes the position. Waking on position
+    // would return the hot loop that honouring `wait=1` was meant to fix.
+    void set_timeline(const TimelineState& state);
 
     // Requests served since start(), and the last path seen. Both are printed by
     // the player: with the phone in another room, this is the only evidence that

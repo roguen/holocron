@@ -7,6 +7,7 @@
 
 #include <cstdlib>
 #include <string>
+#include <string_view>
 
 namespace holocron {
 
@@ -38,6 +39,35 @@ std::int64_t to_int64(const std::string& text, std::int64_t fallback)
         return fallback;
     }
     return static_cast<std::int64_t>(value);
+}
+
+// Escaping on the way OUT, the mirror of xml_unescape below.
+//
+// Not shared with plex_device.cpp deliberately: that file builds the discovery
+// documents and this one builds the timeline, and a shared "xml utilities"
+// header is how two callers with different needs end up constraining each
+// other. Twenty lines duplicated is cheaper than that coupling.
+void append_escaped(std::string& out, std::string_view in)
+{
+    for (const char c : in) {
+        switch (c) {
+        case '&':  out += "&amp;";  break;
+        case '<':  out += "&lt;";   break;
+        case '>':  out += "&gt;";   break;
+        case '"':  out += "&quot;"; break;
+        case '\'': out += "&apos;"; break;
+        default:   out += c;        break;
+        }
+    }
+}
+
+void append_attribute(std::string& out, std::string_view key, std::string_view value)
+{
+    out += ' ';
+    out += key;
+    out += "=\"";
+    append_escaped(out, value);
+    out += '"';
 }
 
 // Encode one code point as UTF-8.
@@ -191,6 +221,84 @@ bool element_attribute(const std::string& element, const std::string& name, std:
         at += needle.size();
     }
     return false;
+}
+
+const char* to_string(TransportState state)
+{
+    switch (state) {
+    case TransportState::kStopped: return "stopped";
+    case TransportState::kPaused:  return "paused";
+    case TransportState::kPlaying: return "playing";
+    }
+    return "stopped";
+}
+
+bool TimelineState::differs_materially_from(const TimelineState& other) const
+{
+    // Everything EXCEPT time_ms. See the note in the header: waking a long poll
+    // on a position change puts the hot loop straight back.
+    return state != other.state || key != other.key ||
+           container_key != other.container_key || duration_ms != other.duration_ms ||
+           machine_identifier != other.machine_identifier || address != other.address ||
+           port != other.port || protocol != other.protocol;
+}
+
+std::string timeline_xml(std::string_view command_id, const TimelineState& state)
+{
+    const bool idle = state.state == TransportState::kStopped;
+
+    std::string out = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<MediaContainer";
+    append_attribute(out, "commandID", command_id);
+
+    // `fullScreenMusic` while playing tells a controller the player is showing
+    // the track rather than sitting in a menu, which is what makes it offer
+    // transport controls rather than navigation.
+    append_attribute(out, "location", idle ? "navigation" : "fullScreenMusic");
+    out += ">\n";
+
+    for (const std::string_view type : {"music", "video", "photo"}) {
+        const bool active = !idle && type == "music";
+
+        out += "  <Timeline";
+        append_attribute(out, "type", type);
+        append_attribute(out, "state", active ? to_string(state.state) : "stopped");
+        append_attribute(out, "itemType", type);
+
+        if (active) {
+            append_attribute(out, "time", std::to_string(state.time_ms));
+            append_attribute(out, "duration", std::to_string(state.duration_ms));
+            append_attribute(out, "key", state.key);
+            append_attribute(out, "containerKey", state.container_key);
+            append_attribute(out, "machineIdentifier", state.machine_identifier);
+            append_attribute(out, "address", state.address);
+            append_attribute(out, "port", std::to_string(state.port));
+            append_attribute(out, "protocol", state.protocol);
+
+            // VOLUME IS REPORTED AND NOT IMPLEMENTED, DELIBERATELY.
+            //
+            // Plexamp sends `setParameters?volume=0` repeatedly on connect and
+            // expects a volume back. Reporting one keeps its model consistent.
+            //
+            // APPLYING it would end bit-perfect output: scaling samples in
+            // software is exactly the "quietly resampling behind your back"
+            // that D-004 and #32 forbid, and this rack has a receiver whose own
+            // volume control is both better and lossless. So `controllable`
+            // below does NOT claim volume, and this always reads 100.
+            append_attribute(out, "volume", "100");
+
+            // WHAT THE CONTROLLER MAY OFFER, and it must not overstate.
+            //
+            // Only what is actually implemented. Listing seekTo or skipNext
+            // here would put buttons on the phone that do nothing when pressed,
+            // which is worse than their absence -- the user cannot tell a dead
+            // button from a broken player.
+            append_attribute(out, "controllable", "playPause,play,pause,stop");
+        }
+        out += " />\n";
+    }
+
+    out += "</MediaContainer>\n";
+    return out;
 }
 
 bool parse_play_media(const std::vector<std::pair<std::string, std::string>>& params,

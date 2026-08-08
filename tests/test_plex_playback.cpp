@@ -255,6 +255,197 @@ TEST_CASE("url encoding escapes what a query string cannot carry", "[plex][playb
     REQUIRE(url_encode("a&b=c") == "a%26b%3Dc");
 }
 
+// ---------------------------------------------------------------------------
+// The timeline
+// ---------------------------------------------------------------------------
+
+namespace {
+
+TimelineState playing_fixture()
+{
+    TimelineState s;
+    s.state              = TransportState::kPlaying;
+    s.time_ms            = 11350;
+    s.duration_ms        = 364277;
+    s.key                = "/library/metadata/56401";
+    s.container_key      = "/playQueues/11417";
+    s.machine_identifier = "0f54f92a5124e95f541968d14b834b89ecd1cb08";
+    s.address            = "192-168-68-13.84b4357e56a04fb88b2f2aff37614b33.plex.direct";
+    s.port               = 32400;
+    s.protocol           = "https";
+    return s;
+}
+
+}  // namespace
+
+TEST_CASE("a stopped timeline reports all three transports and nothing playing",
+          "[plex][playback]")
+{
+    // A controller asks about all three transports at once and expects all three
+    // back. Omitting the two that are permanently stopped reads as a malformed
+    // answer rather than as a player that does not do video.
+    const std::string xml = timeline_xml("42", TimelineState{});
+
+    REQUIRE(xml.find("commandID=\"42\"") != std::string::npos);
+    for (const char* type : {"music", "video", "photo"}) {
+        REQUIRE(xml.find(std::string("type=\"") + type + "\"") != std::string::npos);
+    }
+    REQUIRE(xml.find("state=\"playing\"") == std::string::npos);
+    REQUIRE(xml.find("location=\"navigation\"") != std::string::npos);
+}
+
+TEST_CASE("an absent command id echoes as empty rather than as something invented",
+          "[plex][playback]")
+{
+    // A controller matches a response to its command by this value. Inventing
+    // one makes it wait for a reply it will never recognise.
+    REQUIRE(timeline_xml("", TimelineState{}).find("commandID=\"\"") != std::string::npos);
+}
+
+TEST_CASE("a playing timeline carries the position, the item and the server",
+          "[plex][playback]")
+{
+    // THE CASE THIS WHOLE FILE SECTION EXISTS FOR. Until this reported anything
+    // but `stopped`, Plexamp showed nothing playing, never moved its scrubber
+    // and never learned a track had ended.
+    const std::string xml = timeline_xml("7", playing_fixture());
+
+    REQUIRE(xml.find("state=\"playing\"") != std::string::npos);
+    REQUIRE(xml.find("time=\"11350\"") != std::string::npos);
+    REQUIRE(xml.find("duration=\"364277\"") != std::string::npos);
+    REQUIRE(xml.find("key=\"/library/metadata/56401\"") != std::string::npos);
+    REQUIRE(xml.find("containerKey=\"/playQueues/11417\"") != std::string::npos);
+    REQUIRE(xml.find("machineIdentifier=\"0f54f92a5124e95f541968d14b834b89ecd1cb08\"") !=
+            std::string::npos);
+    REQUIRE(xml.find("port=\"32400\"") != std::string::npos);
+    REQUIRE(xml.find("protocol=\"https\"") != std::string::npos);
+
+    // Playing means the player is showing the track, not sitting in a menu.
+    REQUIRE(xml.find("location=\"fullScreenMusic\"") != std::string::npos);
+}
+
+TEST_CASE("only the music transport is ever playing", "[plex][playback]")
+{
+    // Video and photo must stay stopped even while music plays, or a controller
+    // is told this device is doing three things at once.
+    const std::string xml = timeline_xml("7", playing_fixture());
+
+    const std::size_t music = xml.find("type=\"music\"");
+    const std::size_t video = xml.find("type=\"video\"");
+    REQUIRE(music != std::string::npos);
+    REQUIRE(video != std::string::npos);
+
+    // Exactly one `playing` in the whole document, and it is before the video
+    // element.
+    const std::size_t playing = xml.find("state=\"playing\"");
+    REQUIRE(playing != std::string::npos);
+    REQUIRE(playing < video);
+    REQUIRE(xml.find("state=\"playing\"", playing + 1) == std::string::npos);
+}
+
+TEST_CASE("controllable claims exactly what is implemented", "[plex][playback]")
+{
+    // Both directions matter. Listing seekTo or skipNext would put buttons on
+    // the phone that do nothing when pressed, and a dead button is
+    // indistinguishable from a broken player. NOT listing pause and play would
+    // hide controls that do work.
+    const std::string xml = timeline_xml("7", playing_fixture());
+
+    REQUIRE(xml.find("controllable=\"playPause,play,pause,stop\"") != std::string::npos);
+    REQUIRE(xml.find("seekTo") == std::string::npos);
+    REQUIRE(xml.find("skipNext") == std::string::npos);
+
+    // Volume is REPORTED so the controller's model stays consistent, and is not
+    // in `controllable` because applying it in software would end bit-perfect
+    // output. See the note in timeline_xml.
+    REQUIRE(xml.find("volume=\"100\"") != std::string::npos);
+    REQUIRE(xml.find("controllable=\"playPause,play,pause,stop\"") != std::string::npos);
+}
+
+TEST_CASE("a paused player still reports a position and a track", "[plex][playback]")
+{
+    // Plexamp sends `paused=1` on every cast -- "load this and hold". Reporting
+    // a bare stopped state in response would tell it nothing is loaded, which
+    // is not what it asked for and not what is true.
+    TimelineState paused = playing_fixture();
+    paused.state         = TransportState::kPaused;
+
+    const std::string xml = timeline_xml("7", paused);
+    REQUIRE(xml.find("state=\"paused\"") != std::string::npos);
+    REQUIRE(xml.find("key=\"/library/metadata/56401\"") != std::string::npos);
+    REQUIRE(xml.find("duration=\"364277\"") != std::string::npos);
+    REQUIRE(xml.find("location=\"fullScreenMusic\"") != std::string::npos);
+}
+
+TEST_CASE("a paused timeline says paused and still names the track", "[plex][playback]")
+{
+    TimelineState paused = playing_fixture();
+    paused.state         = TransportState::kPaused;
+
+    const std::string xml = timeline_xml("7", paused);
+    REQUIRE(xml.find("state=\"paused\"") != std::string::npos);
+    // Still playing something, so the controller must still be told what.
+    REQUIRE(xml.find("key=\"/library/metadata/56401\"") != std::string::npos);
+    REQUIRE(xml.find("time=\"11350\"") != std::string::npos);
+}
+
+TEST_CASE("a position change alone does NOT wake a long poll", "[plex][playback]")
+{
+    // The single most important property here. A long poll woken by the position
+    // returns immediately every frame, which is the hot loop that honouring
+    // `wait=1` was meant to fix -- 415 polls in one measured session.
+    const TimelineState a = playing_fixture();
+    TimelineState       b = a;
+    b.time_ms             = a.time_ms + 5000;
+
+    REQUIRE_FALSE(b.differs_materially_from(a));
+}
+
+TEST_CASE("the changes a controller cannot guess DO wake a long poll", "[plex][playback]")
+{
+    const TimelineState base = playing_fixture();
+
+    TimelineState stopped = base;
+    stopped.state         = TransportState::kStopped;
+    REQUIRE(stopped.differs_materially_from(base));
+
+    TimelineState other_track = base;
+    other_track.key           = "/library/metadata/99999";
+    REQUIRE(other_track.differs_materially_from(base));
+
+    TimelineState other_queue   = base;
+    other_queue.container_key   = "/playQueues/22222";
+    REQUIRE(other_queue.differs_materially_from(base));
+
+    TimelineState other_server      = base;
+    other_server.machine_identifier = "something-else";
+    REQUIRE(other_server.differs_materially_from(base));
+
+    TimelineState other_duration = base;
+    other_duration.duration_ms   = 1;
+    REQUIRE(other_duration.differs_materially_from(base));
+}
+
+TEST_CASE("transport states have the wire spellings Plex uses", "[plex][playback]")
+{
+    REQUIRE(std::string(to_string(TransportState::kStopped)) == "stopped");
+    REQUIRE(std::string(to_string(TransportState::kPaused)) == "paused");
+    REQUIRE(std::string(to_string(TransportState::kPlaying)) == "playing");
+}
+
+TEST_CASE("a track title with metacharacters does not break the timeline",
+          "[plex][playback]")
+{
+    // The key and container key come from a server and can carry anything a
+    // query string can. An unescaped one yields a document that fails to parse,
+    // and the only symptom is a controller that silently stops following.
+    TimelineState s = playing_fixture();
+    s.key           = "/library/metadata/1?a=1&b=2";
+
+    const std::string xml = timeline_xml("7", s);
+    REQUIRE(xml.find("key=\"/library/metadata/1?a=1&amp;b=2\"") != std::string::npos);
+}
+
 TEST_CASE("every HttpError has a distinct description", "[plex][playback]")
 {
     const HttpError all[] = {HttpError::kOk, HttpError::kUnsupported, HttpError::kConnectFailed,

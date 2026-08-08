@@ -123,10 +123,15 @@ struct PlaybackSession::Impl {
     bool       audio_started = false;   // device opened
     bool       audio_running = false;   // device opened AND pulling
     bool       bit_perfect   = false;
+    bool       is_paused     = false;
     NowPlaying what;
 
-    std::uint32_t rate         = 0;
-    double        lead_budget  = 0.0;
+    std::uint32_t rate            = 0;
+    double        lead_budget     = 0.0;
+
+    // Where the caller asked playback to begin. Added back into the reported
+    // position, because the device clock counts from where DECODING began.
+    std::int64_t start_offset_ms = 0;
 
     void decode_loop(std::string source, std::int64_t offset_ms, bool feed_audio);
 };
@@ -281,8 +286,9 @@ SessionError PlaybackSession::start(const std::string& source, std::int64_t offs
         probe.close();
     }
 
-    impl.what = what;
-    impl.rate = info.sample_rate;
+    impl.what            = what;
+    impl.rate            = info.sample_rate;
+    impl.start_offset_ms = offset_ms;
 
     if (!impl.config.no_audio) {
         SinkFormat want;
@@ -412,10 +418,33 @@ void PlaybackSession::stop()
     impl.audio_started = false;
     impl.audio_running = false;
     impl.bit_perfect   = false;
-    impl.rate          = 0;
-    impl.lead_budget   = 0.0;
+    impl.is_paused     = false;
+    impl.rate            = 0;
+    impl.lead_budget     = 0.0;
+    impl.start_offset_ms = 0;
     impl.what          = NowPlaying{};
 }
+
+void PlaybackSession::set_paused(bool paused)
+{
+    Impl& impl = *impl_;
+    if (!impl.started || impl.sink == nullptr || impl.is_paused == paused) {
+        return;
+    }
+
+    if (paused) {
+        // stop() rather than close(): the device stays open and its format
+        // stays negotiated, so resuming does not renegotiate and cannot
+        // silently land somewhere that is no longer bit-perfect.
+        impl.sink->stop();
+        impl.audio_running = false;
+    } else {
+        impl.audio_running = impl.sink->start() == SinkError::kOk;
+    }
+    impl.is_paused = paused;
+}
+
+bool PlaybackSession::paused() const { return impl_->is_paused; }
 
 bool PlaybackSession::active() const { return impl_->started; }
 
@@ -447,6 +476,15 @@ bool PlaybackSession::played_us(std::uint64_t& out) const
 void PlaybackSession::select_frame(std::uint64_t target_us, AudioFrame& out) const
 {
     impl_->shared->frames.select(target_us, out);
+}
+
+std::int64_t PlaybackSession::track_position_ms() const
+{
+    std::uint64_t played = 0;
+    if (!played_us(played)) {
+        return 0;
+    }
+    return impl_->start_offset_ms + static_cast<std::int64_t>(played / 1000ULL);
 }
 
 bool PlaybackSession::newest_frame(AudioFrame& out) const

@@ -182,26 +182,6 @@ TEST_CASE("a device name with XML metacharacters does not break the document", "
     REQUIRE(xml.find("<main>") == std::string::npos);
 }
 
-TEST_CASE("the timeline reports all three transports and echoes the command id", "[plex]")
-{
-    const std::string xml = stopped_timeline_xml("42");
-
-    REQUIRE(xml.find("commandID=\"42\"") != std::string::npos);
-    for (const char* type : {"music", "video", "photo"}) {
-        REQUIRE(xml.find(std::string("type=\"") + type + "\"") != std::string::npos);
-    }
-    // Every transport is stopped; nothing plays yet at this stage.
-    REQUIRE(xml.find("state=\"playing\"") == std::string::npos);
-}
-
-TEST_CASE("an absent command id echoes as empty rather than as something invented",
-          "[plex]")
-{
-    // A client matches a response to its command by this value. Inventing one
-    // makes the client wait for a reply it will never recognise.
-    REQUIRE(stopped_timeline_xml("").find("commandID=\"\"") != std::string::npos);
-}
-
 TEST_CASE("generated machine identifiers are valid and distinct", "[plex]")
 {
     std::set<std::string> seen;
