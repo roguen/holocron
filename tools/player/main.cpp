@@ -557,6 +557,33 @@ struct CastCommand {
         skip_key       = key;
     }
 
+    // A scrub. Held as "the newest position asked for", not a queue of them.
+    //
+    // DRAGGING A SCRUBBER SENDS A STREAM OF THESE -- two arrived within a second
+    // of each other on the rack, and a slow drag sends many. Acting on each in
+    // turn would restart the decoder once per intermediate position, so only the
+    // most recent survives to be performed.
+    bool         seek       = false;
+    std::int64_t seek_to_ms = 0;
+
+    void request_seek(std::int64_t position_ms)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        seek       = true;
+        seek_to_ms = position_ms;
+    }
+
+    bool take_seek(std::int64_t& out_position)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!seek) {
+            return false;
+        }
+        out_position = seek_to_ms;
+        seek         = false;
+        return true;
+    }
+
     bool take_skip(int& out_direction, std::string& out_item, std::string& out_key)
     {
         const std::lock_guard<std::mutex> lock(mutex);
@@ -1162,6 +1189,9 @@ int main(int argc, char** argv)
         [&cast](int direction, const std::string& item, const std::string& key) {
             cast.request_skip(direction, item, key);
         });
+    companion.set_seek_handler([&cast](std::int64_t position_ms) {
+        cast.request_seek(position_ms);
+    });
 
     // Linking comes before discovery: it needs the machine identifier and
     // nothing else, and a run that is signing in has no business also
@@ -1659,6 +1689,50 @@ int main(int argc, char** argv)
                                             "skipped to")) {
                     at_in_queue = target;
                     begin_track(queue_request, queue.tracks[target], session.now_playing());
+                }
+            }
+        }
+
+        // A scrub that arrived since the last frame.
+        //
+        // BEFORE the pause handling below, deliberately. A controller that pauses
+        // and scrubs in the same frame means "scrub, and stay paused" -- and
+        // PlaybackSession::seek preserves the paused state, so a pause applied
+        // afterwards is still correct while one applied before would be undone.
+        if (std::int64_t position = 0; cast.take_seek(position)) {
+            if (session.active()) {
+                // Clamped to the track, because a controller can ask for a
+                // position past the end -- dragging to the very end of the bar
+                // sends the full duration, and a decoder asked to seek past the
+                // last sample simply finds nothing and reports the track over.
+                if (timeline.duration_ms > 0 && position >= timeline.duration_ms) {
+                    position = timeline.duration_ms > 1000 ? timeline.duration_ms - 1000 : 0;
+                }
+
+                std::string        detail;
+                const SessionError serr = session.seek(position, detail);
+                if (serr != SessionError::kOk) {
+                    // A seek that fails leaves nothing playing, so the timeline
+                    // has to stop claiming otherwise.
+                    timeline = TimelineState{};
+                    std::fprintf(stderr, "holocron: could not seek -- %s\n%s\n", to_string(serr),
+                                 detail.c_str());
+                } else {
+                    // The scrubber's own position, reported immediately rather
+                    // than waiting for the device clock: the clock restarts at
+                    // zero and takes a moment to move, and in that window a
+                    // controller would see the track jump back to the start.
+                    timeline.time_ms = position;
+
+                    // The end-of-track edge detector has to forget what it saw.
+                    // Seeking backwards out of a finished track is otherwise an
+                    // end that never re-arms.
+                    was_ended = false;
+
+                    std::printf("holocron: seek to %lld ms in \"%s\"\n",
+                                static_cast<long long>(position),
+                                session.now_playing().title.c_str());
+                    std::fflush(stdout);
                 }
             }
         }
