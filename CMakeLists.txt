@@ -315,6 +315,7 @@ add_library(holocron_render STATIC
     src/render/window.cpp
     src/render/debug_facet.cpp
     src/render/crystal_facet.cpp
+    src/render/art_texture.cpp
 )
 add_library(holocron::render ALIAS holocron_render)
 
@@ -324,6 +325,10 @@ target_link_libraries(holocron_render
             # because the facet's own header takes a Crystal by reference, so
             # anything using the renderer needs the type too.
             holocron::crystal
+            # And TrackContext, the palette and ImageRgba8, for the same reason:
+            # draw() takes a TrackContext and art_texture.hpp is in this
+            # library's public surface.
+            holocron::visual
     PRIVATE holocron::warnings
             SDL3::SDL3
             glad::glad
