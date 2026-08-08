@@ -31,10 +31,17 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: M1 — everything but the audio device and the renderer
+## Status: M5 — Holocron is a cast target, and it plays what it is sent
 
-**It plays audio and it draws.** Verified on the rack: GL 4.5 core on the Radeon
-RX 6800, WASAPI at 441 frames per period, zero dropouts. What exists and is
+**You can cast to it from Plexamp.** Confirmed on the phone 2026-08-04. The
+device appears in the list, a play command resolves against the media server,
+and a `PlaybackSession` starts from the resulting URL.
+
+**What is NOT confirmed: audible output from a real cast.** The cast path was
+exercised with `--no-audio`; the file path is verified bit-perfect. That gap is
+the first thing to close.
+
+M1's spine and M2's plumbing are complete underneath it. What exists and is
 tested:
 
 | | |
@@ -53,8 +60,14 @@ tested:
 | Vault | `scan_vault` — `--vault DIR` loads every crystal in a directory, arrow keys move between them. Ordered **by manifest name**, because `directory_iterator` order differs between Windows and Linux. One broken crystal is reported and skipped, never fatal. `--crystal` is a vault of one, so both share a single path. |
 | Config | `gatekeeper.toml`, read at startup. Audio backend, `trim_ms`, window size, vsync, GL debug and the vault path are **live**; the rest of the example file is still specification. Flags beat the file, the file beats the defaults. |
 | Calibration | `holocron <track> --calibrate` draws `instruments/sync` and moves `trim_ms` with the arrow keys **while the track plays**, then prints the lines to paste into `gatekeeper.toml`. |
-| Discovery | **M5 has started.** `GdmResponder` announces over multicast so Holocron appears in Plexamp's device list; `CompanionServer` (cpp-httplib) serves `/resources` and the timeline endpoints. **Nothing plays over Plex yet** — every other `/player/...` path is logged and acknowledged, not acted on. `holocron --discover` runs just this, with no track and no window. |
+| Discovery | `GdmResponder` announces over multicast; `CompanionServer` (cpp-httplib) serves `/resources`, the timeline endpoints and `playMedia`. `holocron --discover` runs discovery alone, headless, for diagnosis. |
+| Account | `holocron --link` signs in through the plex.tv PIN flow — **no password is ever typed into Holocron**. Registration and connection publishing then happen at every startup. |
+| Playback | `PlaybackSession` owns the decoder, analysis, ring, device and decode thread, and can be **started and replaced**. A cast starts one; `stop` stops it. `holocron` with no track opens the window and waits to be cast to. |
 | Executables | `holocron` — the player. `holocron-analyze` — the offline harness. |
+
+**What M5 still owes:** timeline reporting (Plexamp is told `stopped` even while
+playing, so its scrubber never moves and it never learns a track ended), queue
+advance, transport controls, and metadata/album art/palette into `TrackContext`.
 
 **All four M1 blockers were resolved on 2026-08-01.** What remains for M1:
 
@@ -250,7 +263,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.1.15`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.1.16`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 

@@ -119,10 +119,18 @@ gain response — and may not change what it *means*.
 
 ## Current status
 
-**It plays music and it draws.** M1's spine is complete and M2's plumbing with
-it. Verified on the target hardware: an RX 6800 into an Onkyo TX-RZ720 over
-HDMI, WASAPI **exclusive mode, bit-perfect**, 160 frames per period, no
-dropouts across a full track.
+**You can cast to it from Plexamp.** Confirmed on the phone: Holocron appears in
+the device list, a play command resolves against the media server, and a
+playback session starts from the resulting URL.
+
+M1's spine and M2's plumbing are complete underneath it. Verified on the target
+hardware: an RX 6800 into an Onkyo TX-RZ720 over HDMI, WASAPI **exclusive mode,
+bit-perfect**, 160 frames per period, no dropouts across a full track.
+
+Still owed before M5 is done: **timeline reporting**, so a controller learns
+what is playing and how far in — until that lands, Plexamp is told `stopped`
+even while audio is coming out, so its scrubber never moves and it never learns
+a track ended.
 
 ```bash
 scripts\build.cmd                                  # build and test, from a clean shell
@@ -130,7 +138,9 @@ holocron.exe track.flac                            # play it, drawing every anal
 holocron.exe track.flac --crystal crystals/pulse   # draw a crystal instead
 holocron.exe track.flac --vault crystals           # the whole vault, arrows to move
 holocron.exe track.flac --calibrate                # measure the audio/video trim
-holocron.exe --discover                            # appear in Plexamp's device list
+holocron.exe                                       # wait to be cast to from Plexamp
+holocron.exe --link                                # sign in to your Plex account
+holocron.exe --discover                            # announce only, headless, for diagnosis
 holocron-analyze.exe track.flac --csv frames.csv   # the offline analysis harness
 ```
 
@@ -144,8 +154,9 @@ What exists:
 | **Tap placement** | The frame on screen is the one the speakers are producing, selected **by position** against the device clock — a measured 51 ms of correction over newest-wins. |
 | **Render** | GL 4.5 core, a debug facet drawing every field, and `CrystalFacet` drawing authored crystals. |
 | **Crystals** | `.frag` + `.toml`, uniforms bound to contract fields **by name** and validated at load. Hot reload, and a vault the arrow keys move through. |
-| **Discovery** | Holocron announces itself over Plex's GDM multicast and appears in Plexamp's device list, with the Companion `/resources` and timeline endpoints served. **Nothing plays over Plex yet.** |
-| **Tests** | **196 cases, green on Windows and Linux.** |
+| **Plex** | GDM discovery, `--link` sign-in through the plex.tv PIN flow, automatic device registration, and a `playMedia` command resolved against the media server and played. |
+| **Playback** | `PlaybackSession` — decoder, analysis, ring, device and decode thread behind one object that can be started and **replaced**, which is what casting requires. |
+| **Tests** | **233 cases, green on Windows and Linux.** |
 
 What is *not* done: the compositor, projectM, the rest of Plex, and the on-screen
 UI. And within M2, the part that is judgement rather than plumbing — see below.
