@@ -345,24 +345,28 @@ TEST_CASE("only the music transport is ever playing", "[plex][playback]")
 
 TEST_CASE("controllable claims exactly what is implemented", "[plex][playback]")
 {
-    // Both directions matter. Listing seekTo or skipNext would put buttons on
-    // the phone that do nothing when pressed, and a dead button is
-    // indistinguishable from a broken player. NOT listing pause and play would
-    // hide controls that do work.
+    // Both directions matter. Claiming a command that is not acted on puts a
+    // button on the phone that does nothing when pressed, and a dead button is
+    // indistinguishable from a broken player. NOT listing a control that works
+    // hides it.
     const std::string xml = timeline_xml("7", playing_fixture());
 
-    REQUIRE(xml.find("controllable=\"playPause,play,pause,stop,skipPrevious,skipNext,skipTo\"") !=
+    REQUIRE(xml.find(
+                "controllable=\"playPause,play,pause,stop,skipPrevious,skipNext,skipTo,seekTo\"") !=
             std::string::npos);
 
-    // seekTo is still NOT claimed: nothing seeks yet, and a dead scrub bar is
-    // indistinguishable from a broken player.
-    REQUIRE(xml.find("controllable=\"") != std::string::npos);
-    REQUIRE(xml.find("seekTo") == std::string::npos);
+    // seekTo IS now claimed. It was deliberately absent until seeking worked, and
+    // this assertion was previously its mirror image -- see the git history of
+    // this test, which is the record that the claim was earned rather than
+    // assumed.
+    REQUIRE(xml.find("seekTo") != std::string::npos);
 
-    // Volume is REPORTED so the controller's model stays consistent, and is not
-    // in `controllable` because applying it in software would end bit-perfect
-    // output. See the note in timeline_xml.
+    // Volume is REPORTED so the controller's model stays consistent, and is
+    // STILL not in `controllable`, because applying it in software would end
+    // bit-perfect output. See the note in timeline_xml.
     REQUIRE(xml.find("volume=\"100\"") != std::string::npos);
+    REQUIRE(xml.find("controllable=\"") != std::string::npos);
+    REQUIRE(xml.find("volume,") == std::string::npos);
 }
 
 TEST_CASE("a paused player still reports a position and a track", "[plex][playback]")

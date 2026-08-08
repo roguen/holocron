@@ -124,6 +124,10 @@ public:
     // player diverges from the player -- at which point it takes control back.
     using PauseHandler = std::function<void(bool paused)>;
 
+    // Called when a controller drags the scrubber. MILLISECONDS from the start
+    // of the track, matching every other position in this protocol.
+    using SeekHandler = std::function<void(std::int64_t position_ms)>;
+
     // Set before start(). Unset handlers mean the command is logged and
     // acknowledged, which is what happened before anything could play.
     void set_play_handler(PlayHandler handler);
@@ -131,6 +135,7 @@ public:
     void set_pause_handler(PauseHandler handler);
     void set_queue_handler(QueueHandler handler);
     void set_skip_handler(SkipHandler handler);
+    void set_seek_handler(SeekHandler handler);
 
     // What to report to a controller that asks.
     //

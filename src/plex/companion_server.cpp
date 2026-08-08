@@ -37,6 +37,30 @@ const char* to_string(CompanionError e)
     return "unknown";
 }
 
+namespace {
+
+// Parse a query parameter that must be a whole number of milliseconds.
+//
+// Returns `fallback` for anything that is not entirely digits. A controller
+// sending garbage should be ignored, not obeyed with a partially-parsed number:
+// std::stoll on "12abc" happily returns 12.
+std::int64_t parse_int64(const std::string& text, std::int64_t fallback)
+{
+    if (text.empty()) {
+        return fallback;
+    }
+    std::size_t consumed = 0;
+    std::int64_t value   = 0;
+    try {
+        value = std::stoll(text, &consumed);
+    } catch (const std::exception&) {
+        return fallback;
+    }
+    return consumed == text.size() ? value : fallback;
+}
+
+}  // namespace
+
 struct CompanionServer::Impl {
     httplib::Server server;
     PlexDevice      device;
@@ -86,6 +110,7 @@ struct CompanionServer::Impl {
     CompanionServer::PauseHandler pause_handler;
     CompanionServer::QueueHandler queue_handler;
     CompanionServer::SkipHandler  skip_handler;
+    CompanionServer::SeekHandler  seek_handler;
 
     bool last_reported_playing()
     {
@@ -400,6 +425,30 @@ void CompanionServer::Impl::install_routes()
     self->server.Get("/player/playback/skipPrevious", skip_route);
     self->server.Get("/player/playback/skipTo", skip_route);
 
+    // seekTo -- dragging the scrubber.
+    //
+    // `offset` IS IN MILLISECONDS, like every other position in this protocol.
+    // Reading it as seconds puts a scrub two thirds through a song somewhere in
+    // the following week, which the clamp downstream turns into "seeking always
+    // jumps to the end".
+    self->server.Get("/player/playback/seekTo",
+                     [self](const httplib::Request& req, httplib::Response& res) {
+                         self->note(req);
+                         self->decorate(res);
+
+                         const auto offset = req.params.find("offset");
+                         if (offset != req.params.end() && self->seek_handler) {
+                             const std::int64_t position = parse_int64(offset->second, -1);
+                             if (position >= 0) {
+                                 std::printf("companion: seek to %lld ms\n",
+                                             static_cast<long long>(position));
+                                 std::fflush(stdout);
+                                 self->seek_handler(position);
+                             }
+                         }
+                         res.set_content(response_xml(200, "OK"), "text/xml");
+                     });
+
     // pause / play / playPause, all three spellings a controller may use.
     const auto pause_route = [self](const httplib::Request& req, httplib::Response& res) {
         self->note(req);
@@ -569,6 +618,11 @@ void CompanionServer::set_queue_handler(QueueHandler handler)
 void CompanionServer::set_skip_handler(SkipHandler handler)
 {
     impl_->skip_handler = std::move(handler);
+}
+
+void CompanionServer::set_seek_handler(SeekHandler handler)
+{
+    impl_->seek_handler = std::move(handler);
 }
 
 void CompanionServer::set_timeline(const TimelineState& state)

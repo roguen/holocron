@@ -284,6 +284,71 @@ bool Decoder::at_end() const
     return d.open_ && d.eof && d.drained && d.pending_pos >= d.pending.size();
 }
 
+bool Decoder::can_seek() const
+{
+    const Impl& d = *impl_;
+    if (!d.open_ || d.format_ctx == nullptr) {
+        return false;
+    }
+
+    // `pb` is null for a format that reads through its own means rather than an
+    // AVIOContext. Nothing this project opens does that, but reading `seekable`
+    // off a null pointer would be a crash on the one source that did.
+    if (d.format_ctx->pb == nullptr) {
+        return false;
+    }
+
+    // AVIO_SEEKABLE_NORMAL is the byte-seekable flag, and it is what tells a
+    // local file apart from a pipe -- and, for the case that matters here, an
+    // HTTP source whose server honours range requests from one that does not.
+    // FFmpeg works that out during avformat_open_input, so this costs nothing.
+    return (d.format_ctx->pb->seekable & AVIO_SEEKABLE_NORMAL) != 0;
+}
+
+DecoderError Decoder::seek(double position_seconds)
+{
+    Impl& d = *impl_;
+    if (!d.open_) {
+        return DecoderError::kNotOpen;
+    }
+    if (position_seconds < 0.0) {
+        position_seconds = 0.0;
+    }
+
+    // Into the STREAM's own time base, not AV_TIME_BASE.
+    //
+    // av_seek_frame with a stream index interprets the timestamp in that
+    // stream's units, and an mp3 at 44.1 kHz does not use microseconds. Passing
+    // an AV_TIME_BASE value with a stream index lands somewhere arbitrary --
+    // usually near the start, which reads as "seeking always jumps to the
+    // beginning" rather than as a units bug.
+    const AVStream* stream = d.format_ctx->streams[static_cast<unsigned>(d.stream_index)];
+    const auto      target = static_cast<std::int64_t>(
+        position_seconds / (static_cast<double>(stream->time_base.num) /
+                            static_cast<double>(stream->time_base.den)));
+
+    // AVSEEK_FLAG_BACKWARD: land at or before the request. Without it the seek
+    // goes to the next keyframe AFTER the target, so every seek silently skips
+    // a little of the audio the listener asked to hear -- and on a
+    // sparsely-indexed file, quite a lot of it.
+    if (av_seek_frame(d.format_ctx, d.stream_index, target, AVSEEK_FLAG_BACKWARD) < 0) {
+        return DecoderError::kBackendFailure;
+    }
+
+    // THE DECODER STILL HOLDS FRAMES FROM BEFORE THE SEEK. Without this flush
+    // the first audio after a seek is the tail of wherever playback used to be,
+    // which sounds like a brief stutter of the previous position and is very
+    // hard to attribute to seeking.
+    avcodec_flush_buffers(d.codec_ctx);
+
+    d.pending.clear();
+    d.pending_pos = 0;
+    d.eof         = false;
+    d.drained     = false;
+
+    return DecoderError::kOk;
+}
+
 std::size_t Decoder::read(float* out, std::size_t max_frames)
 {
     Impl& d = *impl_;

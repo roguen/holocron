@@ -138,6 +138,30 @@ public:
     void set_paused(bool paused);
     bool paused() const;
 
+    // Jump to `position_ms` within whatever is playing.
+    //
+    // IMPLEMENTED AS A RESTART AT AN OFFSET, deliberately, rather than as a
+    // message to the running decode thread.
+    //
+    // Seeking has to invalidate four things at once: the decoder's read
+    // position, everything queued in the PcmRing, the analysis history the tap
+    // selects from, and the base the device clock is measured against. start()
+    // already does all four correctly because it builds a fresh Shared, and it
+    // is the path every cast and every track change exercises. A separate
+    // in-place seek would be a second way to do the same thing, sharing none of
+    // that testing, for a saving of one device reopen.
+    //
+    // The cost is a short gap while the device renegotiates -- the same gap that
+    // already occurs between tracks. It is audible and it is the right trade
+    // until measured otherwise.
+    //
+    // Preserves the paused state: seeking while paused must not start playing,
+    // or a controller scrubbing a paused track finds it running.
+    //
+    // Returns kCannotOpenSource if the source will not reopen, in which case
+    // nothing is playing. Does nothing when no session is active.
+    SessionError seek(std::int64_t position_ms, std::string& out_detail);
+
     // Something has been started and has not been stopped. Says nothing about
     // whether it has reached the end -- see finished().
     bool active() const;

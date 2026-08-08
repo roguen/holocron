@@ -305,12 +305,17 @@ std::string timeline_xml(std::string_view command_id, const TimelineState& state
 
             // WHAT THE CONTROLLER MAY OFFER, and it must not overstate.
             //
-            // Only what is actually implemented. Listing seekTo or skipNext
-            // here would put buttons on the phone that do nothing when pressed,
-            // which is worse than their absence -- the user cannot tell a dead
-            // button from a broken player.
+            // Only what is actually implemented. A command listed here and not
+            // acted on puts a button on the phone that does nothing, which is
+            // worse than its absence -- the user cannot tell a dead button from a
+            // broken player. `seekTo` was deliberately absent until seeking
+            // worked, and was verified absent by a test for exactly that reason.
+            //
+            // Volume is STILL not claimed and that is not an oversight: applying
+            // it in software would end bit-perfect output, and the receiver's own
+            // volume control is both better and lossless.
             append_attribute(out, "controllable",
-                             "playPause,play,pause,stop,skipPrevious,skipNext,skipTo");
+                             "playPause,play,pause,stop,skipPrevious,skipNext,skipTo,seekTo");
         }
         out += " />\n";
     }

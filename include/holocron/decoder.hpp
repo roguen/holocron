@@ -103,6 +103,27 @@ public:
 
     bool at_end() const;
 
+    // Whether this source can be seeked at all.
+    //
+    // FALSE IS A REAL ANSWER, NOT AN EDGE CASE. A pipe, a live stream, or an
+    // HTTP server that refuses range requests cannot seek, and the caller has to
+    // reach the position by decoding forward instead. Asking first means that
+    // fallback is a decision rather than an error path.
+    bool can_seek() const;
+
+    // Move to `position_seconds`, measured from the start of the stream.
+    //
+    // LANDS AT OR BEFORE the request, never after: seeking forward to the
+    // nearest keyframe would skip audio the listener asked to hear. The caller
+    // is expected to decode and discard the remainder if it needs to be exact,
+    // which for audio is a few tens of milliseconds.
+    //
+    // Returns kBackendFailure when the seek was attempted and refused, and
+    // kNotOpen with nothing open. On failure the read position is UNSPECIFIED --
+    // a refused seek can still have moved the demuxer -- so a caller that cannot
+    // seek should reopen rather than carry on reading.
+    DecoderError seek(double position_seconds);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
