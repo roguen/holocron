@@ -8,6 +8,7 @@
 #include <holocron/audio_frame.hpp>
 #include <holocron/crystal.hpp>
 #include <holocron/frame_binding.hpp>
+#include <holocron/track_context.hpp>
 
 #include <glad/glad.h>
 
@@ -67,6 +68,12 @@ struct CrystalFacet::Impl {
     GLint u_resolution = -1;
     GLint u_time       = -1;
 
+    GLint u_palette         = -1;
+    GLint u_palette_primary = -1;
+    GLint u_palette_accent  = -1;
+    GLint u_album_art       = -1;
+    GLint u_has_art         = -1;
+
     // One per manifest entry, resolved once. -1 means the compiler removed it.
     struct Bound {
         GLint          location;
@@ -124,6 +131,20 @@ bool CrystalFacet::init(const Crystal& crystal, std::string& out_log)
     impl_->u_resolution = glGetUniformLocation(impl_->program, "u_resolution");
     impl_->u_time       = glGetUniformLocation(impl_->program, "u_time");
 
+    // The TrackContext half. Resolved once, like everything else here, and each
+    // one may legitimately be -1 -- a crystal that ignores the record's colours
+    // is a crystal, not a mistake.
+    //
+    // The array is looked up by its FIRST ELEMENT. `glGetUniformLocation` on a
+    // bare array name works on every driver in practice but is only specified
+    // for "name" or "name[0]", and the explicit form is what the spec
+    // guarantees.
+    impl_->u_palette         = glGetUniformLocation(impl_->program, "u_palette[0]");
+    impl_->u_palette_primary = glGetUniformLocation(impl_->program, "u_palette_primary");
+    impl_->u_palette_accent  = glGetUniformLocation(impl_->program, "u_palette_accent");
+    impl_->u_album_art       = glGetUniformLocation(impl_->program, "u_album_art");
+    impl_->u_has_art         = glGetUniformLocation(impl_->program, "u_has_art");
+
     // Resolve every manifest binding ONCE. Looking these up per frame would be a
     // string hash per uniform per frame for a value that cannot change while the
     // program is linked.
@@ -173,7 +194,7 @@ void CrystalFacet::set_elapsed(float seconds)
     impl_->start  = std::chrono::steady_clock::now() - ms;
 }
 
-void CrystalFacet::draw(const AudioFrame& frame, int width, int height)
+void CrystalFacet::draw(const AudioFrame& frame, const TrackContext& track, int width, int height)
 {
     if (!ready() || width <= 0 || height <= 0) {
         return;
@@ -187,6 +208,39 @@ void CrystalFacet::draw(const AudioFrame& frame, int width, int height)
     }
     if (impl_->u_time >= 0) {
         glUniform1f(impl_->u_time, elapsed());
+    }
+
+    // -- what the record looks like ------------------------------------------
+
+    if (impl_->u_palette >= 0) {
+        // glm::vec3 is three floats with no padding, and std::array of them is
+        // contiguous, so the whole palette uploads in one call. static_assert
+        // rather than trust: a padded vec3 would upload garbage into swatches 1
+        // through 4 and nothing would say so.
+        static_assert(sizeof(glm::vec3) == 3 * sizeof(float),
+                      "glm::vec3 must be tightly packed to upload the palette directly");
+        static_assert(sizeof(track.palette) == kPaletteSize * 3 * sizeof(float),
+                      "the palette array must be contiguous to upload directly");
+
+        glUniform3fv(impl_->u_palette, static_cast<GLsizei>(kPaletteSize),
+                     &track.palette[0].x);
+    }
+    if (impl_->u_palette_primary >= 0) {
+        glUniform3fv(impl_->u_palette_primary, 1, &track.palette_primary.x);
+    }
+    if (impl_->u_palette_accent >= 0) {
+        glUniform3fv(impl_->u_palette_accent, 1, &track.palette_accent.x);
+    }
+    if (impl_->u_has_art >= 0) {
+        // GLSL has no bool uniform on the wire; glUniform1i with 0 or 1 is how
+        // one is set.
+        glUniform1i(impl_->u_has_art, track.has_art && track.album_art_texture != 0 ? 1 : 0);
+    }
+    if (impl_->u_album_art >= 0) {
+        // Unit 0, always, and bound even when there is no art so the sampler
+        // never points at whatever a previous crystal left there.
+        glBindTextureUnit(0, static_cast<GLuint>(track.album_art_texture));
+        glUniform1i(impl_->u_album_art, 0);
     }
 
     for (const Impl::Bound& b : impl_->bound) {

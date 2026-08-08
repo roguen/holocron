@@ -19,6 +19,15 @@ out vec4 frag_colour;
 uniform vec2  u_resolution;
 uniform float u_time;
 
+// Also supplied without a manifest entry: what the RECORD looks like, rather
+// than what it sounds like. See crystal_facet.hpp for the full list.
+//
+// LINEAR RGB, NOT DISPLAY VALUES -- see to_display() below, which is the part
+// that is easy to get wrong.
+uniform vec3  u_palette_primary;
+uniform vec3  u_palette_accent;
+uniform bool  u_has_art;
+
 // Bound by pulse.toml.
 uniform float u_bass;
 uniform float u_treble;
@@ -28,6 +37,24 @@ uniform float u_centroid;
 uniform float u_bands[32];
 
 const float kPi = 3.14159265359;
+
+// Linear RGB to something the display can be handed.
+//
+// THIS IS NOT OPTIONAL AND ITS ABSENCE IS NOT AN ERROR ANYWHERE. The palette
+// uniforms are linear, because linear is the space you may multiply and add in.
+// Holocron does not enable GL_FRAMEBUFFER_SRGB, so whatever this shader writes
+// is sent to the display as-is and interpreted as sRGB. Writing a linear value
+// straight out therefore shows a colour markedly darker than the sleeve it came
+// from -- no warning, nothing that looks broken, just a palette that seems
+// muddy and a suspicion that the extraction is wrong.
+//
+// The 2.2 power is the usual approximation to the sRGB curve rather than the
+// piecewise function itself. The difference is confined to the darkest few
+// values and is not worth the branch in a crystal.
+vec3 to_display(vec3 linear)
+{
+    return pow(clamp(linear, 0.0, 1.0), vec3(1.0 / 2.2));
+}
 
 void main()
 {
@@ -74,8 +101,20 @@ void main()
     // Hue follows spectral brightness: bassy is warm, bright is cold. Treble
     // adds a rim so the outer edge has detail when there is high-frequency
     // content to justify it.
+    //
+    // WHEN THE RECORD HAS A SLEEVE, ITS COLOURS REPLACE THE FIXED PAIR. That is
+    // the point of the palette being part of the contract rather than each
+    // crystal's own business: the same album colours every crystal the same way.
+    //
+    // Guarded on u_has_art rather than used unconditionally, because with no art
+    // the palette is a deliberate neutral grey ramp -- correct as a fallback, and
+    // not what this crystal should look like when playing a local file.
     vec3 warm = vec3(0.95, 0.35, 0.25);
     vec3 cold = vec3(0.30, 0.65, 0.95);
+    if (u_has_art) {
+        warm = to_display(u_palette_primary);
+        cold = to_display(u_palette_accent);
+    }
     vec3 hue  = mix(warm, cold, clamp(u_centroid, 0.0, 1.0));
 
     vec3 colour = hue * shell;

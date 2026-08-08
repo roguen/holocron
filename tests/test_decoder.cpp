@@ -346,3 +346,166 @@ TEST_CASE("decoder and resampler compose into the analysis tap", "[decoder][resa
     INFO("tap frames: " << tap_frames);
     CHECK(double(tap_frames) == Approx(double(kAnalysisRate)).margin(128.0));
 }
+
+// ---------------------------------------------------------------------------
+// Seeking
+//
+// A RAMP RATHER THAN A SINE, so a sample's VALUE says where in the file it came
+// from. A sine is periodic, so landing a whole second early reads identically to
+// landing on target and the test would pass while seeking was broken.
+//
+// PCM WAV has no keyframes, so these seeks are sample-accurate. A compressed
+// format would land at or before the request instead -- which is what
+// AVSEEK_FLAG_BACKWARD guarantees and why the session winds the remainder
+// forward.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::uint32_t kRampRate    = 8000;
+constexpr double        kRampSeconds = 4.0;
+
+// value at frame i is i / total, so 0.0 at the start and ~1.0 at the end.
+std::vector<float> ramp()
+{
+    const std::size_t  frames = std::size_t(kRampSeconds * double(kRampRate));
+    std::vector<float> out(frames);
+    for (std::size_t i = 0; i < frames; ++i) {
+        out[i] = float(double(i) / double(frames));
+    }
+    return out;
+}
+
+// The first sample the decoder yields, which for a ramp names the position.
+float first_sample(Decoder& d)
+{
+    float value = -1.0f;
+    REQUIRE(d.read(&value, 1) == 1);
+    return value;
+}
+
+}  // namespace
+
+TEST_CASE("a local file reports itself seekable", "[decoder][seek]")
+{
+    ScopedFile f("seekable");
+    write_wav(f.path, kRampRate, 1, ramp());
+
+    Decoder d;
+    REQUIRE(d.open(f.path.c_str()) == DecoderError::kOk);
+
+    // False is a real answer for a pipe or a stream that refuses range requests,
+    // which is why the session asks before choosing how to reach an offset.
+    CHECK(d.can_seek());
+}
+
+TEST_CASE("a closed decoder can neither seek nor claim to", "[decoder][seek][errors]")
+{
+    Decoder d;
+    CHECK_FALSE(d.can_seek());
+    CHECK(d.seek(1.0) == DecoderError::kNotOpen);
+}
+
+TEST_CASE("seeking lands where it was asked to", "[decoder][seek]")
+{
+    ScopedFile f("seek_position");
+    write_wav(f.path, kRampRate, 1, ramp());
+
+    Decoder d;
+    REQUIRE(d.open(f.path.c_str()) == DecoderError::kOk);
+
+    // Halfway through a 4-second ramp is 0.5.
+    REQUIRE(d.seek(2.0) == DecoderError::kOk);
+    CHECK(first_sample(d) == Approx(0.5).margin(0.01));
+
+    // Three quarters.
+    REQUIRE(d.seek(3.0) == DecoderError::kOk);
+    CHECK(first_sample(d) == Approx(0.75).margin(0.01));
+}
+
+TEST_CASE("seeking backwards works, not just forwards", "[decoder][seek]")
+{
+    // The direction that catches a decoder whose buffers were not flushed: the
+    // frames it still holds are from AFTER the new position, so playback resumes
+    // where it used to be and sounds like the seek did nothing.
+    ScopedFile f("seek_backwards");
+    write_wav(f.path, kRampRate, 1, ramp());
+
+    Decoder d;
+    REQUIRE(d.open(f.path.c_str()) == DecoderError::kOk);
+
+    REQUIRE(d.seek(3.0) == DecoderError::kOk);
+    CHECK(first_sample(d) == Approx(0.75).margin(0.01));
+
+    REQUIRE(d.seek(1.0) == DecoderError::kOk);
+    CHECK(first_sample(d) == Approx(0.25).margin(0.01));
+}
+
+TEST_CASE("seeking to zero returns to the top of the track", "[decoder][seek]")
+{
+    ScopedFile f("seek_zero");
+    write_wav(f.path, kRampRate, 1, ramp());
+
+    Decoder d;
+    REQUIRE(d.open(f.path.c_str()) == DecoderError::kOk);
+
+    std::vector<float> scratch(kRampRate);
+    REQUIRE(d.read(scratch.data(), scratch.size()) > 0);
+
+    REQUIRE(d.seek(0.0) == DecoderError::kOk);
+    CHECK(first_sample(d) == Approx(0.0).margin(0.01));
+}
+
+TEST_CASE("a negative seek is clamped rather than refused", "[decoder][seek]")
+{
+    // A controller can send one, and the start of the track is the only sensible
+    // reading of it.
+    ScopedFile f("seek_negative");
+    write_wav(f.path, kRampRate, 1, ramp());
+
+    Decoder d;
+    REQUIRE(d.open(f.path.c_str()) == DecoderError::kOk);
+
+    REQUIRE(d.seek(-5.0) == DecoderError::kOk);
+    CHECK(first_sample(d) == Approx(0.0).margin(0.01));
+}
+
+TEST_CASE("seeking clears end of stream so the decoder is reusable",
+          "[decoder][seek]")
+{
+    // Reading to the end sets eof and drained. Seeking back has to clear both or
+    // the decoder reports the track over while sitting at its start -- which in
+    // the player is a seek that lands correctly and then immediately advances to
+    // the next track.
+    ScopedFile f("seek_after_eof");
+    write_wav(f.path, kRampRate, 1, ramp());
+
+    Decoder d;
+    REQUIRE(d.open(f.path.c_str()) == DecoderError::kOk);
+
+    std::vector<float> scratch(4096);
+    while (d.read(scratch.data(), scratch.size()) > 0) {
+        // drain
+    }
+    REQUIRE(d.at_end());
+
+    REQUIRE(d.seek(1.0) == DecoderError::kOk);
+    CHECK_FALSE(d.at_end());
+    CHECK(first_sample(d) == Approx(0.25).margin(0.01));
+}
+
+TEST_CASE("seeking past the end leaves nothing to read", "[decoder][seek]")
+{
+    // Not an error: the player clamps a scrub to just inside the track, and this
+    // is the behaviour that makes that clamp the only thing needed.
+    ScopedFile f("seek_past_end");
+    write_wav(f.path, kRampRate, 1, ramp());
+
+    Decoder d;
+    REQUIRE(d.open(f.path.c_str()) == DecoderError::kOk);
+
+    d.seek(kRampSeconds + 30.0);
+
+    std::vector<float> scratch(1024);
+    CHECK(d.read(scratch.data(), scratch.size()) == 0);
+}

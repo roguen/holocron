@@ -255,6 +255,345 @@ TEST_CASE("url encoding escapes what a query string cannot carry", "[plex][playb
     REQUIRE(url_encode("a&b=c") == "a%26b%3Dc");
 }
 
+// ---------------------------------------------------------------------------
+// The timeline
+// ---------------------------------------------------------------------------
+
+namespace {
+
+TimelineState playing_fixture()
+{
+    TimelineState s;
+    s.state              = TransportState::kPlaying;
+    s.time_ms            = 11350;
+    s.duration_ms        = 364277;
+    s.key                = "/library/metadata/56401";
+    s.container_key      = "/playQueues/11417";
+    s.machine_identifier = "0f54f92a5124e95f541968d14b834b89ecd1cb08";
+    s.address            = "192-168-68-13.84b4357e56a04fb88b2f2aff37614b33.plex.direct";
+    s.port               = 32400;
+    s.protocol           = "https";
+    return s;
+}
+
+}  // namespace
+
+TEST_CASE("a stopped timeline reports all three transports and nothing playing",
+          "[plex][playback]")
+{
+    // A controller asks about all three transports at once and expects all three
+    // back. Omitting the two that are permanently stopped reads as a malformed
+    // answer rather than as a player that does not do video.
+    const std::string xml = timeline_xml("42", TimelineState{});
+
+    REQUIRE(xml.find("commandID=\"42\"") != std::string::npos);
+    for (const char* type : {"music", "video", "photo"}) {
+        REQUIRE(xml.find(std::string("type=\"") + type + "\"") != std::string::npos);
+    }
+    REQUIRE(xml.find("state=\"playing\"") == std::string::npos);
+    REQUIRE(xml.find("location=\"navigation\"") != std::string::npos);
+}
+
+TEST_CASE("an absent command id echoes as empty rather than as something invented",
+          "[plex][playback]")
+{
+    // A controller matches a response to its command by this value. Inventing
+    // one makes it wait for a reply it will never recognise.
+    REQUIRE(timeline_xml("", TimelineState{}).find("commandID=\"\"") != std::string::npos);
+}
+
+TEST_CASE("a playing timeline carries the position, the item and the server",
+          "[plex][playback]")
+{
+    // THE CASE THIS WHOLE FILE SECTION EXISTS FOR. Until this reported anything
+    // but `stopped`, Plexamp showed nothing playing, never moved its scrubber
+    // and never learned a track had ended.
+    const std::string xml = timeline_xml("7", playing_fixture());
+
+    REQUIRE(xml.find("state=\"playing\"") != std::string::npos);
+    REQUIRE(xml.find("time=\"11350\"") != std::string::npos);
+    REQUIRE(xml.find("duration=\"364277\"") != std::string::npos);
+    REQUIRE(xml.find("key=\"/library/metadata/56401\"") != std::string::npos);
+    REQUIRE(xml.find("containerKey=\"/playQueues/11417\"") != std::string::npos);
+    REQUIRE(xml.find("machineIdentifier=\"0f54f92a5124e95f541968d14b834b89ecd1cb08\"") !=
+            std::string::npos);
+    REQUIRE(xml.find("port=\"32400\"") != std::string::npos);
+    REQUIRE(xml.find("protocol=\"https\"") != std::string::npos);
+
+    // Playing means the player is showing the track, not sitting in a menu.
+    REQUIRE(xml.find("location=\"fullScreenMusic\"") != std::string::npos);
+}
+
+TEST_CASE("only the music transport is ever playing", "[plex][playback]")
+{
+    // Video and photo must stay stopped even while music plays, or a controller
+    // is told this device is doing three things at once.
+    const std::string xml = timeline_xml("7", playing_fixture());
+
+    const std::size_t music = xml.find("type=\"music\"");
+    const std::size_t video = xml.find("type=\"video\"");
+    REQUIRE(music != std::string::npos);
+    REQUIRE(video != std::string::npos);
+
+    // Exactly one `playing` in the whole document, and it is before the video
+    // element.
+    const std::size_t playing = xml.find("state=\"playing\"");
+    REQUIRE(playing != std::string::npos);
+    REQUIRE(playing < video);
+    REQUIRE(xml.find("state=\"playing\"", playing + 1) == std::string::npos);
+}
+
+TEST_CASE("controllable claims exactly what is implemented", "[plex][playback]")
+{
+    // Both directions matter. Claiming a command that is not acted on puts a
+    // button on the phone that does nothing when pressed, and a dead button is
+    // indistinguishable from a broken player. NOT listing a control that works
+    // hides it.
+    const std::string xml = timeline_xml("7", playing_fixture());
+
+    REQUIRE(xml.find(
+                "controllable=\"playPause,play,pause,stop,skipPrevious,skipNext,skipTo,seekTo\"") !=
+            std::string::npos);
+
+    // seekTo IS now claimed. It was deliberately absent until seeking worked, and
+    // this assertion was previously its mirror image -- see the git history of
+    // this test, which is the record that the claim was earned rather than
+    // assumed.
+    REQUIRE(xml.find("seekTo") != std::string::npos);
+
+    // Volume is REPORTED so the controller's model stays consistent, and is
+    // STILL not in `controllable`, because applying it in software would end
+    // bit-perfect output. See the note in timeline_xml.
+    REQUIRE(xml.find("volume=\"100\"") != std::string::npos);
+    REQUIRE(xml.find("controllable=\"") != std::string::npos);
+    REQUIRE(xml.find("volume,") == std::string::npos);
+}
+
+TEST_CASE("a paused player still reports a position and a track", "[plex][playback]")
+{
+    // Plexamp sends `paused=1` on every cast -- "load this and hold". Reporting
+    // a bare stopped state in response would tell it nothing is loaded, which
+    // is not what it asked for and not what is true.
+    TimelineState paused = playing_fixture();
+    paused.state         = TransportState::kPaused;
+
+    const std::string xml = timeline_xml("7", paused);
+    REQUIRE(xml.find("state=\"paused\"") != std::string::npos);
+    REQUIRE(xml.find("key=\"/library/metadata/56401\"") != std::string::npos);
+    REQUIRE(xml.find("duration=\"364277\"") != std::string::npos);
+    REQUIRE(xml.find("location=\"fullScreenMusic\"") != std::string::npos);
+}
+
+TEST_CASE("a paused timeline says paused and still names the track", "[plex][playback]")
+{
+    TimelineState paused = playing_fixture();
+    paused.state         = TransportState::kPaused;
+
+    const std::string xml = timeline_xml("7", paused);
+    REQUIRE(xml.find("state=\"paused\"") != std::string::npos);
+    // Still playing something, so the controller must still be told what.
+    REQUIRE(xml.find("key=\"/library/metadata/56401\"") != std::string::npos);
+    REQUIRE(xml.find("time=\"11350\"") != std::string::npos);
+}
+
+TEST_CASE("a position change alone does NOT wake a long poll", "[plex][playback]")
+{
+    // The single most important property here. A long poll woken by the position
+    // returns immediately every frame, which is the hot loop that honouring
+    // `wait=1` was meant to fix -- 415 polls in one measured session.
+    const TimelineState a = playing_fixture();
+    TimelineState       b = a;
+    b.time_ms             = a.time_ms + 5000;
+
+    REQUIRE_FALSE(b.differs_materially_from(a));
+}
+
+TEST_CASE("the changes a controller cannot guess DO wake a long poll", "[plex][playback]")
+{
+    const TimelineState base = playing_fixture();
+
+    TimelineState stopped = base;
+    stopped.state         = TransportState::kStopped;
+    REQUIRE(stopped.differs_materially_from(base));
+
+    TimelineState other_track = base;
+    other_track.key           = "/library/metadata/99999";
+    REQUIRE(other_track.differs_materially_from(base));
+
+    TimelineState other_queue   = base;
+    other_queue.container_key   = "/playQueues/22222";
+    REQUIRE(other_queue.differs_materially_from(base));
+
+    TimelineState other_server      = base;
+    other_server.machine_identifier = "something-else";
+    REQUIRE(other_server.differs_materially_from(base));
+
+    TimelineState other_duration = base;
+    other_duration.duration_ms   = 1;
+    REQUIRE(other_duration.differs_materially_from(base));
+}
+
+TEST_CASE("transport states have the wire spellings Plex uses", "[plex][playback]")
+{
+    REQUIRE(std::string(to_string(TransportState::kStopped)) == "stopped");
+    REQUIRE(std::string(to_string(TransportState::kPaused)) == "paused");
+    REQUIRE(std::string(to_string(TransportState::kPlaying)) == "playing");
+}
+
+TEST_CASE("a track title with metacharacters does not break the timeline",
+          "[plex][playback]")
+{
+    // The key and container key come from a server and can carry anything a
+    // query string can. An unescaped one yields a document that fails to parse,
+    // and the only symptom is a controller that silently stops following.
+    TimelineState s = playing_fixture();
+    s.key           = "/library/metadata/1?a=1&b=2";
+
+    const std::string xml = timeline_xml("7", s);
+    REQUIRE(xml.find("key=\"/library/metadata/1?a=1&amp;b=2\"") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// Play queues
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Shaped like the real /playQueues answer from the rack, trimmed to three
+// tracks. The second is the selected one, and each Track has its OWN Part --
+// which is the property the parser has to respect.
+const char* const kQueue =
+    R"(<?xml version="1.0" encoding="UTF-8"?>)"
+    R"(<MediaContainer size="3" playQueueID="11507" playQueueSelectedItemID="171362" )"
+    R"(playQueueTotalCount="3" playQueueVersion="1">)"
+    R"(<Track playQueueItemID="171361" key="/library/metadata/56397" title="Stinkfist" )"
+    R"(grandparentTitle="Tool" parentTitle="&#198;nima" duration="311144">)"
+    R"(<Media audioCodec="mp3" container="mp3">)"
+    R"(<Part key="/library/parts/140254/1713699104/file.mp3" container="mp3"/>)"
+    R"(</Media></Track>)"
+    R"(<Track playQueueItemID="171362" key="/library/metadata/56398" title="Eulogy" )"
+    R"(grandparentTitle="Tool" parentTitle="&#198;nima" duration="522000">)"
+    R"(<Media audioCodec="mp3" container="mp3">)"
+    R"(<Part key="/library/parts/140255/1713699105/file.mp3" container="mp3"/>)"
+    R"(</Media></Track>)"
+    R"(<Track playQueueItemID="171363" key="/library/metadata/56399" title="H." )"
+    R"(grandparentTitle="Tool" parentTitle="&#198;nima" duration="368000">)"
+    R"(<Media audioCodec="mp3" container="mp3">)"
+    R"(<Part key="/library/parts/140256/1713699106/file.mp3" container="mp3"/>)"
+    R"(</Media></Track>)"
+    R"(</MediaContainer>)";
+
+}  // namespace
+
+TEST_CASE("a play queue yields every track in order", "[plex][playback][queue]")
+{
+    PlexQueue queue;
+    REQUIRE(parse_play_queue(kQueue, queue));
+
+    REQUIRE(queue.id == "11507");
+    REQUIRE(queue.tracks.size() == 3);
+    REQUIRE(queue.tracks[0].title == "Stinkfist");
+    REQUIRE(queue.tracks[1].title == "Eulogy");
+    REQUIRE(queue.tracks[2].title == "H.");
+
+    // Decoded from the numeric reference the server actually sends.
+    REQUIRE(queue.tracks[0].album == "\xC3\x86nima");
+}
+
+TEST_CASE("each track gets ITS OWN part, not the first one", "[plex][playback][queue]")
+{
+    // THE BUG THIS GUARDS AGAINST. Searching the document from the top for a
+    // Part would give every track the first track's audio -- an album that plays
+    // its opening song twelve times, with correct titles and durations all the
+    // way down so nothing looks wrong until you listen.
+    PlexQueue queue;
+    REQUIRE(parse_play_queue(kQueue, queue));
+
+    REQUIRE(queue.tracks[0].part_key == "/library/parts/140254/1713699104/file.mp3");
+    REQUIRE(queue.tracks[1].part_key == "/library/parts/140255/1713699105/file.mp3");
+    REQUIRE(queue.tracks[2].part_key == "/library/parts/140256/1713699106/file.mp3");
+}
+
+TEST_CASE("the selected item is where playback starts", "[plex][playback][queue]")
+{
+    // Not always the first: casting from the middle of an album, or resuming
+    // one, selects further in. Starting at zero regardless would silently
+    // restart the album every time.
+    PlexQueue queue;
+    REQUIRE(parse_play_queue(kQueue, queue));
+    REQUIRE(queue.selected == 1);
+    REQUIRE(queue.tracks[queue.selected].title == "Eulogy");
+}
+
+TEST_CASE("each track carries the key a controller matches on", "[plex][playback][queue]")
+{
+    PlexQueue queue;
+    REQUIRE(parse_play_queue(kQueue, queue));
+    REQUIRE(queue.tracks[0].key == "/library/metadata/56397");
+    REQUIRE(queue.tracks[1].key == "/library/metadata/56398");
+}
+
+TEST_CASE("a queue with nothing playable in it is refused", "[plex][playback][queue]")
+{
+    // A Track with no Part cannot be opened, and one that stalls the queue on
+    // itself is worse than one that is skipped.
+    const std::string no_parts =
+        R"(<MediaContainer playQueueID="1"><Track key="/k" title="No audio"/></MediaContainer>)";
+
+    PlexQueue queue;
+    REQUIRE_FALSE(parse_play_queue(no_parts, queue));
+    REQUIRE(queue.tracks.empty());
+
+    REQUIRE_FALSE(parse_play_queue("", queue));
+    REQUIRE_FALSE(parse_play_queue("<MediaContainer/>", queue));
+}
+
+TEST_CASE("the createPlayQueue command parses", "[plex][playback][queue]")
+{
+    // Captured from a real cast. Note there is NO playMedia in that exchange at
+    // all -- this command is the whole instruction.
+    const std::vector<std::pair<std::string, std::string>> params = {
+        {"address", "192-168-68-13.84b4357e56a04fb88b2f2aff37614b33.plex.direct"},
+        {"commandID", "14"},
+        {"includeExternalMedia", "1"},
+        {"machineIdentifier", "0f54f92a5124e95f541968d14b834b89ecd1cb08"},
+        {"playlistID", "undefined"},
+        {"port", "32400"},
+        {"protocol", "https"},
+        {"shuffle", "0"},
+        {"token", "transient-abc"},
+        {"type", "audio"},
+        {"uri", "server://0f54f92a/com.plexapp.plugins.library/library/metadata/56396/children"},
+    };
+
+    PlayRequest request;
+    std::string detail;
+    INFO(detail);
+    REQUIRE(parse_create_play_queue(params, request, detail));
+
+    CHECK(request.address == "192-168-68-13.84b4357e56a04fb88b2f2aff37614b33.plex.direct");
+    CHECK(request.port == 32400);
+    CHECK(request.protocol == "https");
+    CHECK(request.type == "audio");
+    CHECK(request.token == "transient-abc");
+    // The uri travels in `key`, because the server fields mean the same thing
+    // here as on a play command and duplicating them would let the two drift.
+    CHECK(request.key ==
+          "server://0f54f92a/com.plexapp.plugins.library/library/metadata/56396/children");
+}
+
+TEST_CASE("a createPlayQueue with nothing to enqueue is refused", "[plex][playback][queue]")
+{
+    PlayRequest request;
+    std::string detail;
+
+    REQUIRE_FALSE(parse_create_play_queue({{"address", "host"}}, request, detail));
+    REQUIRE(detail.find("uri") != std::string::npos);
+
+    REQUIRE_FALSE(parse_create_play_queue({{"uri", "server://x"}}, request, detail));
+    REQUIRE(detail.find("address") != std::string::npos);
+}
+
 TEST_CASE("every HttpError has a distinct description", "[plex][playback]")
 {
     const HttpError all[] = {HttpError::kOk, HttpError::kUnsupported, HttpError::kConnectFailed,
@@ -265,4 +604,99 @@ TEST_CASE("every HttpError has a distinct description", "[plex][playback]")
             REQUIRE(std::string(to_string(all[i])) != std::string(to_string(all[j])));
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Artwork
+//
+// The URL, not the fetch. Building this string is where the mistakes are -- the
+// fetch itself is one https_request and needs a server to exercise.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("artwork goes through the photo transcoder", "[plex][playback][art]")
+{
+    PlexTrack track;
+    track.thumb = "/library/metadata/56398/thumb/1234";
+
+    const std::string path = artwork_path(track, "tok", 512);
+
+    // THROUGH THE TRANSCODER, which is what makes the format predictable. A raw
+    // thumb is whatever was uploaded, occasionally a PNG this build cannot
+    // decode (issue 116).
+    REQUIRE(path.find("/photo/:/transcode") == 0);
+    REQUIRE(path.find("width=512") != std::string::npos);
+    REQUIRE(path.find("height=512") != std::string::npos);
+
+    // minSize with upscale, or a 150-pixel thumb comes back at 150 pixels and
+    // gives the palette almost nothing to work with.
+    REQUIRE(path.find("minSize=1") != std::string::npos);
+    REQUIRE(path.find("upscale=1") != std::string::npos);
+}
+
+TEST_CASE("the nested artwork url is percent-encoded", "[plex][playback][art]")
+{
+    // THE ONE THAT BREAKS IN THE FIELD. Art that has been replaced carries a
+    // cache-buster, so the thumb path contains its own `?` and `&`. Passed
+    // through raw, that ampersand ends the parameter and the transcoder receives
+    // half a path and answers 400.
+    PlexTrack track;
+    track.thumb = "/library/metadata/56398/thumb/1234?t=567&x=1";
+
+    const std::string path = artwork_path(track, "tok", 320);
+
+    const std::size_t url_at = path.find("url=");
+    REQUIRE(url_at != std::string::npos);
+
+    // Nothing after `url=` may introduce a new parameter except the token that
+    // is appended deliberately.
+    const std::string encoded = path.substr(url_at + 4);
+    REQUIRE(encoded.find("%3F") != std::string::npos);   // the ? survived, encoded
+    REQUIRE(encoded.find("%26") != std::string::npos);   // and so did the &
+
+    // Exactly one raw ampersand after the encoded url: the one before the token.
+    REQUIRE(std::count(encoded.begin(), encoded.end(), '&') == 1);
+    REQUIRE(encoded.find("&X-Plex-Token=tok") != std::string::npos);
+}
+
+TEST_CASE("the album's art is the fallback when the track has none",
+          "[plex][playback][art]")
+{
+    // Libraries where individual tracks were never given art are ordinary. Not
+    // falling back is the difference between an album that colours the visuals
+    // and one that does not, for no reason a listener could guess at.
+    PlexTrack track;
+    track.album_thumb = "/library/metadata/56396/thumb/999";
+
+    const std::string path = artwork_path(track, "tok", 512);
+    REQUIRE(path.find("56396") != std::string::npos);
+}
+
+TEST_CASE("the track's own art wins over the album's", "[plex][playback][art]")
+{
+    PlexTrack track;
+    track.thumb       = "/library/metadata/56398/thumb/1";
+    track.album_thumb = "/library/metadata/56396/thumb/2";
+
+    const std::string path = artwork_path(track, "tok", 512);
+    REQUIRE(path.find("56398") != std::string::npos);
+    REQUIRE(path.find("56396") == std::string::npos);
+}
+
+TEST_CASE("a track with no art at all yields no path", "[plex][playback][art]")
+{
+    // An empty answer rather than a URL that would 404. Saves every caller
+    // writing the same emptiness check, and saves a pointless round trip on
+    // every track of an artless album.
+    REQUIRE(artwork_path(PlexTrack{}, "tok", 512).empty());
+}
+
+TEST_CASE("the artwork token is encoded too", "[plex][playback][art]")
+{
+    PlexTrack track;
+    track.thumb = "/library/metadata/1/thumb/1";
+
+    // Plex tokens are opaque. Nothing guarantees they are URL-safe.
+    const std::string path = artwork_path(track, "a b&c", 512);
+    REQUIRE(path.find("a b&c") == std::string::npos);
+    REQUIRE(path.find("X-Plex-Token=a%20b%26c") != std::string::npos);
 }

@@ -146,18 +146,11 @@ std::string resources_xml(const PlexDevice& device);
 // document of its own to send.
 std::string response_xml(int code, std::string_view status);
 
-// The timeline document, reporting nothing playing.
-//
-// Three Timeline elements are always sent -- music, video and photo -- even
-// though Holocron will only ever drive the first. A client asks one question
-// about all three transports at once and expects all three back; omitting the
-// two that are permanently stopped reads as a malformed answer rather than as a
-// player that does not do video.
-//
-// `command_id` is echoed from the request's `commandID` parameter. A client
-// matches responses to commands by it, so an unechoed or invented value makes
-// the client wait for a reply it will never recognise.
-std::string stopped_timeline_xml(std::string_view command_id);
+// The timeline document lives in plex_playback.hpp now, because it has to
+// report a real position and a real state and therefore belongs with the
+// playback types rather than with the discovery ones. There was briefly a
+// stopped-only version here as well; two builders for one document is how the
+// two quietly stop agreeing.
 
 // A random UUID in the 8-4-4-4-12 form, for `machine_identifier`.
 //

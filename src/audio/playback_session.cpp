@@ -123,10 +123,15 @@ struct PlaybackSession::Impl {
     bool       audio_started = false;   // device opened
     bool       audio_running = false;   // device opened AND pulling
     bool       bit_perfect   = false;
+    bool       is_paused     = false;
     NowPlaying what;
 
-    std::uint32_t rate         = 0;
-    double        lead_budget  = 0.0;
+    std::uint32_t rate            = 0;
+    double        lead_budget     = 0.0;
+
+    // Where the caller asked playback to begin. Added back into the reported
+    // position, because the device clock counts from where DECODING began.
+    std::int64_t start_offset_ms = 0;
 
     void decode_loop(std::string source, std::int64_t offset_ms, bool feed_audio);
 };
@@ -154,21 +159,48 @@ void PlaybackSession::Impl::decode_loop(std::string source, std::int64_t offset_
 
     std::uint64_t decoded_frames = 0;
 
-    // REACHING AN OFFSET BY DECODING AND THROWING IT AWAY.
+    // REACHING AN OFFSET: SEEK IF THE SOURCE ALLOWS IT, WIND FORWARD IF NOT.
     //
-    // `Decoder` has no seek, and adding one means av_seek_frame plus deciding
-    // what to do about a stream that cannot seek -- a contained change, but not
-    // this one. Discarding is CORRECT for every source, including a remote URL,
-    // and for the case that actually happens -- Plexamp resuming a few seconds
-    // in -- it costs nothing measurable.
+    // Discarding alone was the original approach and it is correct for every
+    // source, but it genuinely downloads the prefix of a remote track -- so
+    // seeking two thirds of the way into a song fetched the first two thirds of
+    // it first. Fine for Plexamp resuming three seconds in, useless as a scrub.
     //
-    // It is genuinely slow for a large offset on a remote track, because the
-    // prefix really is downloaded. Tracked separately rather than left as a
-    // surprise; the honest version is here and the fast version is an issue.
+    // Seeking lands at or BEFORE the target, because AVSEEK_FLAG_BACKWARD is what
+    // stops a seek skipping audio the listener asked to hear. Whatever remains
+    // between the keyframe and the request is then wound forward by the same
+    // discard loop below, which is a few tens of milliseconds rather than
+    // minutes.
+    //
+    // A source that cannot seek -- a pipe, a live stream, an HTTP server that
+    // refuses range requests -- falls back to discarding the whole prefix. That
+    // is slow and it is correct, which is the right way round.
     std::uint64_t discard_frames =
         offset_ms > 0 ? static_cast<std::uint64_t>(offset_ms) *
                             static_cast<std::uint64_t>(info.sample_rate) / 1000ULL
                       : 0;
+
+    // Counts from the top of the track regardless of how the offset was reached,
+    // so the analysis reports a real track position either way.
+    std::uint64_t position_base = 0;
+
+    if (offset_ms > 0 && decoder_local.can_seek()) {
+        const double target_seconds = static_cast<double>(offset_ms) / 1000.0;
+        if (decoder_local.seek(target_seconds) == DecoderError::kOk) {
+            // The demuxer is now at or before the target. There is no cheap way
+            // to learn exactly where without decoding a frame, so the remainder
+            // is treated as already-consumed and the discard loop is skipped:
+            // being up to one keyframe early is inaudible on audio, whereas
+            // decoding forward from a wrong assumption is not.
+            position_base  = discard_frames;
+            discard_frames = 0;
+        }
+        // A refused seek leaves the read position unspecified, so the discard
+        // path is NOT usable afterwards -- but seek() only returns a failure when
+        // av_seek_frame refused, and can_seek() has already excluded the sources
+        // that cannot. Falling through with the full discard is the safe answer
+        // for the remaining case.
+    }
 
     while (!shared->quit.load(std::memory_order_relaxed)) {
         // Back-pressure. Without this the decoder races ahead of playback and
@@ -202,7 +234,8 @@ void PlaybackSession::Impl::decode_loop(std::string source, std::int64_t offset_
 
         decoded_frames += got;
         analysis.set_track_position(
-            static_cast<double>(decoded_frames) / static_cast<double>(info.sample_rate),
+            static_cast<double>(position_base + decoded_frames) /
+                static_cast<double>(info.sample_rate),
             info.duration_seconds);
 
         if (feed_audio) {
@@ -281,8 +314,9 @@ SessionError PlaybackSession::start(const std::string& source, std::int64_t offs
         probe.close();
     }
 
-    impl.what = what;
-    impl.rate = info.sample_rate;
+    impl.what            = what;
+    impl.rate            = info.sample_rate;
+    impl.start_offset_ms = offset_ms;
 
     if (!impl.config.no_audio) {
         SinkFormat want;
@@ -412,10 +446,69 @@ void PlaybackSession::stop()
     impl.audio_started = false;
     impl.audio_running = false;
     impl.bit_perfect   = false;
-    impl.rate          = 0;
-    impl.lead_budget   = 0.0;
+    impl.is_paused     = false;
+    impl.rate            = 0;
+    impl.lead_budget     = 0.0;
+    impl.start_offset_ms = 0;
     impl.what          = NowPlaying{};
 }
+
+void PlaybackSession::set_paused(bool paused)
+{
+    Impl& impl = *impl_;
+    if (!impl.started || impl.sink == nullptr || impl.is_paused == paused) {
+        return;
+    }
+
+    if (paused) {
+        // stop() rather than close(): the device stays open and its format
+        // stays negotiated, so resuming does not renegotiate and cannot
+        // silently land somewhere that is no longer bit-perfect.
+        impl.sink->stop();
+        impl.audio_running = false;
+    } else {
+        impl.audio_running = impl.sink->start() == SinkError::kOk;
+    }
+    impl.is_paused = paused;
+}
+
+SessionError PlaybackSession::seek(std::int64_t position_ms, std::string& out_detail)
+{
+    Impl& impl = *impl_;
+    out_detail.clear();
+
+    if (!impl.started) {
+        return SessionError::kOk;   // nothing to seek; not an error worth reporting
+    }
+    if (position_ms < 0) {
+        position_ms = 0;
+    }
+
+    // Copied BEFORE start(), which calls stop() and clears both of them.
+    const NowPlaying  what      = impl.what;
+    const bool        was_paused = impl.is_paused;
+    const std::string source     = what.source;
+
+    if (source.empty()) {
+        out_detail = "the session does not know what it is playing";
+        return SessionError::kCannotOpenSource;
+    }
+
+    const SessionError err = start(source, position_ms, what, out_detail);
+    if (err != SessionError::kOk) {
+        return err;
+    }
+
+    // A controller scrubbing a PAUSED track must find it still paused. Restoring
+    // this after start() rather than teaching start() about it keeps the one
+    // difference between a seek and a track change here, where it is visible.
+    if (was_paused) {
+        set_paused(true);
+    }
+    return SessionError::kOk;
+}
+
+bool PlaybackSession::paused() const { return impl_->is_paused; }
 
 bool PlaybackSession::active() const { return impl_->started; }
 
@@ -447,6 +540,15 @@ bool PlaybackSession::played_us(std::uint64_t& out) const
 void PlaybackSession::select_frame(std::uint64_t target_us, AudioFrame& out) const
 {
     impl_->shared->frames.select(target_us, out);
+}
+
+std::int64_t PlaybackSession::track_position_ms() const
+{
+    std::uint64_t played = 0;
+    if (!played_us(played)) {
+        return 0;
+    }
+    return impl_->start_offset_ms + static_cast<std::int64_t>(played / 1000ULL);
 }
 
 bool PlaybackSession::newest_frame(AudioFrame& out) const

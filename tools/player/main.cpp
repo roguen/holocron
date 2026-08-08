@@ -42,9 +42,13 @@
 // the lock-free pieces first.
 
 #include <holocron/analysis.hpp>
+#include <holocron/art_texture.hpp>
 #include <holocron/audio_frame.hpp>
 #include <holocron/companion_server.hpp>
 #include <holocron/crystal.hpp>
+#include <holocron/image_decode.hpp>
+#include <holocron/palette.hpp>
+#include <holocron/track_context.hpp>
 #include <holocron/gdm_responder.hpp>
 #include <holocron/plex_device.hpp>
 #include <holocron/plex_link.hpp>
@@ -59,6 +63,12 @@
 #include <holocron/wasapi_sink.hpp>
 #include <holocron/triple_buffer.hpp>
 #include <holocron/window.hpp>
+
+#ifdef _WIN32
+// For SetConsoleOutputCP only. Included after every project header so it cannot
+// impose its macros on them.
+#include <windows.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -379,6 +389,57 @@ bool build_crystal(const char* stem, std::unique_ptr<CrystalFacet>& live, bool c
 
 std::atomic<bool> g_interrupted{false};
 
+// Start track `index` of `queue`, and describe it on the timeline.
+//
+// ONE PATH FOR EVERY WAY A TRACK CAN START: the end of the previous one, a skip
+// forward or back, and a controller naming an item outright. They differ only in
+// how the index is chosen, and giving them separate bodies is how the timeline
+// ends up describing the track that was playing a moment ago.
+bool play_queue_track(PlaybackSession& session, const PlexQueue& queue,
+                      const PlayRequest& queue_request, std::size_t index,
+                      TimelineState& timeline, const char* verb)
+{
+    if (index >= queue.tracks.size()) {
+        return false;
+    }
+    const PlexTrack& track = queue.tracks[index];
+
+    NowPlaying what;
+    what.title       = track.title;
+    what.artist      = track.artist;
+    what.album       = track.album;
+    what.duration_ms = track.duration_ms;
+    what.source      = stream_url(queue_request, track.part_key);
+
+    std::string        detail;
+    const SessionError serr = session.start(what.source, 0, what, detail);
+    if (serr != SessionError::kOk) {
+        std::fprintf(stderr, "holocron: skipping \"%s\" -- %s\n", track.title.c_str(),
+                     to_string(serr));
+        return false;
+    }
+
+    timeline.time_ms            = 0;
+    timeline.duration_ms        = track.duration_ms;
+    timeline.key                = track.key;
+    timeline.rating_key         = track.rating_key;
+    timeline.guid               = track.guid;
+    timeline.container_key      = "/playQueues/" + queue.id;
+    timeline.play_queue_id      = queue.id;
+    timeline.play_queue_version = queue.version;
+    timeline.play_queue_item_id = track.play_queue_item_id;
+    timeline.machine_identifier = queue_request.machine_identifier;
+    timeline.address            = queue_request.address;
+    timeline.port               = queue_request.port;
+    timeline.protocol           = queue_request.protocol;
+    timeline.state              = TransportState::kPlaying;
+
+    std::printf("holocron: %s \"%s\" (%zu of %zu)%s\n", verb, track.title.c_str(), index + 1,
+                queue.tracks.size(), session.bit_perfect() ? " [BIT-PERFECT]" : "");
+    std::fflush(stdout);
+    return true;
+}
+
 // A command from the phone, waiting for the render thread to act on it.
 //
 // THE HANDOFF EXISTS BECAUSE OF WHICH THREAD IS ALLOWED TO TOUCH THE SESSION.
@@ -392,6 +453,32 @@ std::atomic<bool> g_interrupted{false};
 // So the handler only RECORDS what was asked for, and the render loop performs
 // it. Same rule the crystal reload already follows: the thread that owns a
 // thing is the thread that changes it.
+// One command, as the render loop receives it.
+//
+// A STRUCT RATHER THAN OUT-PARAMETERS, because this reached nine of them. The
+// eighth and ninth -- where in the queue to start, and which track's artwork to
+// fetch -- are what made the signature indefensible.
+struct TakenCommand {
+    bool         play      = false;
+    bool         stop      = false;
+    std::string  url;   // CARRIES A TOKEN. Never printed.
+    std::int64_t offset_ms = 0;
+    NowPlaying   what;
+    PlayRequest  request;
+
+    // Non-empty when a whole album was cast.
+    PlexQueue queue;
+
+    // Where in that queue to start, from the playMedia that preceded it. Empty
+    // when there was none. See CastCommand::last_play_key.
+    std::string start_key;
+
+    // The single track, when this was a playMedia rather than an album. Carried
+    // for its artwork, which is the one thing NowPlaying does not have and which
+    // needs the server's own thumb path.
+    PlexTrack track;
+};
+
 struct CastCommand {
     std::mutex mutex;
 
@@ -400,17 +487,135 @@ struct CastCommand {
     std::int64_t offset_ms = 0;
     NowPlaying   what;
 
-    bool stop = false;
+    // Kept whole so the timeline can name the same item and the same server the
+    // controller asked for. A timeline that names something else is treated as a
+    // different playback and the controller stops following it.
+    PlayRequest request;
 
-    void request_play(const std::string& stream, std::int64_t offset, const NowPlaying& track)
+    // A whole album, when the controller asked for one.
+    //
+    // Casting an album sends createPlayQueue and NO play command, so this is the
+    // ordinary path rather than the exotic one. Carrying every track means
+    // advancing to the next needs no further request.
+    bool      have_queue = false;
+    PlexQueue queue;
+
+    // The item named by the last playMedia, and the reason it outlives the
+    // command that carried it.
+    //
+    // CASTING FROM THE MIDDLE OF AN ALBUM SENDS TWO COMMANDS, NOT ONE: a
+    // playMedia naming the track that was tapped, and then a createPlayQueue for
+    // the whole album. The server builds that queue from track ONE regardless of
+    // which track was asked for, and -- observed 2026-08-08 against Plexamp --
+    // does NOT follow it with a skipTo.
+    //
+    // So the only record of what was actually tapped is the key from the earlier
+    // command, and a player that forgets it plays track one every time. From the
+    // phone that looks like the player having a favourite song, and because the
+    // controller is showing the track it asked for while the player plays a
+    // different one, the two never agree and no progress is ever drawn.
+    std::string last_play_key;
+
+    void request_queue(const PlayRequest& req, const PlexQueue& q)
     {
         const std::lock_guard<std::mutex> lock(mutex);
-        play      = true;
-        stop      = false;   // a newer play supersedes a stop that has not run yet
-        url       = stream;
-        offset_ms = offset;
-        what      = track;
+        play       = true;
+        stop       = false;
+        have_queue = true;
+        queue      = q;
+        request    = req;
+        offset_ms  = 0;
+        // last_play_key deliberately survives: it was set by the playMedia that
+        // came before this and is the only thing that says where to start.
     }
+
+    bool stop = false;
+
+    // Tri-state on purpose: 0 means nothing asked, 1 pause, 2 resume. A plain
+    // bool cannot say "no pause command arrived", and defaulting to either
+    // would silently pause or resume on every frame.
+    int pause = 0;
+
+    void request_pause(bool want_pause)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        pause = want_pause ? 1 : 2;
+    }
+
+    // A move within the queue. See CompanionServer::SkipHandler for `direction`.
+    bool        skip = false;
+    int         skip_direction = 0;
+    std::string skip_item;
+    std::string skip_key;
+
+    void request_skip(int direction, const std::string& item, const std::string& key)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        skip           = true;
+        skip_direction = direction;
+        skip_item      = item;
+        skip_key       = key;
+    }
+
+    // A scrub. Held as "the newest position asked for", not a queue of them.
+    //
+    // DRAGGING A SCRUBBER SENDS A STREAM OF THESE -- two arrived within a second
+    // of each other on the rack, and a slow drag sends many. Acting on each in
+    // turn would restart the decoder once per intermediate position, so only the
+    // most recent survives to be performed.
+    bool         seek       = false;
+    std::int64_t seek_to_ms = 0;
+
+    void request_seek(std::int64_t position_ms)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        seek       = true;
+        seek_to_ms = position_ms;
+    }
+
+    bool take_seek(std::int64_t& out_position)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!seek) {
+            return false;
+        }
+        out_position = seek_to_ms;
+        seek         = false;
+        return true;
+    }
+
+    bool take_skip(int& out_direction, std::string& out_item, std::string& out_key)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!skip) {
+            return false;
+        }
+        out_direction = skip_direction;
+        out_item      = skip_item;
+        out_key       = skip_key;
+        skip          = false;
+        return true;
+    }
+
+    void request_play(const std::string& stream, const PlayRequest& req, const NowPlaying& what_in,
+                      const PlexTrack& resolved)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        play       = true;
+        stop       = false;   // a newer play supersedes a stop that has not run yet
+        url        = stream;
+        offset_ms  = req.offset_ms;
+        what       = what_in;
+        request    = req;
+        single     = resolved;
+        have_queue = false;   // a single track supersedes any queue
+
+        // Remembered for the createPlayQueue that may follow. See last_play_key.
+        last_play_key = req.key;
+    }
+
+    // The resolved track behind the most recent playMedia, kept for its artwork.
+    PlexTrack single;
 
     void request_stop()
     {
@@ -420,22 +625,153 @@ struct CastCommand {
     }
 
     // Returns what to do and clears it, so one command is acted on once.
-    bool take(bool& out_play, bool& out_stop, std::string& out_url, std::int64_t& out_offset,
-              NowPlaying& out_what)
+    // 0 = nothing asked, 1 = pause, 2 = resume. Cleared as it is read.
+    int take_pause()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const int asked = pause;
+        pause           = 0;
+        return asked;
+    }
+
+    bool take(TakenCommand& out)
     {
         const std::lock_guard<std::mutex> lock(mutex);
         if (!play && !stop) {
             return false;
         }
-        out_play   = play;
-        out_stop   = stop;
-        out_url    = url;
-        out_offset = offset_ms;
-        out_what   = what;
+        out.play      = play;
+        out.stop      = stop;
+        out.url       = url;
+        out.offset_ms = offset_ms;
+        out.what      = what;
+        out.request   = request;
+        out.queue     = have_queue ? queue : PlexQueue{};
+        out.start_key = have_queue ? last_play_key : std::string{};
+        out.track     = have_queue ? PlexTrack{} : single;
+
         play       = false;
         stop       = false;
+        have_queue = false;
+
+        // CLEARED ONLY WHEN A QUEUE ACTUALLY CONSUMED IT. The playMedia is taken
+        // a frame or more BEFORE the createPlayQueue arrives -- they are separate
+        // commands seconds apart -- so clearing it on every take would throw the
+        // key away before the queue that needs it ever turns up. Left set, it
+        // would instead send the NEXT album to whatever track was tapped in the
+        // previous one.
+        if (!out.queue.empty()) {
+            last_play_key.clear();
+        }
         return true;
     }
+};
+
+// Fetching and decoding an album sleeve without stalling the picture.
+//
+// WHY THIS IS ON ANOTHER THREAD AT ALL. Fetching art is a TLS handshake and an
+// HTTP round trip to the media server, and decoding it is a JPEG. Done in the
+// render loop that is a visible hitch at the start of every track -- on a
+// 144 Hz display the budget for a whole frame is 7 ms, and the fetch alone is
+// tens of milliseconds on a good day and seconds on a server that is busy.
+//
+// Same division of labour as CastCommand, and for the same reason: the worker
+// produces a RESULT, and the thread that owns the thing performs the change. The
+// GL upload stays on the render thread because every GL call here does.
+//
+// GENERATIONS, BECAUSE A LATE ANSWER IS WORSE THAN NO ANSWER. Skipping through
+// an album starts a fetch per track and they do not finish in order. Without a
+// generation the sleeve of a track skipped past a second ago wins the race and
+// the visuals are coloured by the wrong record -- which looks like the palette
+// being broken rather than like a race.
+class ArtworkLoader {
+public:
+    ~ArtworkLoader() { join(); }
+
+    // Start fetching the art for `track`. Supersedes any fetch in flight.
+    void request(const PlayRequest& server, const PlexTrack& track)
+    {
+        join();
+
+        std::uint64_t generation = 0;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            generation_ += 1;
+            generation = generation_;
+            ready_     = false;
+            image_     = ImageRgba8{};
+            palette_   = Palette{};
+        }
+
+        // Copied into the thread, not captured by reference: `track` belongs to a
+        // queue the render loop may replace while this runs.
+        worker_ = std::thread([this, server, track, generation] {
+            std::vector<std::uint8_t> bytes;
+            std::string               detail;
+
+            if (fetch_artwork(server, track, kArtworkSize, bytes, detail) != HttpError::kOk) {
+                return;   // no art is not an error worth interrupting anything for
+            }
+
+            ImageRgba8 image;
+            if (decode_image(bytes, image, detail) != ImageError::kOk) {
+                return;
+            }
+            const Palette palette = extract_palette(image);
+
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (generation != generation_) {
+                return;   // a newer track has been asked for; this answer is stale
+            }
+            image_   = std::move(image);
+            palette_ = palette;
+            ready_   = true;
+        });
+    }
+
+    // Hand over a finished sleeve, once. False when there is nothing new.
+    bool take(ImageRgba8& out_image, Palette& out_palette)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (!ready_) {
+            return false;
+        }
+        out_image   = std::move(image_);
+        out_palette = palette_;
+        image_      = ImageRgba8{};
+        ready_      = false;
+        return true;
+    }
+
+    // Abandon whatever is in flight. The thread is still joined -- there is no
+    // way to cancel a blocking socket read here -- but its result is discarded.
+    void abandon()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        generation_ += 1;
+        ready_ = false;
+        image_ = ImageRgba8{};
+    }
+
+private:
+    // What to ask the transcoder for. Big enough that the palette has real pixels
+    // to work with and small enough that the fetch is not itself a download; the
+    // texture is mipmapped, so a crystal drawing it small loses nothing.
+    static constexpr int kArtworkSize = 512;
+
+    void join()
+    {
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+    }
+
+    std::mutex    mutex_;
+    std::thread   worker_;
+    std::uint64_t generation_ = 0;
+    bool          ready_      = false;
+    ImageRgba8    image_;
+    Palette       palette_;
 };
 
 extern "C" void on_interrupt(int)
@@ -711,6 +1047,18 @@ int wait_for_discovery(const GdmResponder& gdm, const CompanionServer& companion
 
 int main(int argc, char** argv)
 {
+#ifdef _WIN32
+    // THE CONSOLE IS NOT UTF-8 BY DEFAULT, AND EVERYTHING ELSE HERE IS.
+    //
+    // Sources are compiled with /utf-8 and track metadata arrives as UTF-8 from
+    // the media server, but a Windows console starts on the legacy OEM code
+    // page. The album Ænima therefore printed as `├ånima` -- the bytes were
+    // correct all along and only the display was wrong, which is the most
+    // misleading kind of encoding bug because it looks like a decoding fault
+    // upstream.
+    ::SetConsoleOutputCP(CP_UTF8);
+#endif
+
     Options opt = parse(argc, argv);
 
     // Before anything else, including --help and --list-bindings. An argument
@@ -831,9 +1179,19 @@ int main(int argc, char** argv)
             what.artist      = track.artist;
             what.album       = track.album;
             what.duration_ms = track.duration_ms;
-            cast.request_play(url, request.offset_ms, what);
+            cast.request_play(url, request, what, track);
         });
     companion.set_stop_handler([&cast] { cast.request_stop(); });
+    companion.set_pause_handler([&cast](bool paused) { cast.request_pause(paused); });
+    companion.set_queue_handler(
+        [&cast](const PlayRequest& request, const PlexQueue& q) { cast.request_queue(request, q); });
+    companion.set_skip_handler(
+        [&cast](int direction, const std::string& item, const std::string& key) {
+            cast.request_skip(direction, item, key);
+        });
+    companion.set_seek_handler([&cast](std::int64_t position_ms) {
+        cast.request_seek(position_ms);
+    });
 
     // Linking comes before discovery: it needs the machine identifier and
     // nothing else, and a run that is signing in has no business also
@@ -921,12 +1279,19 @@ int main(int argc, char** argv)
     std::printf("holocron: GL %d.%d core on %s\n", window.gl_major(), window.gl_minor(),
                 window.gl_renderer());
     std::printf("holocron: %s\n", window.gl_version());
-    std::printf("holocron: audio %s, %u frames per period%s\n",
-                session.active() ? session.backend_name() : "(none)",
-                session.period_frames(),
-                session.audio_running()
-                    ? (session.bit_perfect() ? ", BIT-PERFECT" : ", not bit-perfect")
-                    : "");
+    // The device does not exist until something is playing, because its format
+    // follows the SOURCE. Saying "audio (none)" here reads as "no audio device
+    // could be opened", which is a different and much worse thing -- and it was
+    // read that way on the first real cast, where BIT-PERFECT was reported
+    // correctly on the playing line and looked absent because of this one.
+    if (session.active()) {
+        std::printf("holocron: audio %s, %u frames per period%s\n", session.backend_name(),
+                    session.period_frames(),
+                    session.bit_perfect() ? ", BIT-PERFECT" : ", not bit-perfect");
+    } else {
+        std::printf("holocron: no track yet -- the audio device opens when one is cast,\n"
+                    "  because its format follows the track\n");
+    }
 
     DebugFacet facet;
     // Held by pointer so a reload or a switch can swap a freshly compiled facet
@@ -955,6 +1320,26 @@ int main(int argc, char** argv)
             window.close();
             session.stop();
             return 1;
+        }
+
+        // Which one to open on. The vault is ordered by name so the two
+        // platforms agree, not because the first is the one worth looking at.
+        if (!cfg.crystal.empty()) {
+            bool found = false;
+            for (std::size_t i = 0; i < vault.size(); ++i) {
+                if (vault[i].name == cfg.crystal || vault[i].stem == cfg.crystal) {
+                    current = i;
+                    found   = true;
+                    break;
+                }
+            }
+            if (!found) {
+                // Named and absent is worth saying. Falling back silently would
+                // leave someone editing a crystal the player is not drawing.
+                std::fprintf(stderr,
+                             "holocron: no crystal named `%s` in %s -- starting on `%s`\n",
+                             cfg.crystal.c_str(), opt.vault, vault[0].name.c_str());
+            }
         }
     } else if (opt.crystal != nullptr) {
         vault.push_back(VaultEntry{opt.crystal, opt.crystal});
@@ -1019,23 +1404,188 @@ int main(int argc, char** argv)
     // Updated every frame while a device clock exists; see where it is assigned.
     double headroom_ms = 0.0;
 
+    // What the controller is told. Owned by this thread, published to the
+    // Companion server once per frame.
+    TimelineState timeline;
+
+    // The album being played through, if one was cast.
+    //
+    // Held here rather than in the session because it outlives any single track
+    // -- advancing to the next one is what makes casting an album work at all,
+    // and the session deliberately knows about exactly one source.
+    PlexQueue   queue;
+    PlayRequest queue_request;
+    std::size_t at_in_queue = 0;
+
+    // A CAST TARGET AND A ONE-FILE PLAYER ARE DIFFERENT PROGRAMS, and conflating
+    // them is what made an album stop after one track.
+    //
+    // `holocron track.flac` should play that file and exit; that is what the
+    // render loop's exit condition is for. `holocron` with no argument is the
+    // thing the owner casts to, and for that one the end of a track is an
+    // ORDINARY EVENT -- the next track starts, or the player goes back to
+    // waiting. Exiting there takes the device out of Plexamp's list and looks,
+    // from the phone, exactly like a crash.
+    const bool cast_mode = opt.path == nullptr;
+
+    // Edge detector for the end of a track, so the log says once that it
+    // happened rather than every frame afterwards.
+    bool was_ended = false;
+
+    // -- what is playing, for the crystals ------------------------------------
+    //
+    // Owned by this thread, exactly as track_context.hpp specifies. The artwork
+    // loader hands over decoded pixels from a worker; the upload and every write
+    // into the context happen here.
+    TrackContext  track_context{};
+    ArtworkLoader artwork;
+
+    // The neutral ramp until a sleeve arrives, and after one fails. A crystal
+    // must never see a palette of zeroes -- see neutral_palette().
+    const auto apply_palette = [&track_context](const Palette& p) {
+        track_context.palette         = p.swatches;
+        track_context.palette_primary = p.primary;
+        track_context.palette_accent  = p.accent;
+    };
+    apply_palette(neutral_palette());
+
+    // Starting a track: name it, drop the previous sleeve, and go and get the
+    // new one.
+    const auto begin_track = [&](const PlayRequest& server, const PlexTrack& track,
+                                 const NowPlaying& what) {
+        track_context.title  = !what.title.empty() ? what.title : track.title;
+        track_context.artist = !what.artist.empty() ? what.artist : track.artist;
+        track_context.album  = !what.album.empty() ? what.album : track.album;
+        // Genre and year are not on a Plex Track element and would need a second
+        // request per track to obtain. Left empty, which TrackContext documents
+        // as legitimate, rather than fetched speculatively.
+        track_context.genre.clear();
+        track_context.year.clear();
+
+        track_context.track_changed_this_frame = true;
+        ++track_context.track_change_count;
+
+        // THE OLD SLEEVE GOES NOW, NOT WHEN THE NEW ONE ARRIVES. A fetch takes
+        // long enough to see, and showing the previous record's cover over the
+        // new one for a second reads as the player having lost track of itself.
+        artwork.abandon();
+        release_art(track_context.album_art_texture);
+        track_context.has_art = false;
+        apply_palette(neutral_palette());
+
+        if (!track.thumb.empty() || !track.album_thumb.empty()) {
+            artwork.request(server, track);
+        }
+    };
+
+    // Nothing is playing any more.
+    const auto forget_track = [&] {
+        artwork.abandon();
+        release_art(track_context.album_art_texture);
+        track_context.has_art = false;
+        track_context.title.clear();
+        track_context.artist.clear();
+        track_context.album.clear();
+        apply_palette(neutral_palette());
+    };
+
+    // Progress reporting to the media server, and the instrumentation for it.
+    auto           last_server_report      = std::chrono::steady_clock::now();
+    auto           last_poll_report        = std::chrono::steady_clock::now();
+    TransportState last_reported_state     = TransportState::kStopped;
+    std::uint64_t  last_poll_count         = 0;
+    bool           reported_server_failure = false;
+
+    // This player's own identifier, which the server wants on a progress report
+    // for the same undocumented reason it wants one on a play queue.
+    const std::string device_identity = device_from(cfg).machine_identifier;
+
+    // A fresh identifier for THIS run.
+    //
+    // Without one Plex uses the token as the session id and echoes it in
+    // /status/sessions, where any user of that server can read it. Verified on
+    // the rack before this existed.
+    const std::string session_identity = make_machine_identifier();
+
     while (window.pump()) {
         // -- what the phone asked for -----------------------------------------
         //
         // Performed HERE rather than in the Companion handler that received it,
         // because this is the thread that reads the session. See CastCommand.
         {
-            bool         want_play = false;
-            bool         want_stop = false;
-            std::string  url;
-            std::int64_t offset = 0;
-            NowPlaying   what;
+            TakenCommand taken;
 
-            if (cast.take(want_play, want_stop, url, offset, what)) {
+            if (cast.take(taken)) {
+                bool         want_play = taken.play;
+                const bool   want_stop = taken.stop;
+                std::string  url       = taken.url;
+                std::int64_t offset    = taken.offset_ms;
+                NowPlaying   what      = taken.what;
+                PlayRequest  request   = taken.request;
+                PlexQueue&   new_queue = taken.queue;
+                std::string& start_key = taken.start_key;
+
+                // Which track's sleeve to fetch once the session is up. Set
+                // below in both branches, because a single cast track and a
+                // track from an album need the same thing done for them.
+                PlexTrack art_of = taken.track;
+
+                if (!new_queue.empty()) {
+                    // A whole album. Take it over, start where the server says,
+                    // and let the end-of-track path walk the rest.
+                    queue         = new_queue;
+                    queue_request = request;
+                    at_in_queue   = new_queue.selected;
+
+                    // EXCEPT THAT WHAT THE SERVER SAYS IS ALWAYS TRACK ONE.
+                    //
+                    // Casting from the middle of an album sends a playMedia
+                    // naming the track that was tapped and then a
+                    // createPlayQueue for the album; the queue comes back
+                    // selected at 0 either way, and no skipTo follows. Honouring
+                    // `selected` alone plays track one whatever was tapped --
+                    // which is what "it would not render progress unless I
+                    // started on the first song" was: the controller was
+                    // following a track the player was not playing.
+                    if (!start_key.empty()) {
+                        for (std::size_t i = 0; i < queue.tracks.size(); ++i) {
+                            if (queue.tracks[i].key == start_key) {
+                                at_in_queue = i;
+                                break;
+                            }
+                        }
+                    }
+
+                    const PlexTrack& track = queue.tracks[at_in_queue];
+                    url    = stream_url(queue_request, track.part_key);
+                    offset = 0;
+
+                    what             = NowPlaying{};
+                    what.source      = url;
+                    what.title       = track.title;
+                    what.artist      = track.artist;
+                    what.album       = track.album;
+                    what.duration_ms = track.duration_ms;
+
+                    // Casting an album means play it, and no play command
+                    // follows. Honouring a paused flag that was never sent
+                    // would leave the phone waiting on silence.
+                    request.paused        = false;
+                    request.key           = track.key;
+                    request.container_key = "/playQueues/" + queue.id;
+
+                    art_of = track;
+                }
+
                 if (want_stop) {
                     session.stop();
+                    // Cleared, not merely set to stopped: the next poll must not
+                    // still name a track that is no longer playing.
+                    timeline = TimelineState{};
+                    forget_track();
                     std::printf("holocron: stopped\n");
                     std::fflush(stdout);
+                    want_play = false;
                 } else if (want_play) {
                     std::string        detail;
                     const SessionError serr = session.start(url, offset, what, detail);
@@ -1043,18 +1593,280 @@ int main(int argc, char** argv)
                         // NOT fatal. A track that will not open is not a reason
                         // to lose the window -- the next cast may well work, and
                         // exiting would take the device out of the list.
+                        timeline = TimelineState{};
                         std::fprintf(stderr, "holocron: %s -- \"%s\"\n%s\n", to_string(serr),
                                      what.title.c_str(), detail.c_str());
                     } else {
+                        // Carried through from the REQUEST rather than
+                        // remembered separately: a controller matches the
+                        // timeline against what it asked for, and one naming a
+                        // different item or server is treated as a different
+                        // playback and ignored.
+                        timeline.key                = request.key;
+                        timeline.container_key      = request.container_key;
+                        timeline.machine_identifier = request.machine_identifier;
+                        timeline.address            = request.address;
+                        timeline.port               = request.port;
+                        timeline.protocol           = request.protocol;
+                        timeline.duration_ms        = what.duration_ms;
+                        timeline.time_ms            = offset;
+
+                        // The identifying set. Omitting the queue ones left
+                        // Plexamp polling once a second and never satisfied --
+                        // it had created a queue and was never told which queue
+                        // or which item the player was on.
+                        if (!queue.empty() && at_in_queue < queue.tracks.size()) {
+                            const PlexTrack& t          = queue.tracks[at_in_queue];
+                            timeline.rating_key         = t.rating_key;
+                            timeline.guid               = t.guid;
+                            timeline.play_queue_id      = queue.id;
+                            timeline.play_queue_version = queue.version;
+                            timeline.play_queue_item_id = t.play_queue_item_id;
+                        }
+
+                        // HONOUR `paused=1`, WHICH PLEXAMP SENDS ON EVERY CAST.
+                        //
+                        // It means "load this and hold", and playing anyway
+                        // makes the controller's idea of the player diverge
+                        // from the player. Observed consequence: Plexamp stops
+                        // showing a progress bar and takes control back within
+                        // seconds.
+                        session.set_paused(request.paused);
+                        timeline.state = request.paused ? TransportState::kPaused
+                                                        : TransportState::kPlaying;
+
+                        begin_track(request, art_of, what);
+
                         // The title, never the URL: the URL carries a token.
-                        std::printf("holocron: playing \"%s\" -- %s%s\n", what.title.c_str(),
-                                    what.artist.c_str(),
+                        std::printf("holocron: %s \"%s\" -- %s%s\n",
+                                    request.paused ? "loaded (paused)" : "playing",
+                                    what.title.c_str(), what.artist.c_str(),
                                     session.bit_perfect() ? " [BIT-PERFECT]" : "");
                         std::fflush(stdout);
                     }
                 }
             }
         }
+
+        // A skip that arrived since the last frame.
+        {
+            int         direction = 0;
+            std::string item;
+            std::string key;
+
+            if (cast.take_skip(direction, item, key) && !queue.empty()) {
+                std::size_t target = at_in_queue;
+                bool        found  = true;
+
+                if (direction == 0) {
+                    // NAMED OUTRIGHT. Matched on the queue item id first and the
+                    // metadata key second: the same track can appear twice in a
+                    // queue, and only the item id tells those two apart.
+                    found = false;
+                    for (std::size_t i = 0; i < queue.tracks.size(); ++i) {
+                        const bool by_item =
+                            !item.empty() && queue.tracks[i].play_queue_item_id == item;
+                        const bool by_key = item.empty() && !key.empty() &&
+                                            queue.tracks[i].key == key;
+                        if (by_item || by_key) {
+                            target = i;
+                            found  = true;
+                            break;
+                        }
+                    }
+                } else if (direction > 0) {
+                    found = at_in_queue + 1 < queue.tracks.size();
+                    target = at_in_queue + 1;
+                } else {
+                    found  = at_in_queue > 0;
+                    target = found ? at_in_queue - 1 : 0;
+                }
+
+                if (!found) {
+                    std::printf("holocron: nowhere to skip to\n");
+                    std::fflush(stdout);
+                } else if (play_queue_track(session, queue, queue_request, target, timeline,
+                                            "skipped to")) {
+                    at_in_queue = target;
+                    begin_track(queue_request, queue.tracks[target], session.now_playing());
+                }
+            }
+        }
+
+        // A scrub that arrived since the last frame.
+        //
+        // BEFORE the pause handling below, deliberately. A controller that pauses
+        // and scrubs in the same frame means "scrub, and stay paused" -- and
+        // PlaybackSession::seek preserves the paused state, so a pause applied
+        // afterwards is still correct while one applied before would be undone.
+        if (std::int64_t position = 0; cast.take_seek(position)) {
+            if (session.active()) {
+                // Clamped to the track, because a controller can ask for a
+                // position past the end -- dragging to the very end of the bar
+                // sends the full duration, and a decoder asked to seek past the
+                // last sample simply finds nothing and reports the track over.
+                if (timeline.duration_ms > 0 && position >= timeline.duration_ms) {
+                    position = timeline.duration_ms > 1000 ? timeline.duration_ms - 1000 : 0;
+                }
+
+                std::string        detail;
+                const SessionError serr = session.seek(position, detail);
+                if (serr != SessionError::kOk) {
+                    // A seek that fails leaves nothing playing, so the timeline
+                    // has to stop claiming otherwise.
+                    timeline = TimelineState{};
+                    std::fprintf(stderr, "holocron: could not seek -- %s\n%s\n", to_string(serr),
+                                 detail.c_str());
+                } else {
+                    // The scrubber's own position, reported immediately rather
+                    // than waiting for the device clock: the clock restarts at
+                    // zero and takes a moment to move, and in that window a
+                    // controller would see the track jump back to the start.
+                    timeline.time_ms = position;
+
+                    // The end-of-track edge detector has to forget what it saw.
+                    // Seeking backwards out of a finished track is otherwise an
+                    // end that never re-arms.
+                    was_ended = false;
+
+                    std::printf("holocron: seek to %lld ms in \"%s\"\n",
+                                static_cast<long long>(position),
+                                session.now_playing().title.c_str());
+                    std::fflush(stdout);
+                }
+            }
+        }
+
+        // A pause or resume that arrived since the last frame. Applied here for
+        // the same reason a play command is: this is the thread that owns the
+        // session.
+        if (const int asked = cast.take_pause(); asked != 0) {
+            const bool want_pause = asked == 1;
+            if (session.active()) {
+                session.set_paused(want_pause);
+                if (timeline.state != TransportState::kStopped) {
+                    timeline.state =
+                        want_pause ? TransportState::kPaused : TransportState::kPlaying;
+                }
+            }
+        }
+
+        // -- tell the controller where we are ---------------------------------
+        //
+        // Every frame. The position moves continuously and there is no sensible
+        // event to hang it on, so this is a cheap mutex-guarded copy rather than
+        // something clever. A long poll is only woken when the state changes
+        // MATERIALLY -- see TimelineState::differs_materially_from, which
+        // excludes the position for exactly this reason.
+        //
+        // THE END OF A TRACK IS DETECTED WITHOUT CONSULTING THE TRANSPORT STATE,
+        // and that is the fix for an album that played its first track and quit.
+        //
+        // The advance used to sit inside `if (timeline.state != kStopped)`. That
+        // gate is invisible in a log, so when the advance did not happen there
+        // was no way to tell whether the end of the track went unnoticed or the
+        // gate was shut -- and the run that mattered showed neither the advance
+        // nor any reason for its absence. What ends a track is the decoder
+        // running out and the ring draining; what makes it right to advance is
+        // having a queue. The transport state is a REPORT, not a precondition,
+        // so it is now printed rather than obeyed.
+        const bool track_ended =
+            session.active() && session.finished() && session.pending_frames() == 0;
+
+        // On the EDGE, so it says exactly once per track that the end was seen,
+        // and with the state in it so a gate can never again be invisible.
+        if (cast_mode && track_ended && !was_ended) {
+            std::printf("holocron: end of track (%zu of %zu in the queue), transport %s\n",
+                        queue.empty() ? 0 : at_in_queue + 1, queue.tracks.size(),
+                        to_string(timeline.state));
+            std::fflush(stdout);
+        }
+        was_ended = track_ended;
+
+        if (cast_mode && track_ended) {
+            if (!queue.empty() && at_in_queue + 1 < queue.tracks.size()) {
+                if (play_queue_track(session, queue, queue_request, at_in_queue + 1, timeline,
+                                     "next --")) {
+                    ++at_in_queue;
+                    begin_track(queue_request, queue.tracks[at_in_queue], session.now_playing());
+                } else {
+                    // One unplayable track must not end the album.
+                    ++at_in_queue;
+                    session.stop();
+                    forget_track();
+                }
+            } else {
+                // Nothing left. SAYING SO IS THE POINT: a controller learns
+                // playback is over by seeing the player go from playing to
+                // stopped, and until the timeline reported anything but
+                // `stopped` that transition never happened at all.
+                session.stop();
+                timeline = TimelineState{};
+                queue    = PlexQueue{};
+                forget_track();
+                std::printf("holocron: queue finished\n");
+                std::fflush(stdout);
+            }
+        } else if (timeline.state != TransportState::kStopped) {
+            const std::int64_t at = session.track_position_ms();
+            if (at > 0) {
+                timeline.time_ms = at;
+            }
+        }
+        companion.set_timeline(timeline);
+
+        // -- tell the SERVER too ----------------------------------------------
+        //
+        // Separate from the timeline a controller polls, and not a substitute
+        // for it. This is what makes a session exist in Plex at all -- the
+        // now-playing everywhere else, and the state a controller reads when it
+        // is not asking the player directly.
+        //
+        // Observed 2026-08-08: a cast that played audio correctly, with the poll
+        // endpoint answering properly, still left Plexamp spinning. Nothing had
+        // told the server anything.
+        //
+        // Every two seconds while playing, and immediately on a state change.
+        // Best effort throughout: a failed report must never interrupt playback,
+        // so it is logged once and not retried.
+        if (!queue.empty() && at_in_queue < queue.tracks.size()) {
+            const auto now = std::chrono::steady_clock::now();
+            const bool state_changed = timeline.state != last_reported_state;
+            if (state_changed || now - last_server_report > std::chrono::seconds(2)) {
+                last_server_report  = now;
+                last_reported_state = timeline.state;
+
+                std::string     detail;
+                const HttpError rerr = report_timeline_to_server(
+                    queue_request, queue.tracks[at_in_queue], device_identity, session_identity,
+                    queue.id, timeline.state, timeline.time_ms, detail);
+                if (rerr != HttpError::kOk && !reported_server_failure) {
+                    // ONCE. A report that fails every two seconds would bury the
+                    // log in the same line forever.
+                    reported_server_failure = true;
+                    std::fprintf(stderr,
+                                 "holocron: the server is not being told about playback -- %s\n"
+                                 "  %s\n",
+                                 to_string(rerr), detail.c_str());
+                }
+            }
+        }
+
+        // How much the phone is asking. Printed only when it changes, and only
+        // every few seconds: individually these are the overwhelming majority of
+        // traffic, but their ABSENCE is diagnostic and was invisible once they
+        // stopped being logged at all.
+        if (std::chrono::steady_clock::now() - last_poll_report > std::chrono::seconds(10)) {
+            last_poll_report            = std::chrono::steady_clock::now();
+            const std::uint64_t polls   = companion.timeline_polls();
+            if (polls != last_poll_count) {
+                std::printf("holocron: %llu timeline poll(s) so far\n",
+                            static_cast<unsigned long long>(polls));
+                std::fflush(stdout);
+                last_poll_count = polls;
+            }
+        }
+
 
         // -- calibration ------------------------------------------------------
         //
@@ -1139,6 +1951,30 @@ int main(int argc, char** argv)
         const bool playing =
             session.audio_running() && !session.finished();
 
+        // -- a sleeve that finished decoding ----------------------------------
+        //
+        // The upload is here because it is a GL call and every GL call in this
+        // program is on this thread. The fetch and the decode already happened
+        // elsewhere; what is left costs one texture creation per track.
+        {
+            ImageRgba8 art;
+            Palette    art_palette;
+            if (artwork.take(art, art_palette)) {
+                release_art(track_context.album_art_texture);
+                track_context.album_art_texture = upload_art(art);
+                track_context.has_art           = track_context.album_art_texture != 0;
+                if (track_context.has_art) {
+                    apply_palette(art_palette);
+                } else {
+                    // Decoded but would not upload. Keep the neutral ramp rather
+                    // than colours whose sleeve cannot be drawn beside them.
+                    apply_palette(neutral_palette());
+                }
+            }
+        }
+
+        track_context.playing = playing;
+
         if (drawing_crystal) {
             // Switching, then reloading, both here rather than on their own
             // thread: building a program needs the GL context, which belongs to
@@ -1170,17 +2006,26 @@ int main(int argc, char** argv)
                 build_crystal(vault[current].stem.c_str(), crystal_facet, true, "reloaded",
                               crystal);
             }
-            crystal_facet->draw(frame, window.width(), window.height());
+            crystal_facet->draw(frame, track_context, window.width(), window.height());
         } else {
             facet.draw(frame, window.width(), window.height(), playing);
         }
         window.swap();
 
+        // Consumed by exactly one drawn frame, which is what TrackContext
+        // promises: a facet keeping its own state across a reload can trust
+        // seeing this once and does not have to compare counters.
+        track_context.track_changed_this_frame = false;
+
         ++rendered;
         if (opt.frames > 0 && rendered >= opt.frames) {
             break;
         }
-        if (opt.frames == 0 && session.active() && session.finished() &&
+        // ONLY FOR A FILE NAMED ON THE COMMAND LINE. See cast_mode: a cast
+        // target that exits when a track ends disappears from the phone's device
+        // list mid-album, which is indistinguishable from a crash and was
+        // reported as "the executable just exited out".
+        if (!cast_mode && opt.frames == 0 && session.active() && session.finished() &&
             session.pending_frames() == 0) {
             break;
         }

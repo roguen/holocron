@@ -30,6 +30,8 @@ add_executable(holocron_tests
     test_companion_server.cpp
     test_plex_link.cpp
     test_plex_playback.cpp
+    test_palette.cpp
+    test_image_decode.cpp
 )
 
 # The shipped vault's location, baked in rather than searched for relative to the
@@ -56,6 +58,7 @@ target_link_libraries(holocron_tests
         holocron::crystal
         holocron::config
         holocron::plex
+        holocron::visual
         holocron::warnings
         Catch2::Catch2WithMain
         # The Companion tests drive a real server over loopback, so they need an

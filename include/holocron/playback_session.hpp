@@ -126,6 +126,42 @@ public:
     // Stop and release the device. Idempotent, and called by the destructor.
     void stop();
 
+    // Hold or resume the device without tearing the session down.
+    //
+    // The decode thread keeps running and the ring fills to its back-pressure
+    // limit, so resuming is immediate rather than needing another prefill.
+    //
+    // A controller that asks for a track LOADED BUT PAUSED -- which Plexamp does
+    // on every cast, with `paused=1` -- must get exactly that. Playing anyway
+    // makes the controller's idea of the player diverge from the player, and it
+    // responds by taking control back.
+    void set_paused(bool paused);
+    bool paused() const;
+
+    // Jump to `position_ms` within whatever is playing.
+    //
+    // IMPLEMENTED AS A RESTART AT AN OFFSET, deliberately, rather than as a
+    // message to the running decode thread.
+    //
+    // Seeking has to invalidate four things at once: the decoder's read
+    // position, everything queued in the PcmRing, the analysis history the tap
+    // selects from, and the base the device clock is measured against. start()
+    // already does all four correctly because it builds a fresh Shared, and it
+    // is the path every cast and every track change exercises. A separate
+    // in-place seek would be a second way to do the same thing, sharing none of
+    // that testing, for a saving of one device reopen.
+    //
+    // The cost is a short gap while the device renegotiates -- the same gap that
+    // already occurs between tracks. It is audible and it is the right trade
+    // until measured otherwise.
+    //
+    // Preserves the paused state: seeking while paused must not start playing,
+    // or a controller scrubbing a paused track finds it running.
+    //
+    // Returns kCannotOpenSource if the source will not reopen, in which case
+    // nothing is playing. Does nothing when no session is active.
+    SessionError seek(std::int64_t position_ms, std::string& out_detail);
+
     // Something has been started and has not been stopped. Says nothing about
     // whether it has reached the end -- see finished().
     bool active() const;
@@ -153,6 +189,17 @@ public:
 
     // The frame whose audio is coming out of the speakers at `target_us`.
     void select_frame(std::uint64_t target_us, AudioFrame& out) const;
+
+    // How far into the TRACK playback has reached, in milliseconds.
+    //
+    // INCLUDES the offset the session was started at, which is the whole
+    // subtlety: the device clock counts from where decoding began, so a track
+    // resumed 90 seconds in would otherwise report 0 and make a controller's
+    // scrubber jump back to the start the moment it resumed.
+    //
+    // Zero when there is no device clock; a controller shows a stalled scrubber
+    // rather than a wrong one.
+    std::int64_t track_position_ms() const;
 
     // The newest frame produced, for when there is no clock to place against.
     bool newest_frame(AudioFrame& out) const;

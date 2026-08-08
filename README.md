@@ -119,18 +119,32 @@ gain response — and may not change what it *means*.
 
 ## Current status
 
-**You can cast to it from Plexamp.** Confirmed on the phone: Holocron appears in
-the device list, a play command resolves against the media server, and a
-playback session starts from the resulting URL.
+**It works.** Pick an album in Plexamp, cast it to Holocron, and it plays —
+bit-perfect, with the visuals coloured by the album's own cover.
 
-M1's spine and M2's plumbing are complete underneath it. Verified on the target
-hardware: an RX 6800 into an Onkyo TX-RZ720 over HDMI, WASAPI **exclusive mode,
-bit-perfect**, 160 frames per period, no dropouts across a full track.
+Confirmed on the target hardware, an RX 6800 into an Onkyo TX-RZ720 over HDMI
+into a BenQ TK800, WASAPI **exclusive mode, bit-perfect**, 160 frames per period,
+no dropouts across a full track:
 
-Still owed before M5 is done: **timeline reporting**, so a controller learns
-what is playing and how far in — until that lands, Plexamp is told `stopped`
-even while audio is coming out, so its scrubber never moves and it never learns
-a track ended.
+- Holocron appears in **Plexamp's cast list** and plays what is sent to it
+- The **scrubber moves**, and dragging it seeks
+- **Albums advance on their own**, track to track, to the end of the queue
+- **Pause, resume, skip forward and back, and jump to a chosen track** all work
+  from the phone
+- Casting **from the middle of an album** starts on the track you tapped
+- The visuals take their colours from the **album art**
+
+That is milestone **M5**, and it is the milestone the project exists for: the
+owner is in Plexamp and casts to the theater. See the use case above.
+
+**What M5 still owes, none of it functional:** an on-disk artwork cache, so the
+same sleeve is not re-fetched for every track ([#118](https://github.com/roguen/holocron/issues/118));
+shuffle is not forwarded to the server, so shuffling in Plexamp still plays an
+album in order ([#120](https://github.com/roguen/holocron/issues/120)); and a
+queue is never re-read, so a track added with "play next" is not picked up
+([#121](https://github.com/roguen/holocron/issues/121)).
+
+M1's spine and M2's plumbing are complete underneath it.
 
 ```bash
 scripts\build.cmd                                  # build and test, from a clean shell
@@ -154,12 +168,13 @@ What exists:
 | **Tap placement** | The frame on screen is the one the speakers are producing, selected **by position** against the device clock — a measured 51 ms of correction over newest-wins. |
 | **Render** | GL 4.5 core, a debug facet drawing every field, and `CrystalFacet` drawing authored crystals. |
 | **Crystals** | `.frag` + `.toml`, uniforms bound to contract fields **by name** and validated at load. Hot reload, and a vault the arrow keys move through. |
-| **Plex** | GDM discovery, `--link` sign-in through the plex.tv PIN flow, automatic device registration, and a `playMedia` command resolved against the media server and played. |
-| **Playback** | `PlaybackSession` — decoder, analysis, ring, device and decode thread behind one object that can be started and **replaced**, which is what casting requires. |
-| **Tests** | **233 cases, green on Windows and Linux.** |
+| **Plex** | GDM discovery, `--link` sign-in through the plex.tv PIN flow, automatic device registration and connection publishing, play queues built on the server, timeline reporting to both the controller and the media server, and every transport command a phone sends. |
+| **Playback** | `PlaybackSession` — decoder, analysis, ring, device and decode thread behind one object that can be started, **replaced** and **seeked**, which is what casting requires. |
+| **Track context** | `TrackContext` — what is playing, the album art as a texture, and a **palette** extracted from it: five swatches, a primary and a contrast accent, supplied to every crystal in linear RGB. |
+| **Tests** | **293 cases, green on Windows and Linux.** |
 
-What is *not* done: the compositor, projectM, the rest of Plex, and the on-screen
-UI. And within M2, the part that is judgement rather than plumbing — see below.
+What is *not* done: the compositor, projectM, and the on-screen UI. And within M2,
+the part that is judgement rather than plumbing — see below.
 
 **The `AudioFrame` contract is signed off** (2026-08-01). Section 9 of
 [`docs/audio-frame.md`](docs/audio-frame.md) records the decisions behind it — the
@@ -182,7 +197,7 @@ field may not change.
 | **M2** | Crystals | Vault loading, the `.frag` + `.toml` crystal format, manifest uniform binding against the contract, hot reload. | **plumbing complete; the visual language is open** |
 | M3 | Compositor | The facet stack: layering, blend modes, transitions, archives. | planned |
 | M4 | projectM | libprojectM 4.x driven as a facet source, reading MilkDrop presets from a user-supplied path. | planned |
-| M5 | **Plex playback target** | **The primary use case.** GDM discovery so Holocron appears in Plexamp's cast list, the Plex Companion control endpoints, timeline reporting, streaming the selected track, and metadata and album art into `TrackContext`. | **discovery works; nothing plays yet** |
+| **M5** | **Plex playback target** | **The primary use case.** GDM discovery so Holocron appears in Plexamp's cast list, the Plex Companion control endpoints, timeline reporting, streaming the selected track, and metadata and album art into `TrackContext`. | **DONE — `v0.2.0`** |
 | M6 | On-screen UI | Now-playing and facet control rendered in-app. **Not a library browser** — Plexamp is the browser, and building a second one would be duplicating the better tool. | planned |
 | M7 | eISCP receiver control | Power, input, and volume control of the receiver over the network. | planned |
 | M8 | Android TV | Holocron on the Shield, so the theater does not need the PC powered on. A new platform layer — NDK, OpenGL **ES**, a different audio backend — but the contract, the analysis stage, the crystals and all of M5's protocol work port unchanged. | possible |
@@ -193,14 +208,23 @@ showing the frame the speakers are producing rather than the newest one the
 decoder has reached. Measured on the target: OpenGL 4.5 core on a Radeon RX 6800,
 a 160-frame (~3.6 ms) device period, zero dropouts.
 
-One number in it is zero by declaration rather than measurement. `--trim-ms`
-compensates for latency *downstream* of the device clock — the DAC, the HDMI link,
-the receiver's own processing — and defaults to **0**, which means "no trim
-applied", not "no latency exists". Measuring it needs ears on the real rack.
+**The version numbers track how many milestones are done, not which one.**
+`v0.2.0` is the first completed milestone and that milestone is M5, taken out of
+order deliberately because it is the one the project exists for. M2, M3 and M4 are
+not finished, which is why this is not `v0.6.0`.
 
-What M1 does **not** have yet is a debug facet that has been used in anger. That
-is an exit criterion, and it is why the version is still `0.1.x` rather than
-`0.2.0`.
+`--trim-ms` compensates for latency *downstream* of the device clock — the DAC, the
+HDMI link, the receiver's own processing. It is **measured at −90 ms on the
+reference rack** and it is a *difference*, not a latency: the projector is slower
+than the audio path, so the picture has to be pulled earlier. The value belongs to
+the whole rack; changing the display, the resolution or the receiver's listening
+mode invalidates it. Measure your own with `holocron <track> --calibrate`.
+
+The debug facet has now been used in anger — it and `holocron-analyze` are what
+found both bugs in #44, and the `--frames N --shot out.bmp` path is how the
+renderer is checked without a monitor. Two real layout bugs were found that way
+and by nothing else: a facet that draws the wrong thing and one that draws the
+right thing have identical exit codes.
 
 ---
 

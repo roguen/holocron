@@ -149,28 +149,6 @@ std::string response_xml(int code, std::string_view status)
     return out;
 }
 
-std::string stopped_timeline_xml(std::string_view command_id)
-{
-    std::string out = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<MediaContainer";
-    append_attribute(out, "commandID", command_id);
-
-    // `navigation` rather than `fullScreenMusic`: nothing is playing, and a
-    // client that is told the player is in a full-screen music view with no
-    // media reported alongside it has been given two contradictory facts.
-    append_attribute(out, "location", "navigation");
-    out += ">\n";
-
-    for (const std::string_view type : {"music", "video", "photo"}) {
-        out += "  <Timeline";
-        append_attribute(out, "type", type);
-        append_attribute(out, "state", "stopped");
-        append_attribute(out, "itemType", type);
-        out += " />\n";
-    }
-
-    out += "</MediaContainer>\n";
-    return out;
-}
 
 std::string make_machine_identifier()
 {

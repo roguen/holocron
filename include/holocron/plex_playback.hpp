@@ -49,6 +49,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -88,10 +89,39 @@ struct PlayRequest {
 
 // What the server says about the item.
 struct PlexTrack {
+    // The item in the controller's terms, e.g. "/library/metadata/56397".
+    //
+    // Reported back on the timeline so a controller can tell WHICH track is
+    // playing. Without it the now-playing is a title and a duration with nothing
+    // to match against what was asked for.
+    std::string key;
+
+    // The server-side ids a progress report has to quote back.
+    //
+    // `/:/timeline` on the media server identifies what is playing by
+    // `ratingKey` and by the play queue item, not by the metadata key. A report
+    // missing them is accepted and attributed to nothing, which looks exactly
+    // like not reporting at all.
+    std::string rating_key;
+    std::string play_queue_item_id;
+
+    // Plex's own global id for the track, e.g. "plex://track/5d07...". Reported
+    // on the timeline; a controller uses it to match across servers.
+    std::string guid;
+
     std::string title;
     std::string artist;   // grandparentTitle
     std::string album;    // parentTitle
     std::string thumb;    // relative; needs the server and a token to fetch
+
+    // The ALBUM's thumbnail, as opposed to the track's.
+    //
+    // Both are carried because either can be absent. A Track usually has a
+    // `thumb` that is the sleeve, but on libraries where individual tracks were
+    // never given art it is empty and `parentThumb` is the only cover there is.
+    // Falling back is the difference between an album that colours the visuals
+    // and one that does not, for no reason a listener could guess at.
+    std::string album_thumb;   // parentThumb
 
     // The path to the actual audio, e.g. "/library/parts/140258/.../file.mp3".
     std::string part_key;
@@ -102,6 +132,173 @@ struct PlexTrack {
 
     bool operator==(const PlexTrack&) const = default;
 };
+
+// ---------------------------------------------------------------------------
+// Telling a controller what is happening
+//
+// A controller polls the player for a timeline and shows what comes back: the
+// scrubber, the now-playing, and -- the part that matters most -- whether the
+// track ended, which is how it knows to send the next one.
+//
+// Until this existed the player answered `stopped` to every poll even while
+// audio was coming out. Plexamp therefore showed nothing playing, never moved
+// its scrubber, and never advanced a queue.
+// ---------------------------------------------------------------------------
+
+enum class TransportState : std::uint8_t {
+    kStopped = 0,
+    kPaused,
+    kPlaying,
+};
+
+// The wire spelling. Plex's own values, lower case.
+const char* to_string(TransportState state);
+
+// What the player reports about itself.
+//
+// The server fields are carried through from the play command rather than
+// remembered separately: a controller matches the timeline against the request
+// it sent, and a timeline that names a different server than the one asked for
+// is treated as a different playback.
+struct TimelineState {
+    TransportState state = TransportState::kStopped;
+
+    // Where in the track, and how long it is. MILLISECONDS, and the position
+    // must INCLUDE any start offset -- a resumed track that reports its
+    // position relative to where decoding began makes a controller's scrubber
+    // jump back to zero the moment it resumes.
+    std::int64_t time_ms     = 0;
+    std::int64_t duration_ms = 0;
+
+    // What is playing, in the controller's terms.
+    //
+    // ALL OF THESE ARE REQUIRED, and the omission of the queue ones is what left
+    // Plexamp polling once a second and never satisfied. A controller that
+    // created a play queue matches the timeline against THAT queue and THAT
+    // item; a report naming neither is a player claiming to play something the
+    // controller has no way to connect to what it asked for.
+    //
+    // Taken from plex-mpv-shim's timeline, which is the only working reference
+    // there is. Reasoning about which fields "should" matter produced four
+    // wrong answers before this list was simply read.
+    std::string key;
+    std::string rating_key;
+    std::string guid;
+    std::string container_key;
+
+    std::string play_queue_id;
+    std::string play_queue_version;
+    std::string play_queue_item_id;
+
+    // Which server it came from.
+    std::string   machine_identifier;
+    std::string   address;
+    std::uint16_t port     = 32400;
+    std::string   protocol = "https";
+
+    bool operator==(const TimelineState&) const = default;
+
+    // Whether the difference between these two is worth waking a long poll for.
+    //
+    // POSITION IS DELIBERATELY EXCLUDED. It changes every frame, and waking on
+    // it would turn a 30-second long poll back into the hot loop that honouring
+    // `wait=1` was meant to fix -- 415 polls in one session, measured. A
+    // controller advances its own scrubber between polls; what it cannot guess
+    // is that the track changed or stopped.
+    bool differs_materially_from(const TimelineState& other) const;
+};
+
+// The timeline document for `state`, echoing `command_id`.
+//
+// Always reports all three transports -- music, video and photo. A controller
+// asks about all of them at once and expects all of them back; omitting the two
+// that are permanently stopped reads as a malformed answer rather than as a
+// player that does not do video.
+std::string timeline_xml(std::string_view command_id, const TimelineState& state);
+
+// ---------------------------------------------------------------------------
+// Play queues
+//
+// THE COMMAND THAT ACTUALLY ARRIVES WHEN YOU CAST AN ALBUM.
+//
+// Observed 2026-08-08 against Plexamp: casting an album sends NO playMedia at
+// all. It sends `createPlayQueue` with a `uri` naming the album's children, and
+// then waits for the player to report that it is playing. A player that
+// acknowledges the command and does nothing leaves the phone spinning forever,
+// which is exactly what happened.
+//
+// The player is expected to build the queue ON THE SERVER -- POST /playQueues --
+// and start the first item. The server's answer carries every track in order,
+// which is also what makes advancing to the next one possible without asking
+// again.
+// ---------------------------------------------------------------------------
+
+// One resolved play queue.
+struct PlexQueue {
+    // The server's id for it. Reported back on the timeline so a controller can
+    // tell this is the queue it asked for.
+    std::string id;
+
+    // Bumped by the server whenever the queue changes. A controller compares it
+    // against its own copy, and a timeline that omits it is a player reporting
+    // on a queue of unknown vintage.
+    std::string version;
+
+    // In order. Each carries its own part_key, so playing the next track needs
+    // no further request.
+    std::vector<PlexTrack> tracks;
+
+    // Which one the server says to start on. Not always the first: resuming an
+    // album, or casting from the middle of one, selects further in.
+    std::size_t selected = 0;
+
+    bool empty() const { return tracks.empty(); }
+};
+
+// Decode a `createPlayQueue` query string into the request it implies.
+//
+// Reuses PlayRequest for the server fields -- address, port, protocol, token --
+// because they arrive identically and mean the same thing. `key` carries the
+// `uri` instead, since that is what identifies what to enqueue.
+bool parse_create_play_queue(const std::vector<std::pair<std::string, std::string>>& params,
+                             PlayRequest& out, std::string& out_detail);
+
+// Ask the server to build the queue, and read back what is in it.
+//
+// One POST. `request.key` must hold the `uri` from the command.
+//
+// `client_identifier` is this player.s own, sent as a header. The token must be
+// a header too -- see the implementation.
+HttpError create_play_queue(const PlayRequest& request, const std::string& client_identifier,
+                            PlexQueue& out, std::string& out_detail);
+
+// Read a `/playQueues` response.
+//
+// Exposed because it is the part most likely to be wrong and the only part
+// testable without a server.
+bool parse_play_queue(const std::string& xml, PlexQueue& out);
+
+// Tell the MEDIA SERVER where playback has reached.
+//
+// SEPARATE FROM THE TIMELINE A CONTROLLER POLLS, AND NOT A SUBSTITUTE FOR IT.
+//
+// `/player/timeline/poll` answers a controller that asks us directly.
+// `/:/timeline` tells the SERVER, which is what makes a session appear in Plex
+// at all -- now-playing, watch state, and the state a controller reads when it
+// is not polling the player. Observed 2026-08-08: a cast that played audio
+// correctly still left Plexamp spinning, with no session visible to the server.
+//
+// Sent on every state change and periodically while playing. Best-effort: a
+// failed report must never interrupt playback, so the return value is for
+// logging rather than for deciding anything.
+//
+// `client_identifier` is this player's own, sent as a header alongside the
+// token, for the same undocumented reason create_play_queue needs it.
+HttpError report_timeline_to_server(const PlayRequest& server, const PlexTrack& track,
+                                    const std::string& client_identifier,
+                                    const std::string& session_identifier,
+                                    const std::string& queue_id, TransportState state,
+                                    std::int64_t time_ms, std::string& out_detail);
 
 // Decode a playMedia query string.
 //
@@ -127,6 +324,29 @@ std::string stream_url(const PlayRequest& request, const std::string& part_key);
 // One request. On a non-kOk return, `out_detail` carries the reason and `out` is
 // untouched.
 HttpError resolve_track(const PlayRequest& request, PlexTrack& out, std::string& out_detail);
+
+// The path that yields the sleeve as JPEG, at `size` pixels square.
+//
+// THROUGH THE PHOTO TRANSCODER, NOT THE THUMB DIRECTLY, and that is what makes
+// the format predictable. A raw `thumb` is whatever was uploaded -- any size,
+// any format, occasionally a PNG this build cannot decode (issue 116). Asking
+// the transcoder produces JPEG at a known size every time, which is the one
+// thing the decoder is guaranteed to handle.
+//
+// Exposed separately from the fetch so the URL construction is testable without
+// a server, which is where the encoding mistakes live.
+std::string artwork_path(const PlexTrack& track, const std::string& token, int size);
+
+// Fetch the sleeve for `track`.
+//
+// BEST EFFORT, ALWAYS. Art is decoration; a track with no cover must play
+// exactly as well as one with. Every failure returns non-kOk with a reason and
+// leaves `out` alone, and no caller should treat any of them as fatal.
+//
+// Returns kBadUrl when the track names no art at all, which is not really an
+// error -- it saves every caller writing the same emptiness check.
+HttpError fetch_artwork(const PlayRequest& server, const PlexTrack& track, int size,
+                        std::vector<std::uint8_t>& out, std::string& out_detail);
 
 // ---------------------------------------------------------------------------
 // The small amount of XML reading this needs

@@ -83,6 +83,14 @@ struct Gatekeeper {
     // [paths]
     std::string vault = "crystals";
 
+    // Which crystal in the vault to start on, by manifest name.
+    //
+    // Empty means the first, which is alphabetical and therefore arbitrary --
+    // the vault is ordered by name so that Windows and Linux agree, not because
+    // the first one is the best one to look at. The arrow keys still move
+    // between them at runtime; this only chooses where a run begins.
+    std::string crystal;
+
     // [plex]
     //
     // Prefixed, unlike the sections above, because `name` and `port` on their

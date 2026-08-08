@@ -63,11 +63,39 @@ tested:
 | Discovery | `GdmResponder` announces over multicast; `CompanionServer` (cpp-httplib) serves `/resources`, the timeline endpoints and `playMedia`. `holocron --discover` runs discovery alone, headless, for diagnosis. |
 | Account | `holocron --link` signs in through the plex.tv PIN flow — **no password is ever typed into Holocron**. Registration and connection publishing then happen at every startup. |
 | Playback | `PlaybackSession` owns the decoder, analysis, ring, device and decode thread, and can be **started and replaced**. A cast starts one; `stop` stops it. `holocron` with no track opens the window and waits to be cast to. |
+| Track context | `TrackContext` is populated at last — title, artist, album, transport, and the **palette**. Fetch and JPEG decode run on a worker with a **generation counter**, because skipping an album starts a fetch per track and they do not finish in order; without it the sleeve of a track skipped past seconds ago wins and colours the visuals from the wrong record. |
+| Palette | `extract_palette` — five swatches, a primary and a contrast accent, in **linear** RGB. "Dominant" is deliberately *not* "most common": the most common colour on a sleeve is the border, so population is weighted towards saturated mid-luminance colour, with a floor so a monochrome sleeve still yields something. Buckets in sRGB, answers in linear. |
+| Album art | `decode_image` — JPEG via `avcodec`, colour conversion **hand-rolled** because `vcpkg.json` deliberately excludes `swscale`. PNG is refused cleanly: it needs zlib, which the same `default-features: false` line excludes ([#116](https://github.com/roguen/holocron/issues/116)). Plex serves JPEG through its photo transcoder, so nothing is blocked. |
 | Executables | `holocron` — the player. `holocron-analyze` — the offline harness. |
 
-**What M5 still owes:** timeline reporting (Plexamp is told `stopped` even while
-playing, so its scrubber never moves and it never learns a track ended), queue
-advance, transport controls, and metadata/album art/palette into `TrackContext`.
+**What M5 still owes: `seekTo`, and nothing else.** Timeline reporting, queue
+advance, transport controls and metadata/album art/palette are all in. Seeking is
+deliberately last and deliberately not advertised in `controllable` — `Decoder`
+has no seek at all ([#108](https://github.com/roguen/holocron/issues/108)), and a
+scrub bar that does nothing is worse than one that is absent.
+
+**Two bugs from the first real end-to-end cast, both fixed:**
+
+- **[#114](https://github.com/roguen/holocron/issues/114) — an album played one
+  track and the executable quit.** Two causes. The render loop still carried the
+  *one-file player's* exit condition, which is right for `holocron track.flac`
+  and wrong for a cast target, where the end of a track is an ordinary event and
+  exiting removes the device from the phone's list. And the auto-advance was
+  gated on `timeline.state != kStopped` — a value printed nowhere, so a shut gate
+  and an unnoticed track end produced identical logs. **The transport state is a
+  report, not a precondition;** what ends a track is the decoder running out, and
+  what makes advancing right is having a queue.
+- **[#115](https://github.com/roguen/holocron/issues/115) — casting from the
+  middle of an album played track one.** Tapping track two sends a `playMedia`
+  naming it *and then* a `createPlayQueue` for the album. The server builds that
+  queue from track one either way and **no `skipTo` follows**, so the key from the
+  earlier command is the only record of what was tapped. Losing it also meant the
+  controller was following a track the player was not playing, which is why no
+  progress bar was ever drawn unless you started on track one.
+
+**A log line removed for readability is an instrument removed** — and the
+generalisation of it: **a value a branch depends on and no log prints is a branch
+that cannot be diagnosed.** #114 cost a session to find for exactly that reason.
 
 **All four M1 blockers were resolved on 2026-08-01.** What remains for M1:
 
@@ -263,9 +291,16 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.1.16`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.2.0`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
+
+**The minor number tracks how many milestones are DONE, not which one.** `v0.2.0`
+is the first completed milestone and that milestone is **M5**, because D-029 made
+M5 the one that matters and it was taken out of order on purpose. The Roadmap's old
+`M5 → v0.6.0` mapping assumed M1–M4 would land first; following it would have
+published a version implying M2, M3 and M4 were finished. Decided 2026-08-08 by the
+owner.
 
 The version now lives in **three** files that must move together — this line,
 `vcpkg.json`'s `version-string`, and `CMakeLists.txt`'s `VERSION` — plus the wiki's
@@ -359,9 +394,18 @@ stays on Linux even though Linux is not a deployment target.
 
 ### 4. Semantic versioning
 
-Patch for fixes within a milestone; **minor per completed milestone** (M1 →
-`v0.2.0`, M2 → `v0.3.0`, …); `1.0.0` reserved for the first build that plays music
-and renders end to end, not for finishing any particular milestone.
+Patch for fixes within a milestone; **minor per completed milestone**. The minor
+number counts milestones **finished**, not the milestone's own number — the first
+one done is `v0.2.0` whichever it is, the second `v0.3.0`, and so on. This project
+took M5 first on purpose (D-029), so `v0.2.0` is M5.
+
+That is a change from the original rule, which read "M1 → `v0.2.0`, M2 → `v0.3.0`"
+and silently assumed the milestones would be completed in order. Following it
+literally would have published `v0.6.0` for M5 and implied M2, M3 and M4 were
+done. Decided 2026-08-08 by the owner.
+
+`1.0.0` is reserved for the first build that plays music and renders end to end,
+not for finishing any particular milestone.
 
 ---
 

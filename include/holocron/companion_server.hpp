@@ -101,10 +101,52 @@ public:
     // Called when a controller asks for playback to stop.
     using StopHandler = std::function<void()>;
 
+    // Called when a controller asks the player to build and start a play queue.
+    //
+    // This is what casting an ALBUM sends -- no play command arrives at all.
+    // The server has already been asked to create the queue, so the handler
+    // receives every track in order with its audio path resolved.
+    using QueueHandler = std::function<void(const PlayRequest&, const PlexQueue&)>;
+
+    // Called when a controller asks to move within the queue.
+    //
+    // `direction` is -1 for previous, +1 for next, and 0 when the controller
+    // named a specific item -- which is what `skipTo` does, and what Plexamp
+    // sends after building a queue to jump to the track you actually tapped.
+    // Ignoring it is why playback kept starting at track one.
+    using SkipHandler = std::function<void(int direction, const std::string& play_queue_item_id,
+                                           const std::string& key)>;
+
+    // Called when a controller asks to pause or resume. `true` means pause.
+    //
+    // Plexamp sends `paused=1` on the play command itself and then drives
+    // pause/play separately, so both routes have to work or its idea of the
+    // player diverges from the player -- at which point it takes control back.
+    using PauseHandler = std::function<void(bool paused)>;
+
+    // Called when a controller drags the scrubber. MILLISECONDS from the start
+    // of the track, matching every other position in this protocol.
+    using SeekHandler = std::function<void(std::int64_t position_ms)>;
+
     // Set before start(). Unset handlers mean the command is logged and
     // acknowledged, which is what happened before anything could play.
     void set_play_handler(PlayHandler handler);
     void set_stop_handler(StopHandler handler);
+    void set_pause_handler(PauseHandler handler);
+    void set_queue_handler(QueueHandler handler);
+    void set_skip_handler(SkipHandler handler);
+    void set_seek_handler(SeekHandler handler);
+
+    // What to report to a controller that asks.
+    //
+    // Call this whenever the player's state changes -- and it is cheap enough to
+    // call every frame, which is the intended use: the position moves
+    // continuously and there is no sensible event to hang it on.
+    //
+    // A long poll (`wait=1`) is woken only when the new state differs
+    // MATERIALLY from the old, which excludes the position. Waking on position
+    // would return the hot loop that honouring `wait=1` was meant to fix.
+    void set_timeline(const TimelineState& state);
 
     // Requests served since start(), and the last path seen. Both are printed by
     // the player: with the phone in another room, this is the only evidence that
