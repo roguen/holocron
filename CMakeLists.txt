@@ -250,6 +250,7 @@ find_package(glm CONFIG REQUIRED)
 
 add_library(holocron_visual STATIC
     src/visual/palette.cpp
+    src/visual/image_decode.cpp
 )
 add_library(holocron::visual ALIAS holocron_visual)
 
@@ -257,7 +258,16 @@ target_link_libraries(holocron_visual
     PUBLIC  holocron::contract
             glm::glm
     PRIVATE holocron::warnings
+            ${FFMPEG_LIBRARIES}
 )
+
+# FFmpeg is PRIVATE and reached through image_decode.cpp alone, exactly as it is
+# through decoder.cpp: nothing above this library sees an AVFrame. swscale is
+# deliberately absent from vcpkg.json and stays absent -- the colour conversion
+# for one thumbnail per track is written out in that translation unit rather than
+# taking a dependency for it. See image_decode.hpp.
+target_include_directories(holocron_visual SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
+target_link_directories(holocron_visual PRIVATE ${FFMPEG_LIBRARY_DIRS})
 
 # ---------------------------------------------------------------------------
 # WASAPI sink
