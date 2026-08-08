@@ -291,9 +291,16 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.1.16`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.2.0`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
+
+**The minor number tracks how many milestones are DONE, not which one.** `v0.2.0`
+is the first completed milestone and that milestone is **M5**, because D-029 made
+M5 the one that matters and it was taken out of order on purpose. The Roadmap's old
+`M5 → v0.6.0` mapping assumed M1–M4 would land first; following it would have
+published a version implying M2, M3 and M4 were finished. Decided 2026-08-08 by the
+owner.
 
 The version now lives in **three** files that must move together — this line,
 `vcpkg.json`'s `version-string`, and `CMakeLists.txt`'s `VERSION` — plus the wiki's
@@ -387,9 +394,18 @@ stays on Linux even though Linux is not a deployment target.
 
 ### 4. Semantic versioning
 
-Patch for fixes within a milestone; **minor per completed milestone** (M1 →
-`v0.2.0`, M2 → `v0.3.0`, …); `1.0.0` reserved for the first build that plays music
-and renders end to end, not for finishing any particular milestone.
+Patch for fixes within a milestone; **minor per completed milestone**. The minor
+number counts milestones **finished**, not the milestone's own number — the first
+one done is `v0.2.0` whichever it is, the second `v0.3.0`, and so on. This project
+took M5 first on purpose (D-029), so `v0.2.0` is M5.
+
+That is a change from the original rule, which read "M1 → `v0.2.0`, M2 → `v0.3.0`"
+and silently assumed the milestones would be completed in order. Following it
+literally would have published `v0.6.0` for M5 and implied M2, M3 and M4 were
+done. Decided 2026-08-08 by the owner.
+
+`1.0.0` is reserved for the first build that plays music and renders end to end,
+not for finishing any particular milestone.
 
 ---
 
