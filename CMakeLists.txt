@@ -228,6 +228,48 @@ target_link_libraries(holocron_crystal
 )
 
 # ---------------------------------------------------------------------------
+# Visual
+#
+# The non-audio half of what a crystal reads: TrackContext and the palette
+# pulled out of the album art.
+#
+# PURE ON PURPOSE, and this is the same split that keeps plex_device.cpp away
+# from the sockets. Palette extraction takes RGBA8 bytes and returns colours --
+# no GL, no network, no image decoder -- so the part most likely to LOOK wrong is
+# the part fully testable in CI on both platforms. Whatever produced the bytes is
+# somebody else's translation unit.
+#
+# glm is PUBLIC because it is in track_context.hpp's and palette.hpp's own
+# interfaces: a glm::vec3 comes back out of extract_palette(), so anything that
+# calls it needs the header too. It is the first thing in the project to need
+# glm at all -- track_context.hpp has included it since it was written, but
+# nothing compiled that header until now.
+# ---------------------------------------------------------------------------
+
+find_package(glm CONFIG REQUIRED)
+
+add_library(holocron_visual STATIC
+    src/visual/palette.cpp
+    src/visual/image_decode.cpp
+)
+add_library(holocron::visual ALIAS holocron_visual)
+
+target_link_libraries(holocron_visual
+    PUBLIC  holocron::contract
+            glm::glm
+    PRIVATE holocron::warnings
+            ${FFMPEG_LIBRARIES}
+)
+
+# FFmpeg is PRIVATE and reached through image_decode.cpp alone, exactly as it is
+# through decoder.cpp: nothing above this library sees an AVFrame. swscale is
+# deliberately absent from vcpkg.json and stays absent -- the colour conversion
+# for one thumbnail per track is written out in that translation unit rather than
+# taking a dependency for it. See image_decode.hpp.
+target_include_directories(holocron_visual SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
+target_link_directories(holocron_visual PRIVATE ${FFMPEG_LIBRARY_DIRS})
+
+# ---------------------------------------------------------------------------
 # WASAPI sink
 #
 # The whole implementation is behind _WIN32 INSIDE the source, and the target is
@@ -273,6 +315,7 @@ add_library(holocron_render STATIC
     src/render/window.cpp
     src/render/debug_facet.cpp
     src/render/crystal_facet.cpp
+    src/render/art_texture.cpp
 )
 add_library(holocron::render ALIAS holocron_render)
 
@@ -282,6 +325,10 @@ target_link_libraries(holocron_render
             # because the facet's own header takes a Crystal by reference, so
             # anything using the renderer needs the type too.
             holocron::crystal
+            # And TrackContext, the palette and ImageRgba8, for the same reason:
+            # draw() takes a TrackContext and art_texture.hpp is in this
+            # library's public surface.
+            holocron::visual
     PRIVATE holocron::warnings
             SDL3::SDL3
             glad::glad

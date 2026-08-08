@@ -601,3 +601,98 @@ TEST_CASE("every HttpError has a distinct description", "[plex][playback]")
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Artwork
+//
+// The URL, not the fetch. Building this string is where the mistakes are -- the
+// fetch itself is one https_request and needs a server to exercise.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("artwork goes through the photo transcoder", "[plex][playback][art]")
+{
+    PlexTrack track;
+    track.thumb = "/library/metadata/56398/thumb/1234";
+
+    const std::string path = artwork_path(track, "tok", 512);
+
+    // THROUGH THE TRANSCODER, which is what makes the format predictable. A raw
+    // thumb is whatever was uploaded, occasionally a PNG this build cannot
+    // decode (issue 116).
+    REQUIRE(path.find("/photo/:/transcode") == 0);
+    REQUIRE(path.find("width=512") != std::string::npos);
+    REQUIRE(path.find("height=512") != std::string::npos);
+
+    // minSize with upscale, or a 150-pixel thumb comes back at 150 pixels and
+    // gives the palette almost nothing to work with.
+    REQUIRE(path.find("minSize=1") != std::string::npos);
+    REQUIRE(path.find("upscale=1") != std::string::npos);
+}
+
+TEST_CASE("the nested artwork url is percent-encoded", "[plex][playback][art]")
+{
+    // THE ONE THAT BREAKS IN THE FIELD. Art that has been replaced carries a
+    // cache-buster, so the thumb path contains its own `?` and `&`. Passed
+    // through raw, that ampersand ends the parameter and the transcoder receives
+    // half a path and answers 400.
+    PlexTrack track;
+    track.thumb = "/library/metadata/56398/thumb/1234?t=567&x=1";
+
+    const std::string path = artwork_path(track, "tok", 320);
+
+    const std::size_t url_at = path.find("url=");
+    REQUIRE(url_at != std::string::npos);
+
+    // Nothing after `url=` may introduce a new parameter except the token that
+    // is appended deliberately.
+    const std::string encoded = path.substr(url_at + 4);
+    REQUIRE(encoded.find("%3F") != std::string::npos);   // the ? survived, encoded
+    REQUIRE(encoded.find("%26") != std::string::npos);   // and so did the &
+
+    // Exactly one raw ampersand after the encoded url: the one before the token.
+    REQUIRE(std::count(encoded.begin(), encoded.end(), '&') == 1);
+    REQUIRE(encoded.find("&X-Plex-Token=tok") != std::string::npos);
+}
+
+TEST_CASE("the album's art is the fallback when the track has none",
+          "[plex][playback][art]")
+{
+    // Libraries where individual tracks were never given art are ordinary. Not
+    // falling back is the difference between an album that colours the visuals
+    // and one that does not, for no reason a listener could guess at.
+    PlexTrack track;
+    track.album_thumb = "/library/metadata/56396/thumb/999";
+
+    const std::string path = artwork_path(track, "tok", 512);
+    REQUIRE(path.find("56396") != std::string::npos);
+}
+
+TEST_CASE("the track's own art wins over the album's", "[plex][playback][art]")
+{
+    PlexTrack track;
+    track.thumb       = "/library/metadata/56398/thumb/1";
+    track.album_thumb = "/library/metadata/56396/thumb/2";
+
+    const std::string path = artwork_path(track, "tok", 512);
+    REQUIRE(path.find("56398") != std::string::npos);
+    REQUIRE(path.find("56396") == std::string::npos);
+}
+
+TEST_CASE("a track with no art at all yields no path", "[plex][playback][art]")
+{
+    // An empty answer rather than a URL that would 404. Saves every caller
+    // writing the same emptiness check, and saves a pointless round trip on
+    // every track of an artless album.
+    REQUIRE(artwork_path(PlexTrack{}, "tok", 512).empty());
+}
+
+TEST_CASE("the artwork token is encoded too", "[plex][playback][art]")
+{
+    PlexTrack track;
+    track.thumb = "/library/metadata/1/thumb/1";
+
+    // Plex tokens are opaque. Nothing guarantees they are URL-safe.
+    const std::string path = artwork_path(track, "a b&c", 512);
+    REQUIRE(path.find("a b&c") == std::string::npos);
+    REQUIRE(path.find("X-Plex-Token=a%20b%26c") != std::string::npos);
+}

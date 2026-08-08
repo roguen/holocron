@@ -16,11 +16,32 @@
 //
 // UNIFORMS EVERY CRYSTAL GETS WITHOUT ASKING
 //
-//   uniform vec2  u_resolution;   framebuffer size in pixels
-//   uniform float u_time;         seconds since the crystal was loaded
+//   uniform vec2      u_resolution;        framebuffer size in pixels
+//   uniform float     u_time;              seconds since the crystal was loaded
+//
+//   uniform vec3      u_palette[5];        the record's colours, LINEAR rgb,
+//                                          most to least dominant
+//   uniform vec3      u_palette_primary;   the colour to build the look from
+//   uniform vec3      u_palette_accent;    chosen for contrast against primary
+//   uniform sampler2D u_album_art;         the sleeve, sRGB, linearised on read
+//   uniform bool      u_has_art;           whether u_album_art holds anything
 //
 // They are supplied rather than bound because they are not AudioFrame fields and
 // every crystal needs them. Everything else comes from the manifest.
+//
+// WHY THE PALETTE IS BUILT IN RATHER THAN MANIFEST-BOUND
+//
+// frame_binding.hpp turns a NAME into a field of AudioFrame, and none of these
+// is one -- they live on TrackContext, which is a different struct for good
+// reasons set out in its own header. More to the point, the palette only does
+// its job if EVERY crystal draws from the same swatches, and anything optional
+// in a manifest is something a crystal can quietly disagree about.
+//
+// u_has_art IS NOT OPTIONAL TO CHECK. Art arrives asynchronously -- a fetch, a
+// decode and an upload after the track has already started -- so it is false for
+// the first frames of every track and stays false forever for a record with no
+// cover. A crystal that samples u_album_art without testing it samples an
+// unbound texture unit, which is black on this driver and undefined in general.
 //
 // A UNIFORM THE SHADER DOES NOT USE IS NOT AN ERROR
 //
@@ -41,6 +62,7 @@ namespace holocron {
 
 struct AudioFrame;
 struct Crystal;
+struct TrackContext;
 
 class CrystalFacet {
 public:
@@ -74,7 +96,7 @@ public:
     float elapsed() const;
     void  set_elapsed(float seconds);
 
-    void draw(const AudioFrame& frame, int width, int height);
+    void draw(const AudioFrame& frame, const TrackContext& track, int width, int height);
 
 private:
     struct Impl;

@@ -114,6 +114,15 @@ struct PlexTrack {
     std::string album;    // parentTitle
     std::string thumb;    // relative; needs the server and a token to fetch
 
+    // The ALBUM's thumbnail, as opposed to the track's.
+    //
+    // Both are carried because either can be absent. A Track usually has a
+    // `thumb` that is the sleeve, but on libraries where individual tracks were
+    // never given art it is empty and `parentThumb` is the only cover there is.
+    // Falling back is the difference between an album that colours the visuals
+    // and one that does not, for no reason a listener could guess at.
+    std::string album_thumb;   // parentThumb
+
     // The path to the actual audio, e.g. "/library/parts/140258/.../file.mp3".
     std::string part_key;
     std::string container;
@@ -315,6 +324,29 @@ std::string stream_url(const PlayRequest& request, const std::string& part_key);
 // One request. On a non-kOk return, `out_detail` carries the reason and `out` is
 // untouched.
 HttpError resolve_track(const PlayRequest& request, PlexTrack& out, std::string& out_detail);
+
+// The path that yields the sleeve as JPEG, at `size` pixels square.
+//
+// THROUGH THE PHOTO TRANSCODER, NOT THE THUMB DIRECTLY, and that is what makes
+// the format predictable. A raw `thumb` is whatever was uploaded -- any size,
+// any format, occasionally a PNG this build cannot decode (issue 116). Asking
+// the transcoder produces JPEG at a known size every time, which is the one
+// thing the decoder is guaranteed to handle.
+//
+// Exposed separately from the fetch so the URL construction is testable without
+// a server, which is where the encoding mistakes live.
+std::string artwork_path(const PlexTrack& track, const std::string& token, int size);
+
+// Fetch the sleeve for `track`.
+//
+// BEST EFFORT, ALWAYS. Art is decoration; a track with no cover must play
+// exactly as well as one with. Every failure returns non-kOk with a reason and
+// leaves `out` alone, and no caller should treat any of them as fatal.
+//
+// Returns kBadUrl when the track names no art at all, which is not really an
+// error -- it saves every caller writing the same emptiness check.
+HttpError fetch_artwork(const PlayRequest& server, const PlexTrack& track, int size,
+                        std::vector<std::uint8_t>& out, std::string& out_detail);
 
 // ---------------------------------------------------------------------------
 // The small amount of XML reading this needs

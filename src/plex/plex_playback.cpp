@@ -494,6 +494,7 @@ bool parse_play_queue(const std::string& xml, PlexQueue& out)
         element_attribute(track_element, "grandparentTitle", track.artist);
         element_attribute(track_element, "parentTitle", track.album);
         element_attribute(track_element, "thumb", track.thumb);
+        element_attribute(track_element, "parentThumb", track.album_thumb);
 
         std::string duration;
         if (element_attribute(track_element, "duration", duration)) {
@@ -655,6 +656,7 @@ HttpError resolve_track(const PlayRequest& request, PlexTrack& out, std::string&
     element_attribute(element, "grandparentTitle", track.artist);
     element_attribute(element, "parentTitle", track.album);
     element_attribute(element, "thumb", track.thumb);
+    element_attribute(element, "parentThumb", track.album_thumb);
 
     std::string duration;
     if (element_attribute(element, "duration", duration)) {
@@ -676,6 +678,60 @@ HttpError resolve_track(const PlayRequest& request, PlexTrack& out, std::string&
     }
 
     out = track;
+    return HttpError::kOk;
+}
+
+std::string artwork_path(const PlexTrack& track, const std::string& token, int size)
+{
+    // The track's own art first, the album's as a fallback. See PlexTrack.
+    const std::string& source = !track.thumb.empty() ? track.thumb : track.album_thumb;
+    if (source.empty()) {
+        return {};
+    }
+
+    const std::string dimension = std::to_string(size);
+
+    // `url` IS A NESTED URL AND MUST BE PERCENT-ENCODED. A thumb path contains
+    // slashes and, on art that has been replaced, a `?t=` cache-buster -- passed
+    // through raw, that ampersand ends the parameter and the transcoder receives
+    // half a path, answering 400.
+    //
+    // minSize=1 with upscale=1 asks for "at least this big, enlarge if need be",
+    // which is what stops a 150-pixel thumb coming back at 150 pixels and giving
+    // the palette almost nothing to work with.
+    return "/photo/:/transcode?width=" + dimension + "&height=" + dimension +
+           "&minSize=1&upscale=1&url=" + url_encode(source) +
+           "&X-Plex-Token=" + url_encode(token);
+}
+
+HttpError fetch_artwork(const PlayRequest& server, const PlexTrack& track, int size,
+                        std::vector<std::uint8_t>& out, std::string& out_detail)
+{
+    out_detail.clear();
+
+    const std::string path = artwork_path(track, server.token, size);
+    if (path.empty()) {
+        out_detail = "the track names no artwork";
+        return HttpError::kBadUrl;
+    }
+
+    HttpsResponse   response;
+    const HttpError err = https_request("GET", server.address, server.port, path,
+                                        {{"Accept", "image/jpeg"}}, response, out_detail);
+    if (err != HttpError::kOk) {
+        return err;
+    }
+    if (response.status != 200) {
+        out_detail = "the server answered HTTP " + std::to_string(response.status) +
+                     " for the artwork";
+        return HttpError::kRequestFailed;
+    }
+    if (response.body.empty()) {
+        out_detail = "the server answered 200 with no image";
+        return HttpError::kRequestFailed;
+    }
+
+    out.assign(response.body.begin(), response.body.end());
     return HttpError::kOk;
 }
 
