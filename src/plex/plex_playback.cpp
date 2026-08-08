@@ -455,6 +455,27 @@ bool parse_create_play_queue(const std::vector<std::pair<std::string, std::strin
         out.type = "audio";
     }
 
+    // HOW THE SERVER SHOULD ORDER THE QUEUE, which is the player's to forward and
+    // not the player's to decide. See PlayRequest.
+    //
+    // Absent means 0 in every case, which is what these were hardcoded to before
+    // they were read at all. A value that is not a number is treated as absent
+    // rather than refused: an unparseable `shuffle` is not a reason to decline to
+    // play an album.
+    if (lookup(params, "shuffle", value)) {
+        out.shuffle = to_int64(value, 0) != 0;
+    }
+    if (lookup(params, "repeat", value)) {
+        // Clamped to the modes Plex defines. An out-of-range value forwarded
+        // verbatim is a 400 from the server, which presents as the cast doing
+        // nothing at all.
+        const std::int64_t mode = to_int64(value, 0);
+        out.repeat             = (mode >= 0 && mode <= 2) ? static_cast<int>(mode) : 0;
+    }
+    if (lookup(params, "continuous", value)) {
+        out.continuous = to_int64(value, 0) != 0;
+    }
+
     if (out.protocol.empty()) {
         out.protocol = "https";
     }
@@ -538,13 +559,19 @@ HttpError create_play_queue(const PlayRequest& request, const std::string& clien
 {
     // POST, because this CREATES a queue on the server rather than reading one.
     //
-    // `continuous=0` and `repeat=0` are sent explicitly rather than left to the
-    // server's defaults: which way those default is not written down, and a
-    // queue that silently repeats is the kind of thing nobody notices until an
-    // album has played twice.
+    // SHUFFLE, REPEAT AND CONTINUOUS ARE FORWARDED, NOT DECIDED HERE. The server
+    // is what orders the queue; the player only reads back the result. These were
+    // hardcoded to 0, which made shuffle a no-op -- a createPlayQueue carrying
+    // `shuffle=1` was answered with the album in order (issue 120).
+    //
+    // They are still sent EXPLICITLY even when off, rather than omitted: which way
+    // the server defaults is not documented, and a queue that silently repeats is
+    // the kind of thing nobody notices until an album has played twice.
     const std::string path = "/playQueues?type=" + url_encode(request.type) +
                              "&uri=" + url_encode(request.key) +
-                             "&shuffle=0&repeat=0&continuous=0";
+                             "&shuffle=" + (request.shuffle ? "1" : "0") +
+                             "&repeat=" + std::to_string(request.repeat) +
+                             "&continuous=" + (request.continuous ? "1" : "0");
 
     // THE TOKEN GOES IN A HEADER HERE, AND THAT IS NOT INTERCHANGEABLE.
     //

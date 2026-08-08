@@ -84,6 +84,30 @@ struct PlayRequest {
     // Plexamp sends paused=1 when it wants the track loaded but not started.
     bool paused = false;
 
+    // -- how the server should ORDER and REPEAT the queue it builds ------------
+    //
+    // THESE BELONG TO THE SERVER, NOT TO THE PLAYER, and that is why forwarding
+    // them matters. `POST /playQueues` is what decides the running order; the
+    // player only reads back the result. Hardcoding `shuffle=0` therefore made
+    // shuffle a no-op no matter what the phone asked for -- observed on the rack
+    // 2026-08-08, a `createPlayQueue` carrying `shuffle=1` answered with the album
+    // in order.
+    //
+    // Defaults are 0 for all three, which is what they were hardcoded to. That
+    // default is still worth sending explicitly rather than omitting: which way
+    // the server defaults is not documented, and a queue that silently repeats is
+    // the kind of thing nobody notices until an album has played twice.
+
+    bool shuffle = false;
+
+    // Plex's `repeat` is a MODE, not a flag: 0 off, 1 repeat all, 2 repeat one.
+    // Kept as an integer for that reason -- a bool could not express repeat-one,
+    // and mapping it to `true` would repeat the whole album instead of the track.
+    int repeat = 0;
+
+    // Autoplay-similar, which keeps going after the queue is exhausted.
+    bool continuous = false;
+
     bool operator==(const PlayRequest&) const = default;
 };
 
