@@ -470,6 +470,22 @@ struct CastCommand {
     bool      have_queue = false;
     PlexQueue queue;
 
+    // The item named by the last playMedia, and the reason it outlives the
+    // command that carried it.
+    //
+    // CASTING FROM THE MIDDLE OF AN ALBUM SENDS TWO COMMANDS, NOT ONE: a
+    // playMedia naming the track that was tapped, and then a createPlayQueue for
+    // the whole album. The server builds that queue from track ONE regardless of
+    // which track was asked for, and -- observed 2026-08-08 against Plexamp --
+    // does NOT follow it with a skipTo.
+    //
+    // So the only record of what was actually tapped is the key from the earlier
+    // command, and a player that forgets it plays track one every time. From the
+    // phone that looks like the player having a favourite song, and because the
+    // controller is showing the track it asked for while the player plays a
+    // different one, the two never agree and no progress is ever drawn.
+    std::string last_play_key;
+
     void request_queue(const PlayRequest& req, const PlexQueue& q)
     {
         const std::lock_guard<std::mutex> lock(mutex);
@@ -479,6 +495,8 @@ struct CastCommand {
         queue      = q;
         request    = req;
         offset_ms  = 0;
+        // last_play_key deliberately survives: it was set by the playMedia that
+        // came before this and is the only thing that says where to start.
     }
 
     bool stop = false;
@@ -532,6 +550,9 @@ struct CastCommand {
         what       = track;
         request    = req;
         have_queue = false;   // a single track supersedes any queue
+
+        // Remembered for the createPlayQueue that may follow. See last_play_key.
+        last_play_key = req.key;
     }
 
     void request_stop()
@@ -552,7 +573,8 @@ struct CastCommand {
     }
 
     bool take(bool& out_play, bool& out_stop, std::string& out_url, std::int64_t& out_offset,
-              NowPlaying& out_what, PlayRequest& out_request, PlexQueue& out_queue)
+              NowPlaying& out_what, PlayRequest& out_request, PlexQueue& out_queue,
+              std::string& out_start_key)
     {
         const std::lock_guard<std::mutex> lock(mutex);
         if (!play && !stop) {
@@ -564,10 +586,21 @@ struct CastCommand {
         out_offset  = offset_ms;
         out_what    = what;
         out_request = request;
-        out_queue   = have_queue ? queue : PlexQueue{};
+        out_queue     = have_queue ? queue : PlexQueue{};
+        out_start_key = have_queue ? last_play_key : std::string{};
         play        = false;
         stop        = false;
         have_queue  = false;
+
+        // CLEARED ONLY WHEN A QUEUE ACTUALLY CONSUMED IT. The playMedia is taken
+        // a frame or more BEFORE the createPlayQueue arrives -- they are separate
+        // commands seconds apart -- so clearing it on every take would throw the
+        // key away before the queue that needs it ever turns up. Left set, it
+        // would instead send the NEXT album to whatever track was tapped in the
+        // previous one.
+        if (!out_queue.empty()) {
+            last_play_key.clear();
+        }
         return true;
     }
 };
@@ -1212,6 +1245,21 @@ int main(int argc, char** argv)
     PlayRequest queue_request;
     std::size_t at_in_queue = 0;
 
+    // A CAST TARGET AND A ONE-FILE PLAYER ARE DIFFERENT PROGRAMS, and conflating
+    // them is what made an album stop after one track.
+    //
+    // `holocron track.flac` should play that file and exit; that is what the
+    // render loop's exit condition is for. `holocron` with no argument is the
+    // thing the owner casts to, and for that one the end of a track is an
+    // ORDINARY EVENT -- the next track starts, or the player goes back to
+    // waiting. Exiting there takes the device out of Plexamp's list and looks,
+    // from the phone, exactly like a crash.
+    const bool cast_mode = opt.path == nullptr;
+
+    // Edge detector for the end of a track, so the log says once that it
+    // happened rather than every frame afterwards.
+    bool was_ended = false;
+
     // Progress reporting to the media server, and the instrumentation for it.
     auto           last_server_report      = std::chrono::steady_clock::now();
     auto           last_poll_report        = std::chrono::steady_clock::now();
@@ -1243,14 +1291,35 @@ int main(int argc, char** argv)
             NowPlaying   what;
             PlayRequest  request;
             PlexQueue    new_queue;
+            std::string  start_key;
 
-            if (cast.take(want_play, want_stop, url, offset, what, request, new_queue)) {
+            if (cast.take(want_play, want_stop, url, offset, what, request, new_queue,
+                          start_key)) {
                 if (!new_queue.empty()) {
                     // A whole album. Take it over, start where the server says,
                     // and let the end-of-track path walk the rest.
                     queue         = new_queue;
                     queue_request = request;
                     at_in_queue   = new_queue.selected;
+
+                    // EXCEPT THAT WHAT THE SERVER SAYS IS ALWAYS TRACK ONE.
+                    //
+                    // Casting from the middle of an album sends a playMedia
+                    // naming the track that was tapped and then a
+                    // createPlayQueue for the album; the queue comes back
+                    // selected at 0 either way, and no skipTo follows. Honouring
+                    // `selected` alone plays track one whatever was tapped --
+                    // which is what "it would not render progress unless I
+                    // started on the first song" was: the controller was
+                    // following a track the player was not playing.
+                    if (!start_key.empty()) {
+                        for (std::size_t i = 0; i < queue.tracks.size(); ++i) {
+                            if (queue.tracks[i].key == start_key) {
+                                at_in_queue = i;
+                                break;
+                            }
+                        }
+                    }
 
                     const PlexTrack& track = queue.tracks[at_in_queue];
                     url    = stream_url(queue_request, track.part_key);
@@ -1403,44 +1472,56 @@ int main(int argc, char** argv)
         // something clever. A long poll is only woken when the state changes
         // MATERIALLY -- see TimelineState::differs_materially_from, which
         // excludes the position for exactly this reason.
-        if (timeline.state != TransportState::kStopped) {
-            if (session.active() && session.finished() && session.pending_frames() == 0) {
-                // The track ended. If an album was cast, the next one starts
-                // here rather than waiting to be told: the controller handed
-                // over the whole queue precisely so the player would walk it.
-                // Printed unconditionally, because "did the end of the track get
-                // noticed at all" was a question that could not be answered from
-                // the last run's log -- the advance simply never appeared, and
-                // silence looks the same whether the branch was reached or not.
-                std::printf("holocron: end of track (%zu of %zu in the queue)\n",
-                            queue.empty() ? 0 : at_in_queue + 1, queue.tracks.size());
-                std::fflush(stdout);
+        //
+        // THE END OF A TRACK IS DETECTED WITHOUT CONSULTING THE TRANSPORT STATE,
+        // and that is the fix for an album that played its first track and quit.
+        //
+        // The advance used to sit inside `if (timeline.state != kStopped)`. That
+        // gate is invisible in a log, so when the advance did not happen there
+        // was no way to tell whether the end of the track went unnoticed or the
+        // gate was shut -- and the run that mattered showed neither the advance
+        // nor any reason for its absence. What ends a track is the decoder
+        // running out and the ring draining; what makes it right to advance is
+        // having a queue. The transport state is a REPORT, not a precondition,
+        // so it is now printed rather than obeyed.
+        const bool track_ended =
+            session.active() && session.finished() && session.pending_frames() == 0;
 
-                if (!queue.empty() && at_in_queue + 1 < queue.tracks.size()) {
-                    if (play_queue_track(session, queue, queue_request, at_in_queue + 1, timeline,
-                                         "next --")) {
-                        ++at_in_queue;
-                    } else {
-                        // One unplayable track must not end the album.
-                        ++at_in_queue;
-                        session.stop();
-                    }
+        // On the EDGE, so it says exactly once per track that the end was seen,
+        // and with the state in it so a gate can never again be invisible.
+        if (cast_mode && track_ended && !was_ended) {
+            std::printf("holocron: end of track (%zu of %zu in the queue), transport %s\n",
+                        queue.empty() ? 0 : at_in_queue + 1, queue.tracks.size(),
+                        to_string(timeline.state));
+            std::fflush(stdout);
+        }
+        was_ended = track_ended;
+
+        if (cast_mode && track_ended) {
+            if (!queue.empty() && at_in_queue + 1 < queue.tracks.size()) {
+                if (play_queue_track(session, queue, queue_request, at_in_queue + 1, timeline,
+                                     "next --")) {
+                    ++at_in_queue;
                 } else {
-                    // Nothing left. SAYING SO IS THE POINT: a controller learns
-                    // playback is over by seeing the player go from playing to
-                    // stopped, and until the timeline reported anything but
-                    // `stopped` that transition never happened at all.
+                    // One unplayable track must not end the album.
+                    ++at_in_queue;
                     session.stop();
-                    timeline = TimelineState{};
-                    queue    = PlexQueue{};
-                    std::printf("holocron: queue finished\n");
-                    std::fflush(stdout);
                 }
             } else {
-                const std::int64_t at = session.track_position_ms();
-                if (at > 0) {
-                    timeline.time_ms = at;
-                }
+                // Nothing left. SAYING SO IS THE POINT: a controller learns
+                // playback is over by seeing the player go from playing to
+                // stopped, and until the timeline reported anything but
+                // `stopped` that transition never happened at all.
+                session.stop();
+                timeline = TimelineState{};
+                queue    = PlexQueue{};
+                std::printf("holocron: queue finished\n");
+                std::fflush(stdout);
+            }
+        } else if (timeline.state != TransportState::kStopped) {
+            const std::int64_t at = session.track_position_ms();
+            if (at > 0) {
+                timeline.time_ms = at;
             }
         }
         companion.set_timeline(timeline);
@@ -1622,7 +1703,11 @@ int main(int argc, char** argv)
         if (opt.frames > 0 && rendered >= opt.frames) {
             break;
         }
-        if (opt.frames == 0 && session.active() && session.finished() &&
+        // ONLY FOR A FILE NAMED ON THE COMMAND LINE. See cast_mode: a cast
+        // target that exits when a track ends disappears from the phone's device
+        // list mid-album, which is indistinguishable from a crash and was
+        // reported as "the executable just exited out".
+        if (!cast_mode && opt.frames == 0 && session.active() && session.finished() &&
             session.pending_frames() == 0) {
             break;
         }
