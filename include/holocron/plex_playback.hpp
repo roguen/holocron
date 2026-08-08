@@ -96,6 +96,19 @@ struct PlexTrack {
     // to match against what was asked for.
     std::string key;
 
+    // The server-side ids a progress report has to quote back.
+    //
+    // `/:/timeline` on the media server identifies what is playing by
+    // `ratingKey` and by the play queue item, not by the metadata key. A report
+    // missing them is accepted and attributed to nothing, which looks exactly
+    // like not reporting at all.
+    std::string rating_key;
+    std::string play_queue_item_id;
+
+    // Plex's own global id for the track, e.g. "plex://track/5d07...". Reported
+    // on the timeline; a controller uses it to match across servers.
+    std::string guid;
+
     std::string title;
     std::string artist;   // grandparentTitle
     std::string album;    // parentTitle
@@ -149,8 +162,24 @@ struct TimelineState {
     std::int64_t duration_ms = 0;
 
     // What is playing, in the controller's terms.
+    //
+    // ALL OF THESE ARE REQUIRED, and the omission of the queue ones is what left
+    // Plexamp polling once a second and never satisfied. A controller that
+    // created a play queue matches the timeline against THAT queue and THAT
+    // item; a report naming neither is a player claiming to play something the
+    // controller has no way to connect to what it asked for.
+    //
+    // Taken from plex-mpv-shim's timeline, which is the only working reference
+    // there is. Reasoning about which fields "should" matter produced four
+    // wrong answers before this list was simply read.
     std::string key;
+    std::string rating_key;
+    std::string guid;
     std::string container_key;
+
+    std::string play_queue_id;
+    std::string play_queue_version;
+    std::string play_queue_item_id;
 
     // Which server it came from.
     std::string   machine_identifier;
@@ -197,9 +226,14 @@ std::string timeline_xml(std::string_view command_id, const TimelineState& state
 
 // One resolved play queue.
 struct PlexQueue {
-    // The server's id for it. Reported back on the timeline as `containerKey`,
-    // so a controller can tell this is the queue it asked for.
+    // The server's id for it. Reported back on the timeline so a controller can
+    // tell this is the queue it asked for.
     std::string id;
+
+    // Bumped by the server whenever the queue changes. A controller compares it
+    // against its own copy, and a timeline that omits it is a player reporting
+    // on a queue of unknown vintage.
+    std::string version;
 
     // In order. Each carries its own part_key, so playing the next track needs
     // no further request.
@@ -234,6 +268,28 @@ HttpError create_play_queue(const PlayRequest& request, const std::string& clien
 // Exposed because it is the part most likely to be wrong and the only part
 // testable without a server.
 bool parse_play_queue(const std::string& xml, PlexQueue& out);
+
+// Tell the MEDIA SERVER where playback has reached.
+//
+// SEPARATE FROM THE TIMELINE A CONTROLLER POLLS, AND NOT A SUBSTITUTE FOR IT.
+//
+// `/player/timeline/poll` answers a controller that asks us directly.
+// `/:/timeline` tells the SERVER, which is what makes a session appear in Plex
+// at all -- now-playing, watch state, and the state a controller reads when it
+// is not polling the player. Observed 2026-08-08: a cast that played audio
+// correctly still left Plexamp spinning, with no session visible to the server.
+//
+// Sent on every state change and periodically while playing. Best-effort: a
+// failed report must never interrupt playback, so the return value is for
+// logging rather than for deciding anything.
+//
+// `client_identifier` is this player's own, sent as a header alongside the
+// token, for the same undocumented reason create_play_queue needs it.
+HttpError report_timeline_to_server(const PlayRequest& server, const PlexTrack& track,
+                                    const std::string& client_identifier,
+                                    const std::string& session_identifier,
+                                    const std::string& queue_id, TransportState state,
+                                    std::int64_t time_ms, std::string& out_detail);
 
 // Decode a playMedia query string.
 //

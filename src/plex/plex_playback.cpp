@@ -237,8 +237,10 @@ bool TimelineState::differs_materially_from(const TimelineState& other) const
 {
     // Everything EXCEPT time_ms. See the note in the header: waking a long poll
     // on a position change puts the hot loop straight back.
-    return state != other.state || key != other.key ||
-           container_key != other.container_key || duration_ms != other.duration_ms ||
+    return state != other.state || key != other.key || rating_key != other.rating_key ||
+           container_key != other.container_key ||
+           play_queue_item_id != other.play_queue_item_id ||
+           play_queue_id != other.play_queue_id || duration_ms != other.duration_ms ||
            machine_identifier != other.machine_identifier || address != other.address ||
            port != other.port || protocol != other.protocol;
 }
@@ -267,8 +269,23 @@ std::string timeline_xml(std::string_view command_id, const TimelineState& state
         if (active) {
             append_attribute(out, "time", std::to_string(state.time_ms));
             append_attribute(out, "duration", std::to_string(state.duration_ms));
+
+            // THE IDENTIFYING SET. Leaving the queue ones out is what left
+            // Plexamp polling once a second and never satisfied: it had created
+            // a queue and we never said which queue or which item we were on.
             append_attribute(out, "key", state.key);
+            append_attribute(out, "ratingKey", state.rating_key);
+            if (!state.guid.empty()) {
+                append_attribute(out, "guid", state.guid);
+            }
             append_attribute(out, "containerKey", state.container_key);
+            append_attribute(out, "playQueueID", state.play_queue_id);
+            append_attribute(out, "playQueueVersion", state.play_queue_version);
+            append_attribute(out, "playQueueItemID", state.play_queue_item_id);
+
+            // How much of the track can be sought within. The whole of it: the
+            // source is a complete file rather than a live stream.
+            append_attribute(out, "seekRange", "0-" + std::to_string(state.duration_ms));
             append_attribute(out, "machineIdentifier", state.machine_identifier);
             append_attribute(out, "address", state.address);
             append_attribute(out, "port", std::to_string(state.port));
@@ -449,6 +466,7 @@ bool parse_play_queue(const std::string& xml, PlexQueue& out)
     }
 
     element_attribute(container, "playQueueID", out.id);
+    element_attribute(container, "playQueueVersion", out.version);
 
     std::string selected_id;
     element_attribute(container, "playQueueSelectedItemID", selected_id);
@@ -468,6 +486,9 @@ bool parse_play_queue(const std::string& xml, PlexQueue& out)
 
         PlexTrack track;
         element_attribute(track_element, "key", track.key);
+        element_attribute(track_element, "ratingKey", track.rating_key);
+        element_attribute(track_element, "playQueueItemID", track.play_queue_item_id);
+        element_attribute(track_element, "guid", track.guid);
         element_attribute(track_element, "title", track.title);
         element_attribute(track_element, "grandparentTitle", track.artist);
         element_attribute(track_element, "parentTitle", track.album);
@@ -551,6 +572,59 @@ HttpError create_play_queue(const PlayRequest& request, const std::string& clien
     return HttpError::kOk;
 }
 
+HttpError report_timeline_to_server(const PlayRequest& server, const PlexTrack& track,
+                                    const std::string& client_identifier,
+                                    const std::string& session_identifier,
+                                    const std::string& queue_id, TransportState state,
+                                    std::int64_t time_ms, std::string& out_detail)
+{
+    if (track.rating_key.empty()) {
+        out_detail = "no ratingKey; the server would attribute this to nothing";
+        return HttpError::kBadUrl;
+    }
+
+    std::string path = "/:/timeline?ratingKey=" + url_encode(track.rating_key) +
+                       "&key=" + url_encode(track.key) +
+                       "&state=" + to_string(state) +
+                       "&time=" + std::to_string(time_ms) +
+                       "&duration=" + std::to_string(track.duration_ms);
+
+    if (!track.play_queue_item_id.empty()) {
+        path += "&playQueueItemID=" + url_encode(track.play_queue_item_id);
+    }
+    if (!queue_id.empty()) {
+        path += "&containerKey=" + url_encode("/playQueues/" + queue_id);
+    }
+
+    // The token goes in a header, exactly as it must for /playQueues. Whether
+    // this endpoint would also accept it in the query string is untested and
+    // not worth finding out -- one rule for both is easier to keep right.
+    HttpsResponse response;
+    const HttpError err =
+        https_request("GET", server.address, server.port, path,
+                      {{"X-Plex-Token", server.token},
+                       {"X-Plex-Client-Identifier", client_identifier},
+                       // WITHOUT THIS, PLEX USES THE TOKEN AS THE SESSION ID.
+                       //
+                       // Observed on the rack: /status/sessions came back with
+                       // `<Session id="token=..."/>`, putting the account token
+                       // somewhere any user of that server can read. Sending an
+                       // identifier of our own is both more correct and the fix.
+                       {"X-Plex-Session-Identifier", session_identifier},
+                       {"X-Plex-Product", "Holocron"},
+                       {"Accept", "application/xml"}},
+                      response, out_detail);
+    if (err != HttpError::kOk) {
+        return err;
+    }
+    if (response.status != 200) {
+        out_detail = "the server answered HTTP " + std::to_string(response.status) +
+                     " to a progress report";
+        return HttpError::kRequestFailed;
+    }
+    return HttpError::kOk;
+}
+
 HttpError resolve_track(const PlayRequest& request, PlexTrack& out, std::string& out_detail)
 {
     HttpsResponse response;
@@ -575,6 +649,7 @@ HttpError resolve_track(const PlayRequest& request, PlexTrack& out, std::string&
 
     PlexTrack track;
     element_attribute(element, "key", track.key);
+    element_attribute(element, "ratingKey", track.rating_key);
     element_attribute(element, "title", track.title);
     element_attribute(element, "grandparentTitle", track.artist);
     element_attribute(element, "parentTitle", track.album);

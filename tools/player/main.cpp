@@ -1109,6 +1109,24 @@ int main(int argc, char** argv)
     PlayRequest queue_request;
     std::size_t at_in_queue = 0;
 
+    // Progress reporting to the media server, and the instrumentation for it.
+    auto           last_server_report      = std::chrono::steady_clock::now();
+    auto           last_poll_report        = std::chrono::steady_clock::now();
+    TransportState last_reported_state     = TransportState::kStopped;
+    std::uint64_t  last_poll_count         = 0;
+    bool           reported_server_failure = false;
+
+    // This player's own identifier, which the server wants on a progress report
+    // for the same undocumented reason it wants one on a play queue.
+    const std::string device_identity = device_from(cfg).machine_identifier;
+
+    // A fresh identifier for THIS run.
+    //
+    // Without one Plex uses the token as the session id and echoes it in
+    // /status/sessions, where any user of that server can read it. Verified on
+    // the rack before this existed.
+    const std::string session_identity = make_machine_identifier();
+
     while (window.pump()) {
         // -- what the phone asked for -----------------------------------------
         //
@@ -1182,6 +1200,19 @@ int main(int argc, char** argv)
                         timeline.duration_ms        = what.duration_ms;
                         timeline.time_ms            = offset;
 
+                        // The identifying set. Omitting the queue ones left
+                        // Plexamp polling once a second and never satisfied --
+                        // it had created a queue and was never told which queue
+                        // or which item the player was on.
+                        if (!queue.empty() && at_in_queue < queue.tracks.size()) {
+                            const PlexTrack& t          = queue.tracks[at_in_queue];
+                            timeline.rating_key         = t.rating_key;
+                            timeline.guid               = t.guid;
+                            timeline.play_queue_id      = queue.id;
+                            timeline.play_queue_version = queue.version;
+                            timeline.play_queue_item_id = t.play_queue_item_id;
+                        }
+
                         // HONOUR `paused=1`, WHICH PLEXAMP SENDS ON EVERY CAST.
                         //
                         // It means "load this and hold", and playing anyway
@@ -1246,7 +1277,12 @@ int main(int argc, char** argv)
                     if (serr == SessionError::kOk) {
                         timeline.time_ms     = 0;
                         timeline.duration_ms = next.duration_ms;
-                        timeline.key         = next.key;
+                        timeline.key                = next.key;
+                        timeline.rating_key         = next.rating_key;
+                        timeline.guid               = next.guid;
+                        timeline.play_queue_id      = queue.id;
+                        timeline.play_queue_version = queue.version;
+                        timeline.play_queue_item_id = next.play_queue_item_id;
                         timeline.state       = TransportState::kPlaying;
                         std::printf("holocron: next -- \"%s\" (%zu of %zu)\n",
                                     next.title.c_str(), at_in_queue + 1, queue.tracks.size());
@@ -1277,6 +1313,58 @@ int main(int argc, char** argv)
             }
         }
         companion.set_timeline(timeline);
+
+        // -- tell the SERVER too ----------------------------------------------
+        //
+        // Separate from the timeline a controller polls, and not a substitute
+        // for it. This is what makes a session exist in Plex at all -- the
+        // now-playing everywhere else, and the state a controller reads when it
+        // is not asking the player directly.
+        //
+        // Observed 2026-08-08: a cast that played audio correctly, with the poll
+        // endpoint answering properly, still left Plexamp spinning. Nothing had
+        // told the server anything.
+        //
+        // Every two seconds while playing, and immediately on a state change.
+        // Best effort throughout: a failed report must never interrupt playback,
+        // so it is logged once and not retried.
+        if (!queue.empty() && at_in_queue < queue.tracks.size()) {
+            const auto now = std::chrono::steady_clock::now();
+            const bool state_changed = timeline.state != last_reported_state;
+            if (state_changed || now - last_server_report > std::chrono::seconds(2)) {
+                last_server_report  = now;
+                last_reported_state = timeline.state;
+
+                std::string     detail;
+                const HttpError rerr = report_timeline_to_server(
+                    queue_request, queue.tracks[at_in_queue], device_identity, session_identity,
+                    queue.id, timeline.state, timeline.time_ms, detail);
+                if (rerr != HttpError::kOk && !reported_server_failure) {
+                    // ONCE. A report that fails every two seconds would bury the
+                    // log in the same line forever.
+                    reported_server_failure = true;
+                    std::fprintf(stderr,
+                                 "holocron: the server is not being told about playback -- %s\n"
+                                 "  %s\n",
+                                 to_string(rerr), detail.c_str());
+                }
+            }
+        }
+
+        // How much the phone is asking. Printed only when it changes, and only
+        // every few seconds: individually these are the overwhelming majority of
+        // traffic, but their ABSENCE is diagnostic and was invisible once they
+        // stopped being logged at all.
+        if (std::chrono::steady_clock::now() - last_poll_report > std::chrono::seconds(10)) {
+            last_poll_report            = std::chrono::steady_clock::now();
+            const std::uint64_t polls   = companion.timeline_polls();
+            if (polls != last_poll_count) {
+                std::printf("holocron: %llu timeline poll(s) so far\n",
+                            static_cast<unsigned long long>(polls));
+                std::fflush(stdout);
+                last_poll_count = polls;
+            }
+        }
 
 
         // -- calibration ------------------------------------------------------
