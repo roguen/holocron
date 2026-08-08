@@ -75,6 +75,13 @@ Then squash-merge:
 gh pr merge <N> --squash --delete-branch
 ```
 
+**`--squash`, never `--merge`.** `main` requires linear history, so a merge
+commit is refused outright:
+
+> GraphQL: Merge commits are not allowed on this repository.
+
+That applies to the `development` → `main` merge too, not just feature branches.
+
 ## 3. Only if releasing to `main`
 
 **Ask first unless the user has already said to.** A release is a deliberate act.
@@ -111,6 +118,20 @@ Squash merges plus `strict_up_to_date` make this required, not occasional:
 ```bash
 git checkout development && git reset --hard main && git push --force-with-lease
 ```
+
+**That reset ORPHANS every open feature branch, and rebasing them will not
+work.** Their commits are now squashed into `main`, so a rebase tries to replay
+work that is already there and conflicts immediately. **Cherry-pick instead** —
+rebuild each branch on the new `development` and take only its own commits:
+
+```bash
+git checkout -B <branch> development
+git cherry-pick <the branch's own commits>
+git push --force-with-lease
+```
+
+Then rebuild and re-run the tests on each one before letting CI have it. A
+cherry-pick that applies cleanly can still be wrong.
 
 **Issues closed by `Closes #N` only close on a merge to the DEFAULT branch.**
 Work merged to `development` leaves them open until it reaches `main` — say so

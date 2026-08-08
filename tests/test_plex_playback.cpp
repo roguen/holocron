@@ -446,6 +446,147 @@ TEST_CASE("a track title with metacharacters does not break the timeline",
     REQUIRE(xml.find("key=\"/library/metadata/1?a=1&amp;b=2\"") != std::string::npos);
 }
 
+// ---------------------------------------------------------------------------
+// Play queues
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Shaped like the real /playQueues answer from the rack, trimmed to three
+// tracks. The second is the selected one, and each Track has its OWN Part --
+// which is the property the parser has to respect.
+const char* const kQueue =
+    R"(<?xml version="1.0" encoding="UTF-8"?>)"
+    R"(<MediaContainer size="3" playQueueID="11507" playQueueSelectedItemID="171362" )"
+    R"(playQueueTotalCount="3" playQueueVersion="1">)"
+    R"(<Track playQueueItemID="171361" key="/library/metadata/56397" title="Stinkfist" )"
+    R"(grandparentTitle="Tool" parentTitle="&#198;nima" duration="311144">)"
+    R"(<Media audioCodec="mp3" container="mp3">)"
+    R"(<Part key="/library/parts/140254/1713699104/file.mp3" container="mp3"/>)"
+    R"(</Media></Track>)"
+    R"(<Track playQueueItemID="171362" key="/library/metadata/56398" title="Eulogy" )"
+    R"(grandparentTitle="Tool" parentTitle="&#198;nima" duration="522000">)"
+    R"(<Media audioCodec="mp3" container="mp3">)"
+    R"(<Part key="/library/parts/140255/1713699105/file.mp3" container="mp3"/>)"
+    R"(</Media></Track>)"
+    R"(<Track playQueueItemID="171363" key="/library/metadata/56399" title="H." )"
+    R"(grandparentTitle="Tool" parentTitle="&#198;nima" duration="368000">)"
+    R"(<Media audioCodec="mp3" container="mp3">)"
+    R"(<Part key="/library/parts/140256/1713699106/file.mp3" container="mp3"/>)"
+    R"(</Media></Track>)"
+    R"(</MediaContainer>)";
+
+}  // namespace
+
+TEST_CASE("a play queue yields every track in order", "[plex][playback][queue]")
+{
+    PlexQueue queue;
+    REQUIRE(parse_play_queue(kQueue, queue));
+
+    REQUIRE(queue.id == "11507");
+    REQUIRE(queue.tracks.size() == 3);
+    REQUIRE(queue.tracks[0].title == "Stinkfist");
+    REQUIRE(queue.tracks[1].title == "Eulogy");
+    REQUIRE(queue.tracks[2].title == "H.");
+
+    // Decoded from the numeric reference the server actually sends.
+    REQUIRE(queue.tracks[0].album == "\xC3\x86nima");
+}
+
+TEST_CASE("each track gets ITS OWN part, not the first one", "[plex][playback][queue]")
+{
+    // THE BUG THIS GUARDS AGAINST. Searching the document from the top for a
+    // Part would give every track the first track's audio -- an album that plays
+    // its opening song twelve times, with correct titles and durations all the
+    // way down so nothing looks wrong until you listen.
+    PlexQueue queue;
+    REQUIRE(parse_play_queue(kQueue, queue));
+
+    REQUIRE(queue.tracks[0].part_key == "/library/parts/140254/1713699104/file.mp3");
+    REQUIRE(queue.tracks[1].part_key == "/library/parts/140255/1713699105/file.mp3");
+    REQUIRE(queue.tracks[2].part_key == "/library/parts/140256/1713699106/file.mp3");
+}
+
+TEST_CASE("the selected item is where playback starts", "[plex][playback][queue]")
+{
+    // Not always the first: casting from the middle of an album, or resuming
+    // one, selects further in. Starting at zero regardless would silently
+    // restart the album every time.
+    PlexQueue queue;
+    REQUIRE(parse_play_queue(kQueue, queue));
+    REQUIRE(queue.selected == 1);
+    REQUIRE(queue.tracks[queue.selected].title == "Eulogy");
+}
+
+TEST_CASE("each track carries the key a controller matches on", "[plex][playback][queue]")
+{
+    PlexQueue queue;
+    REQUIRE(parse_play_queue(kQueue, queue));
+    REQUIRE(queue.tracks[0].key == "/library/metadata/56397");
+    REQUIRE(queue.tracks[1].key == "/library/metadata/56398");
+}
+
+TEST_CASE("a queue with nothing playable in it is refused", "[plex][playback][queue]")
+{
+    // A Track with no Part cannot be opened, and one that stalls the queue on
+    // itself is worse than one that is skipped.
+    const std::string no_parts =
+        R"(<MediaContainer playQueueID="1"><Track key="/k" title="No audio"/></MediaContainer>)";
+
+    PlexQueue queue;
+    REQUIRE_FALSE(parse_play_queue(no_parts, queue));
+    REQUIRE(queue.tracks.empty());
+
+    REQUIRE_FALSE(parse_play_queue("", queue));
+    REQUIRE_FALSE(parse_play_queue("<MediaContainer/>", queue));
+}
+
+TEST_CASE("the createPlayQueue command parses", "[plex][playback][queue]")
+{
+    // Captured from a real cast. Note there is NO playMedia in that exchange at
+    // all -- this command is the whole instruction.
+    const std::vector<std::pair<std::string, std::string>> params = {
+        {"address", "192-168-68-13.84b4357e56a04fb88b2f2aff37614b33.plex.direct"},
+        {"commandID", "14"},
+        {"includeExternalMedia", "1"},
+        {"machineIdentifier", "0f54f92a5124e95f541968d14b834b89ecd1cb08"},
+        {"playlistID", "undefined"},
+        {"port", "32400"},
+        {"protocol", "https"},
+        {"shuffle", "0"},
+        {"token", "transient-abc"},
+        {"type", "audio"},
+        {"uri", "server://0f54f92a/com.plexapp.plugins.library/library/metadata/56396/children"},
+    };
+
+    PlayRequest request;
+    std::string detail;
+    INFO(detail);
+    REQUIRE(parse_create_play_queue(params, request, detail));
+
+    CHECK(request.address == "192-168-68-13.84b4357e56a04fb88b2f2aff37614b33.plex.direct");
+    CHECK(request.port == 32400);
+    CHECK(request.protocol == "https");
+    CHECK(request.type == "audio");
+    CHECK(request.token == "transient-abc");
+    // The uri travels in `key`, because the server fields mean the same thing
+    // here as on a play command and duplicating them would let the two drift.
+    CHECK(request.key ==
+          "server://0f54f92a/com.plexapp.plugins.library/library/metadata/56396/children");
+}
+
+TEST_CASE("a createPlayQueue with nothing to enqueue is refused", "[plex][playback][queue]")
+{
+    PlayRequest request;
+    std::string detail;
+
+    REQUIRE_FALSE(parse_create_play_queue({{"address", "host"}}, request, detail));
+    REQUIRE(detail.find("uri") != std::string::npos);
+
+    REQUIRE_FALSE(parse_create_play_queue({{"uri", "server://x"}}, request, detail));
+    REQUIRE(detail.find("address") != std::string::npos);
+}
+
 TEST_CASE("every HttpError has a distinct description", "[plex][playback]")
 {
     const HttpError all[] = {HttpError::kOk, HttpError::kUnsupported, HttpError::kConnectFailed,

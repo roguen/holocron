@@ -101,6 +101,13 @@ public:
     // Called when a controller asks for playback to stop.
     using StopHandler = std::function<void()>;
 
+    // Called when a controller asks the player to build and start a play queue.
+    //
+    // This is what casting an ALBUM sends -- no play command arrives at all.
+    // The server has already been asked to create the queue, so the handler
+    // receives every track in order with its audio path resolved.
+    using QueueHandler = std::function<void(const PlayRequest&, const PlexQueue&)>;
+
     // Called when a controller asks to pause or resume. `true` means pause.
     //
     // Plexamp sends `paused=1` on the play command itself and then drives
@@ -113,6 +120,7 @@ public:
     void set_play_handler(PlayHandler handler);
     void set_stop_handler(StopHandler handler);
     void set_pause_handler(PauseHandler handler);
+    void set_queue_handler(QueueHandler handler);
 
     // What to report to a controller that asks.
     //

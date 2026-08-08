@@ -89,6 +89,13 @@ struct PlayRequest {
 
 // What the server says about the item.
 struct PlexTrack {
+    // The item in the controller's terms, e.g. "/library/metadata/56397".
+    //
+    // Reported back on the timeline so a controller can tell WHICH track is
+    // playing. Without it the now-playing is a title and a duration with nothing
+    // to match against what was asked for.
+    std::string key;
+
     std::string title;
     std::string artist;   // grandparentTitle
     std::string album;    // parentTitle
@@ -170,6 +177,63 @@ struct TimelineState {
 // that are permanently stopped reads as a malformed answer rather than as a
 // player that does not do video.
 std::string timeline_xml(std::string_view command_id, const TimelineState& state);
+
+// ---------------------------------------------------------------------------
+// Play queues
+//
+// THE COMMAND THAT ACTUALLY ARRIVES WHEN YOU CAST AN ALBUM.
+//
+// Observed 2026-08-08 against Plexamp: casting an album sends NO playMedia at
+// all. It sends `createPlayQueue` with a `uri` naming the album's children, and
+// then waits for the player to report that it is playing. A player that
+// acknowledges the command and does nothing leaves the phone spinning forever,
+// which is exactly what happened.
+//
+// The player is expected to build the queue ON THE SERVER -- POST /playQueues --
+// and start the first item. The server's answer carries every track in order,
+// which is also what makes advancing to the next one possible without asking
+// again.
+// ---------------------------------------------------------------------------
+
+// One resolved play queue.
+struct PlexQueue {
+    // The server's id for it. Reported back on the timeline as `containerKey`,
+    // so a controller can tell this is the queue it asked for.
+    std::string id;
+
+    // In order. Each carries its own part_key, so playing the next track needs
+    // no further request.
+    std::vector<PlexTrack> tracks;
+
+    // Which one the server says to start on. Not always the first: resuming an
+    // album, or casting from the middle of one, selects further in.
+    std::size_t selected = 0;
+
+    bool empty() const { return tracks.empty(); }
+};
+
+// Decode a `createPlayQueue` query string into the request it implies.
+//
+// Reuses PlayRequest for the server fields -- address, port, protocol, token --
+// because they arrive identically and mean the same thing. `key` carries the
+// `uri` instead, since that is what identifies what to enqueue.
+bool parse_create_play_queue(const std::vector<std::pair<std::string, std::string>>& params,
+                             PlayRequest& out, std::string& out_detail);
+
+// Ask the server to build the queue, and read back what is in it.
+//
+// One POST. `request.key` must hold the `uri` from the command.
+//
+// `client_identifier` is this player.s own, sent as a header. The token must be
+// a header too -- see the implementation.
+HttpError create_play_queue(const PlayRequest& request, const std::string& client_identifier,
+                            PlexQueue& out, std::string& out_detail);
+
+// Read a `/playQueues` response.
+//
+// Exposed because it is the part most likely to be wrong and the only part
+// testable without a server.
+bool parse_play_queue(const std::string& xml, PlexQueue& out);
 
 // Decode a playMedia query string.
 //
