@@ -309,7 +309,8 @@ std::string timeline_xml(std::string_view command_id, const TimelineState& state
             // here would put buttons on the phone that do nothing when pressed,
             // which is worse than their absence -- the user cannot tell a dead
             // button from a broken player.
-            append_attribute(out, "controllable", "playPause,play,pause,stop");
+            append_attribute(out, "controllable",
+                             "playPause,play,pause,stop,skipPrevious,skipNext,skipTo");
         }
         out += " />\n";
     }

@@ -351,15 +351,18 @@ TEST_CASE("controllable claims exactly what is implemented", "[plex][playback]")
     // hide controls that do work.
     const std::string xml = timeline_xml("7", playing_fixture());
 
-    REQUIRE(xml.find("controllable=\"playPause,play,pause,stop\"") != std::string::npos);
+    REQUIRE(xml.find("controllable=\"playPause,play,pause,stop,skipPrevious,skipNext,skipTo\"") !=
+            std::string::npos);
+
+    // seekTo is still NOT claimed: nothing seeks yet, and a dead scrub bar is
+    // indistinguishable from a broken player.
+    REQUIRE(xml.find("controllable=\"") != std::string::npos);
     REQUIRE(xml.find("seekTo") == std::string::npos);
-    REQUIRE(xml.find("skipNext") == std::string::npos);
 
     // Volume is REPORTED so the controller's model stays consistent, and is not
     // in `controllable` because applying it in software would end bit-perfect
     // output. See the note in timeline_xml.
     REQUIRE(xml.find("volume=\"100\"") != std::string::npos);
-    REQUIRE(xml.find("controllable=\"playPause,play,pause,stop\"") != std::string::npos);
 }
 
 TEST_CASE("a paused player still reports a position and a track", "[plex][playback]")

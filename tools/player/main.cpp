@@ -385,6 +385,57 @@ bool build_crystal(const char* stem, std::unique_ptr<CrystalFacet>& live, bool c
 
 std::atomic<bool> g_interrupted{false};
 
+// Start track `index` of `queue`, and describe it on the timeline.
+//
+// ONE PATH FOR EVERY WAY A TRACK CAN START: the end of the previous one, a skip
+// forward or back, and a controller naming an item outright. They differ only in
+// how the index is chosen, and giving them separate bodies is how the timeline
+// ends up describing the track that was playing a moment ago.
+bool play_queue_track(PlaybackSession& session, const PlexQueue& queue,
+                      const PlayRequest& queue_request, std::size_t index,
+                      TimelineState& timeline, const char* verb)
+{
+    if (index >= queue.tracks.size()) {
+        return false;
+    }
+    const PlexTrack& track = queue.tracks[index];
+
+    NowPlaying what;
+    what.title       = track.title;
+    what.artist      = track.artist;
+    what.album       = track.album;
+    what.duration_ms = track.duration_ms;
+    what.source      = stream_url(queue_request, track.part_key);
+
+    std::string        detail;
+    const SessionError serr = session.start(what.source, 0, what, detail);
+    if (serr != SessionError::kOk) {
+        std::fprintf(stderr, "holocron: skipping \"%s\" -- %s\n", track.title.c_str(),
+                     to_string(serr));
+        return false;
+    }
+
+    timeline.time_ms            = 0;
+    timeline.duration_ms        = track.duration_ms;
+    timeline.key                = track.key;
+    timeline.rating_key         = track.rating_key;
+    timeline.guid               = track.guid;
+    timeline.container_key      = "/playQueues/" + queue.id;
+    timeline.play_queue_id      = queue.id;
+    timeline.play_queue_version = queue.version;
+    timeline.play_queue_item_id = track.play_queue_item_id;
+    timeline.machine_identifier = queue_request.machine_identifier;
+    timeline.address            = queue_request.address;
+    timeline.port               = queue_request.port;
+    timeline.protocol           = queue_request.protocol;
+    timeline.state              = TransportState::kPlaying;
+
+    std::printf("holocron: %s \"%s\" (%zu of %zu)%s\n", verb, track.title.c_str(), index + 1,
+                queue.tracks.size(), session.bit_perfect() ? " [BIT-PERFECT]" : "");
+    std::fflush(stdout);
+    return true;
+}
+
 // A command from the phone, waiting for the render thread to act on it.
 //
 // THE HANDOFF EXISTS BECAUSE OF WHICH THREAD IS ALLOWED TO TOUCH THE SESSION.
@@ -441,6 +492,34 @@ struct CastCommand {
     {
         const std::lock_guard<std::mutex> lock(mutex);
         pause = want_pause ? 1 : 2;
+    }
+
+    // A move within the queue. See CompanionServer::SkipHandler for `direction`.
+    bool        skip = false;
+    int         skip_direction = 0;
+    std::string skip_item;
+    std::string skip_key;
+
+    void request_skip(int direction, const std::string& item, const std::string& key)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        skip           = true;
+        skip_direction = direction;
+        skip_item      = item;
+        skip_key       = key;
+    }
+
+    bool take_skip(int& out_direction, std::string& out_item, std::string& out_key)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!skip) {
+            return false;
+        }
+        out_direction = skip_direction;
+        out_item      = skip_item;
+        out_key       = skip_key;
+        skip          = false;
+        return true;
     }
 
     void request_play(const std::string& stream, const PlayRequest& req, const NowPlaying& track)
@@ -904,6 +983,10 @@ int main(int argc, char** argv)
     companion.set_pause_handler([&cast](bool paused) { cast.request_pause(paused); });
     companion.set_queue_handler(
         [&cast](const PlayRequest& request, const PlexQueue& q) { cast.request_queue(request, q); });
+    companion.set_skip_handler(
+        [&cast](int direction, const std::string& item, const std::string& key) {
+            cast.request_skip(direction, item, key);
+        });
 
     // Linking comes before discovery: it needs the machine identifier and
     // nothing else, and a run that is signing in has no business also
@@ -1032,6 +1115,26 @@ int main(int argc, char** argv)
             window.close();
             session.stop();
             return 1;
+        }
+
+        // Which one to open on. The vault is ordered by name so the two
+        // platforms agree, not because the first is the one worth looking at.
+        if (!cfg.crystal.empty()) {
+            bool found = false;
+            for (std::size_t i = 0; i < vault.size(); ++i) {
+                if (vault[i].name == cfg.crystal || vault[i].stem == cfg.crystal) {
+                    current = i;
+                    found   = true;
+                    break;
+                }
+            }
+            if (!found) {
+                // Named and absent is worth saying. Falling back silently would
+                // leave someone editing a crystal the player is not drawing.
+                std::fprintf(stderr,
+                             "holocron: no crystal named `%s` in %s -- starting on `%s`\n",
+                             cfg.crystal.c_str(), opt.vault, vault[0].name.c_str());
+            }
         }
     } else if (opt.crystal != nullptr) {
         vault.push_back(VaultEntry{opt.crystal, opt.crystal});
@@ -1235,6 +1338,50 @@ int main(int argc, char** argv)
             }
         }
 
+        // A skip that arrived since the last frame.
+        {
+            int         direction = 0;
+            std::string item;
+            std::string key;
+
+            if (cast.take_skip(direction, item, key) && !queue.empty()) {
+                std::size_t target = at_in_queue;
+                bool        found  = true;
+
+                if (direction == 0) {
+                    // NAMED OUTRIGHT. Matched on the queue item id first and the
+                    // metadata key second: the same track can appear twice in a
+                    // queue, and only the item id tells those two apart.
+                    found = false;
+                    for (std::size_t i = 0; i < queue.tracks.size(); ++i) {
+                        const bool by_item =
+                            !item.empty() && queue.tracks[i].play_queue_item_id == item;
+                        const bool by_key = item.empty() && !key.empty() &&
+                                            queue.tracks[i].key == key;
+                        if (by_item || by_key) {
+                            target = i;
+                            found  = true;
+                            break;
+                        }
+                    }
+                } else if (direction > 0) {
+                    found = at_in_queue + 1 < queue.tracks.size();
+                    target = at_in_queue + 1;
+                } else {
+                    found  = at_in_queue > 0;
+                    target = found ? at_in_queue - 1 : 0;
+                }
+
+                if (!found) {
+                    std::printf("holocron: nowhere to skip to\n");
+                    std::fflush(stdout);
+                } else if (play_queue_track(session, queue, queue_request, target, timeline,
+                                            "skipped to")) {
+                    at_in_queue = target;
+                }
+            }
+        }
+
         // A pause or resume that arrived since the last frame. Applied here for
         // the same reason a play command is: this is the thread that owns the
         // session.
@@ -1261,37 +1408,21 @@ int main(int argc, char** argv)
                 // The track ended. If an album was cast, the next one starts
                 // here rather than waiting to be told: the controller handed
                 // over the whole queue precisely so the player would walk it.
+                // Printed unconditionally, because "did the end of the track get
+                // noticed at all" was a question that could not be answered from
+                // the last run's log -- the advance simply never appeared, and
+                // silence looks the same whether the branch was reached or not.
+                std::printf("holocron: end of track (%zu of %zu in the queue)\n",
+                            queue.empty() ? 0 : at_in_queue + 1, queue.tracks.size());
+                std::fflush(stdout);
+
                 if (!queue.empty() && at_in_queue + 1 < queue.tracks.size()) {
-                    ++at_in_queue;
-                    const PlexTrack& next = queue.tracks[at_in_queue];
-
-                    NowPlaying what;
-                    what.title       = next.title;
-                    what.artist      = next.artist;
-                    what.album       = next.album;
-                    what.duration_ms = next.duration_ms;
-                    what.source      = stream_url(queue_request, next.part_key);
-
-                    std::string        detail;
-                    const SessionError serr = session.start(what.source, 0, what, detail);
-                    if (serr == SessionError::kOk) {
-                        timeline.time_ms     = 0;
-                        timeline.duration_ms = next.duration_ms;
-                        timeline.key                = next.key;
-                        timeline.rating_key         = next.rating_key;
-                        timeline.guid               = next.guid;
-                        timeline.play_queue_id      = queue.id;
-                        timeline.play_queue_version = queue.version;
-                        timeline.play_queue_item_id = next.play_queue_item_id;
-                        timeline.state       = TransportState::kPlaying;
-                        std::printf("holocron: next -- \"%s\" (%zu of %zu)\n",
-                                    next.title.c_str(), at_in_queue + 1, queue.tracks.size());
-                        std::fflush(stdout);
+                    if (play_queue_track(session, queue, queue_request, at_in_queue + 1, timeline,
+                                         "next --")) {
+                        ++at_in_queue;
                     } else {
-                        // One unplayable track must not end the album. Skip it
-                        // on the next frame rather than stopping here.
-                        std::fprintf(stderr, "holocron: skipping \"%s\" -- %s\n",
-                                     next.title.c_str(), to_string(serr));
+                        // One unplayable track must not end the album.
+                        ++at_in_queue;
                         session.stop();
                     }
                 } else {

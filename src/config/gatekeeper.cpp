@@ -145,6 +145,7 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     read_bool(tbl, "render", "gl_debug", out.gl_debug, bad);
 
     read_string(tbl, "paths", "vault", out.vault, bad);
+    read_string(tbl, "paths", "crystal", out.crystal, bad);
 
     read_bool(tbl, "plex", "discovery", out.plex_discovery, bad);
     read_string(tbl, "plex", "device_name", out.plex_device_name, bad);

@@ -229,6 +229,19 @@ gl_debug = true
 # separate, so paging through the vault never lands on a strobing white screen.
 vault = "crystals"
 
+# Which crystal in the vault to open on, by manifest name.
+#
+# EMPTY MEANS THE FIRST, which is alphabetical and therefore arbitrary: the vault
+# is ordered by name so Windows and Linux agree on the order, not because the
+# first one is the one worth looking at. The left and right arrows still move
+# between them while it runs; this only chooses where a run begins.
+#
+# Naming one that is not there is reported rather than silently ignored --
+# otherwise you edit a crystal the player is not drawing.
+#
+# LIVE.
+crystal = ""
+
 # MilkDrop presets for the projectM facet (M4). User-supplied; none ship with
 # Holocron, and none can -- see THIRD-PARTY-NOTICES.md.
 preset_packs = ""

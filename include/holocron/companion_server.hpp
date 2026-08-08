@@ -108,6 +108,15 @@ public:
     // receives every track in order with its audio path resolved.
     using QueueHandler = std::function<void(const PlayRequest&, const PlexQueue&)>;
 
+    // Called when a controller asks to move within the queue.
+    //
+    // `direction` is -1 for previous, +1 for next, and 0 when the controller
+    // named a specific item -- which is what `skipTo` does, and what Plexamp
+    // sends after building a queue to jump to the track you actually tapped.
+    // Ignoring it is why playback kept starting at track one.
+    using SkipHandler = std::function<void(int direction, const std::string& play_queue_item_id,
+                                           const std::string& key)>;
+
     // Called when a controller asks to pause or resume. `true` means pause.
     //
     // Plexamp sends `paused=1` on the play command itself and then drives
@@ -121,6 +130,7 @@ public:
     void set_stop_handler(StopHandler handler);
     void set_pause_handler(PauseHandler handler);
     void set_queue_handler(QueueHandler handler);
+    void set_skip_handler(SkipHandler handler);
 
     // What to report to a controller that asks.
     //

@@ -85,6 +85,7 @@ struct CompanionServer::Impl {
     CompanionServer::StopHandler  stop_handler;
     CompanionServer::PauseHandler pause_handler;
     CompanionServer::QueueHandler queue_handler;
+    CompanionServer::SkipHandler  skip_handler;
 
     bool last_reported_playing()
     {
@@ -363,6 +364,42 @@ void CompanionServer::Impl::install_routes()
         res.set_content(response_xml(200, "OK"), "text/xml");
     });
 
+    // skipNext / skipPrevious / skipTo.
+    //
+    // `skipTo` is the one that matters most and was the least obvious: after
+    // building a queue, Plexamp sends it to jump to the track you actually
+    // tapped. Ignoring it meant every cast started at track one no matter what
+    // was chosen, which looked like the player having a favourite song.
+    const auto skip_route = [self](const httplib::Request& req, httplib::Response& res) {
+        self->note(req);
+        self->decorate(res);
+
+        int direction = 0;
+        if (req.path.find("skipNext") != std::string::npos) {
+            direction = 1;
+        } else if (req.path.find("skipPrevious") != std::string::npos) {
+            direction = -1;
+        }
+
+        const auto item = req.params.find("playQueueItemID");
+        const auto key  = req.params.find("key");
+
+        std::printf("companion: %s\n", direction == 1    ? "skip next"
+                                       : direction == -1 ? "skip previous"
+                                                         : "skip to a chosen track");
+        std::fflush(stdout);
+
+        if (self->skip_handler) {
+            self->skip_handler(direction,
+                               item == req.params.end() ? std::string{} : item->second,
+                               key == req.params.end() ? std::string{} : key->second);
+        }
+        res.set_content(response_xml(200, "OK"), "text/xml");
+    };
+    self->server.Get("/player/playback/skipNext", skip_route);
+    self->server.Get("/player/playback/skipPrevious", skip_route);
+    self->server.Get("/player/playback/skipTo", skip_route);
+
     // pause / play / playPause, all three spellings a controller may use.
     const auto pause_route = [self](const httplib::Request& req, httplib::Response& res) {
         self->note(req);
@@ -527,6 +564,11 @@ void CompanionServer::set_pause_handler(PauseHandler handler)
 void CompanionServer::set_queue_handler(QueueHandler handler)
 {
     impl_->queue_handler = std::move(handler);
+}
+
+void CompanionServer::set_skip_handler(SkipHandler handler)
+{
+    impl_->skip_handler = std::move(handler);
 }
 
 void CompanionServer::set_timeline(const TimelineState& state)
