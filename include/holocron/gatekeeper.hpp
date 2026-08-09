@@ -80,6 +80,28 @@ struct Gatekeeper {
     bool vsync    = true;
     bool gl_debug = true;
 
+    // When to move to the next thing in the vault by itself.
+    //
+    // THE CAST-AND-FORGET CASE IS THE WHOLE POINT (D-029). An album is forty
+    // minutes and nobody is going to pick up the phone between every track; a
+    // vault that never advances is a vault with one crystal in it as far as an
+    // ordinary evening is concerned.
+    //
+    // "track" is the default rather than "timer" because a track change is a
+    // real boundary in the music and a timer is an arbitrary one -- a transition
+    // that lands mid-chorus draws attention to itself, and one that lands at the
+    // start of a song reads as the visuals following the record.
+    //
+    // Spellings: "off", "track", "timer". Anything else is a bad value, which
+    // load_gatekeeper treats as fatal for a live key.
+    std::string advance = "track";
+
+    // How long "timer" waits. Ignored otherwise.
+    //
+    // Long by default. The transition is the thing that catches the eye, so a
+    // short interval turns the visualization into a slideshow of transitions.
+    int advance_seconds = 180;
+
     // [paths]
     std::string vault = "crystals";
 

@@ -782,6 +782,29 @@ struct CastCommand {
         return true;
     }
 
+    // How often the picture should move on by itself. Crosses to the render
+    // thread like everything else here, though this one performs no GL work --
+    // it is queued for consistency and because the render loop owns the clock it
+    // resets.
+    std::string advance_mode_asked;
+
+    void request_advance(const std::string& mode)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        advance_mode_asked = mode;
+    }
+
+    bool take_advance(std::string& out_mode)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (advance_mode_asked.empty()) {
+            return false;
+        }
+        out_mode           = advance_mode_asked;
+        advance_mode_asked.clear();
+        return true;
+    }
+
     // Show the beat-alignment instrument. Compiles a program, so it has to cross
     // to the render thread like every other crystal change.
     bool want_sync = false;
@@ -1665,6 +1688,10 @@ int main(int argc, char** argv)
         [&cast](bool visible) { cast.request_now_playing(visible); });
     companion.set_trim_handler([&cast](double delta_ms) { cast.request_trim(delta_ms); });
     companion.set_sync_handler([&cast] { cast.request_sync(); });
+    companion.set_advance_handler([&cast](const std::string& mode) {
+        cast.request_advance(mode);
+    });
+    companion.set_advance(cfg.advance, cfg.advance_seconds);
 
     // Linking comes before discovery: it needs the machine identifier and
     // nothing else, and a run that is signing in has no business also
@@ -2045,6 +2072,29 @@ int main(int argc, char** argv)
     // turns on and a branch no log prints is a branch that cannot be diagnosed.
     std::size_t announced_layers = 0;
     bool        announced_direct = false;
+
+    // -- moving through the vault by itself -----------------------------------
+    //
+    // Off, on every track change, or on a timer. The cast-and-forget case is the
+    // whole point of this project (D-029): an album is forty minutes and nobody
+    // picks up the phone between tracks, so a vault that never advances is a
+    // vault of one as far as an ordinary evening goes.
+    //
+    // SEQUENTIAL, NOT RANDOM. Random reads better for about ten minutes and then
+    // costs more than it gives: it repeats, it can pick what is already up, and
+    // it makes "what did that one look like" unanswerable. Vault order is by
+    // manifest name, so an author who wants a sequence can simply name one.
+    // NOT const: the control page changes it, because deciding how often the
+    // picture should change is exactly the sort of thing you want to do from the
+    // couch rather than by editing a file and restarting.
+    std::string advance_mode  = cfg.advance;
+    auto        advance_due_at = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(cfg.advance_seconds);
+
+    // Whether the first track of the run has already been seen. See the note at
+    // the use site: advancing on it would move off the crystal the config chose
+    // to start on before a note played.
+    bool advanced_from_first = false;
 
     // Put `next` on screen, and fade whatever was there out over it.
     //
@@ -2870,6 +2920,17 @@ int main(int argc, char** argv)
         //
         // Clamped to the same ±2 s the flag would accept. A relative control with
         // no bound can be walked anywhere by holding a button.
+        if (std::string mode; cast.take_advance(mode)) {
+            advance_mode = mode;
+            // The clock restarts, so switching to "timer" does not immediately
+            // fire because the run happens to have been going longer than the
+            // interval.
+            advance_due_at = std::chrono::steady_clock::now() +
+                             std::chrono::seconds(cfg.advance_seconds);
+            std::printf("holocron: advance %s\n", advance_mode.c_str());
+            std::fflush(stdout);
+        }
+
         if (double delta = 0.0; cast.take_trim(delta)) {
             trim_ms = std::clamp(trim_ms + delta, -2000.0, 2000.0);
             trim_us = static_cast<std::int64_t>(trim_ms * 1000.0);
@@ -2911,6 +2972,55 @@ int main(int argc, char** argv)
                 wanted = fwd ? (current + 1) % vault.size()
                              : (current + vault.size() - 1) % vault.size();
                 switching = true;
+            }
+
+            // -- moving on by itself -------------------------------------------
+            //
+            // A vault of one never advances, because advancing to itself would be
+            // a 0.4 s crossfade from a picture to the same picture -- which reads
+            // as a stutter, not as a transition.
+            //
+            // NOT WHILE THE BEAT INSTRUMENT IS UP. Somebody is measuring with it,
+            // and a measuring tool that wanders off after three minutes is worse
+            // than one that cannot be reached at all.
+            if (vault.size() > 1 && !switching && !showing_sync) {
+                bool due = false;
+
+                // A TRACK CHANGE IS A REAL BOUNDARY IN THE MUSIC and a timer is
+                // an arbitrary one, which is why "track" is the default. The flag
+                // is consumed by exactly one drawn frame, so reading it here is
+                // reading it once.
+                if (advance_mode == "track" && track_context.track_changed_this_frame) {
+                    // NOT THE FIRST ONE. The first track of a cast is a track
+                    // change like any other, and advancing on it would mean the
+                    // `crystal` key in gatekeeper.toml never got to be seen --
+                    // the player would move off whatever was chosen to start on
+                    // before a note played.
+                    if (advanced_from_first) {
+                        due = true;
+                    } else {
+                        advanced_from_first = true;
+                    }
+                }
+                if (advance_mode == "timer" && std::chrono::steady_clock::now() >= advance_due_at) {
+                    due = true;
+                }
+
+                if (due) {
+                    wanted    = (current + 1) % vault.size();
+                    switching = true;
+                    std::printf("holocron: advancing to \"%s\"\n", vault[wanted].name.c_str());
+                    std::fflush(stdout);
+                }
+            }
+
+            // The clock restarts on EVERY switch, including a manual one. Picking
+            // something by hand and having it replaced eight seconds later because
+            // the timer was already most of the way through is the behaviour
+            // nobody wants and everybody writes first.
+            if (switching) {
+                advance_due_at = std::chrono::steady_clock::now() +
+                                 std::chrono::seconds(cfg.advance_seconds);
             }
 
             // THE BEAT INSTRUMENT IS NOT IN THE VAULT, on purpose: it is a
