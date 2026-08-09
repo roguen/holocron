@@ -200,6 +200,48 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     read_string(tbl, "paths", "vault", out.vault, bad);
     read_string(tbl, "paths", "crystal", out.crystal, bad);
 
+    read_string(tbl, "projectm", "preset_path", out.projectm_preset_path, bad);
+    read_string(tbl, "projectm", "library_dir", out.projectm_library_dir, bad);
+    read_string(tbl, "projectm", "texture_path", out.projectm_texture_path, bad);
+    read_double(tbl, "projectm", "preset_duration", out.projectm_preset_duration, bad);
+    read_double(tbl, "projectm", "soft_cut_duration", out.projectm_soft_cut_duration, bad);
+    read_bool(tbl, "projectm", "hard_cut", out.projectm_hard_cut, bad);
+    read_double(tbl, "projectm", "hard_cut_duration", out.projectm_hard_cut_duration, bad);
+    read_bool(tbl, "projectm", "shuffle", out.projectm_shuffle, bad);
+    read_int(tbl, "projectm", "mesh_x", out.projectm_mesh_x, bad);
+    read_int(tbl, "projectm", "mesh_y", out.projectm_mesh_y, bad);
+
+    if (double sensitivity = static_cast<double>(out.projectm_beat_sensitivity);
+        read_double(tbl, "projectm", "beat_sensitivity", sensitivity, bad)) {
+        out.projectm_beat_sensitivity = static_cast<float>(sensitivity);
+    }
+
+    // Validated here for the same reason `advance` is: a live key holding a value
+    // the player cannot act on is fatal by this file's own rule, and the failures
+    // these prevent are all silent ones. A preset_duration of 0 is projectM
+    // switching every frame; a mesh of 2 is a picture with no detail and no
+    // error anywhere.
+    if (bad.empty() && out.projectm_preset_duration < 1.0) {
+        bad = "[projectm] preset_duration must be at least 1 second";
+    }
+    if (bad.empty() && out.projectm_soft_cut_duration < 0.0) {
+        // Zero is legal and means every switch is a hard cut, which is a look.
+        bad = "[projectm] soft_cut_duration must not be negative";
+    }
+    if (bad.empty() && out.projectm_hard_cut_duration < 1.0) {
+        bad = "[projectm] hard_cut_duration must be at least 1 second";
+    }
+    if (bad.empty() &&
+        (out.projectm_beat_sensitivity < 0.0f || out.projectm_beat_sensitivity > 5.0f)) {
+        bad = "[projectm] beat_sensitivity must be between 0 and 5";
+    }
+    if (bad.empty() && (out.projectm_mesh_x < 8 || out.projectm_mesh_x > 256 ||
+                        out.projectm_mesh_y < 8 || out.projectm_mesh_y > 256)) {
+        // The bounds are projectM's own practical range. Below 8 the warp grid
+        // cannot express anything; above 256 it costs more than the preset.
+        bad = "[projectm] mesh_x and mesh_y must be between 8 and 256";
+    }
+
     read_bool(tbl, "plex", "discovery", out.plex_discovery, bad);
     read_string(tbl, "plex", "device_name", out.plex_device_name, bad);
     read_string(tbl, "plex", "machine_identifier", out.plex_machine_identifier, bad);

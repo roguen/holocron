@@ -658,3 +658,165 @@ TEST_CASE("an index the vault does not have leaves the page's selection alone",
     REQUIRE(res);
     REQUIRE(res->body.find("class=\"on\" type=\"submit\">drift<") != std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// projectM on the control page (M4)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("the projectM section is absent unless one is drawing",
+          "[plex][companion][control][projectm]")
+{
+    // HIDDEN, NOT GREYED OUT. A "next preset" button that does nothing on four
+    // vault entries out of five is a control whose silence has to be
+    // interpreted, and this page already has one thing it has to apologise for
+    // in words.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_info({"drift", "pulse"}, "", "", false);
+
+    auto res = s.client().Get("/control");
+    REQUIRE(res);
+    CHECK(res->body.find("<h2>projectM</h2>") == std::string::npos);
+    CHECK(res->body.find("/control/preset") == std::string::npos);
+}
+
+TEST_CASE("the projectM section names the preset and its place in the playlist",
+          "[plex][companion][control][projectm]")
+{
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_info({"drift", "projectM"}, "", "", false);
+    s.server.set_control_projectm(true, "Geiss - Cosmic Dust", 4021, 0);
+
+    auto res = s.client().Get("/control");
+    REQUIRE(res);
+    CHECK(res->body.find("<h2>projectM</h2>") != std::string::npos);
+    CHECK(res->body.find("Geiss - Cosmic Dust") != std::string::npos);
+
+    // ONE-BASED FOR A PERSON. The index is zero-based everywhere in the code and
+    // "0 of 4021" is not a sentence anybody says.
+    CHECK(res->body.find("1 of 4021") != std::string::npos);
+}
+
+TEST_CASE("a preset name is escaped into the page", "[plex][companion][control][projectm]")
+{
+    // Preset names come from filenames in somebody else's pack, so they are the
+    // least trusted strings on the page. Twenty years of community naming
+    // includes plenty of punctuation.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_projectm(true, "a <b> & \"quote\"", 2, 1);
+
+    auto res = s.client().Get("/control");
+    REQUIRE(res);
+    CHECK(res->body.find("a &lt;b&gt; &amp;") != std::string::npos);
+    CHECK(res->body.find("a <b> &") == std::string::npos);
+}
+
+TEST_CASE("stepping presets reaches the handler with a direction",
+          "[plex][companion][control][projectm]")
+{
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_projectm(true, "something", 10, 3);
+
+    std::vector<int> steps;
+    s.server.set_projectm_step_handler([&steps](int step) { steps.push_back(step); });
+
+    auto client = s.client();
+    client.set_follow_location(false);
+
+    client.Post("/control/preset", "step=1", "application/x-www-form-urlencoded");
+    client.Post("/control/preset", "step=-1", "application/x-www-form-urlencoded");
+
+    REQUIRE(steps.size() == 2);
+    CHECK(steps[0] == 1);
+    CHECK(steps[1] == -1);
+}
+
+TEST_CASE("a preset step that is not plus or minus one is refused",
+          "[plex][companion][control][projectm]")
+{
+    // It arrives over HTTP and anyone on the LAN can send one. Walking a
+    // playlist of thousands in a single request is not a control anybody asked
+    // for, and neither is a step that is not a number.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_projectm(true, "something", 10, 3);
+
+    int called = 0;
+    s.server.set_projectm_step_handler([&called](int) { ++called; });
+
+    auto client = s.client();
+    client.set_follow_location(false);
+
+    for (const char* body : {"step=9999", "step=-9999", "step=banana", "step=0", "step="}) {
+        auto res = client.Post("/control/preset", body, "application/x-www-form-urlencoded");
+        REQUIRE(res);
+        // Still a redirect back to the page rather than an error: a refused
+        // control must not leave the phone looking at a broken page.
+        CHECK(res->status == 303);
+    }
+    CHECK(called == 0);
+}
+
+TEST_CASE("the projectM toggles survive the round trip without the render loop",
+          "[plex][companion][control][projectm]")
+{
+    // The same race the overlay toggles hit, and the reason shuffle and lock are
+    // intent owned by the POST handler rather than descriptive state pushed from
+    // the render loop. No handler is installed here at all, which is the extreme
+    // case of a render loop that never gets round to it.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_projectm(true, "something", 10, 3);
+    s.server.set_projectm_modes(/*shuffle=*/true, /*locked=*/false);
+
+    auto client = s.client();
+    client.set_follow_location(false);
+
+    auto before = client.Get("/control");
+    REQUIRE(before);
+    CHECK(before->body.find("class=\"on\" type=\"submit\">Shuffle<") != std::string::npos);
+    CHECK(before->body.find("class=\"on\" type=\"submit\">Hold this preset<") ==
+          std::string::npos);
+
+    client.Post("/control/pmlock", "on=1", "application/x-www-form-urlencoded");
+    client.Post("/control/pmshuffle", "on=0", "application/x-www-form-urlencoded");
+
+    auto after = client.Get("/control");
+    REQUIRE(after);
+    CHECK(after->body.find("class=\"on\" type=\"submit\">Hold this preset<") != std::string::npos);
+    CHECK(after->body.find("class=\"on\" type=\"submit\">Shuffle<") == std::string::npos);
+
+    // And each button now offers the OPPOSITE, so the next tap does not re-send
+    // what just happened. That re-sending is exactly what the flip-flop was.
+    CHECK(after->body.find("action=\"/control/pmlock\"><input type=\"hidden\" name=\"on\" "
+                           "value=\"0\"") != std::string::npos);
+    CHECK(after->body.find("action=\"/control/pmshuffle\"><input type=\"hidden\" name=\"on\" "
+                           "value=\"1\"") != std::string::npos);
+}
+
+TEST_CASE("descriptive projectM state does not overwrite the toggles",
+          "[plex][companion][control][projectm]")
+{
+    // set_control_projectm is called every frame by the render loop. If it
+    // touched shuffle or lock, it would undo a tap between the POST and the next
+    // GET -- which is the bug the whole ownership split exists to prevent, and
+    // the one place it would be easiest to reintroduce.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_projectm_modes(/*shuffle=*/true, /*locked=*/false);
+
+    auto client = s.client();
+    client.set_follow_location(false);
+    client.Post("/control/pmlock", "on=1", "application/x-www-form-urlencoded");
+
+    // A render loop frame lands between the POST and the GET.
+    s.server.set_control_projectm(true, "later preset", 10, 4);
+
+    auto after = client.Get("/control");
+    REQUIRE(after);
+    CHECK(after->body.find("later preset") != std::string::npos);
+    CHECK(after->body.find("class=\"on\" type=\"submit\">Hold this preset<") != std::string::npos);
+}

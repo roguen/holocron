@@ -179,6 +179,31 @@ public:
         std::string advance = "track";
         int         advance_seconds = 180;
 
+        // -- projectM, when there is one on screen --------------------------
+        //
+        // The controls M4's exit criteria call "facet parameters". They are on
+        // the main page rather than under Setup because they answer the same
+        // question the crystal list does: what is on screen, and for how long.
+        //
+        // The WHOLE SECTION is hidden unless a projectM layer is actually
+        // drawing. A "next preset" button that does nothing on four vault
+        // entries out of five would be a control whose silence has to be
+        // interpreted, which is what the lyrics note above is careful about.
+        bool        projectm_showing = false;
+
+        // Descriptive, pushed from the render loop: the preset's display name and
+        // where it sits in the playlist.
+        std::string projectm_preset;
+        std::size_t projectm_presets = 0;
+        std::size_t projectm_index   = 0;
+
+        // INTENT, owned by the POST handler like the overlay toggles and for
+        // exactly the same reason -- the button carries the state it wants to
+        // move TO, so a page rendered from a stale read sends the wrong target
+        // and the control flip-flops on alternate taps.
+        bool projectm_shuffle = true;
+        bool projectm_locked  = false;
+
         // -- tuning, which is `GET /control/tuning` -------------------------
         //
         // WHY THE TRIM BELONGS ON THE PHONE. It is measured by watching the
@@ -258,12 +283,21 @@ public:
     // "off", "track" or "timer". Validated before it reaches the handler.
     using AdvanceHandler = std::function<void(const std::string& mode)>;
 
+    // Move `step` presets: -1 back, +1 on. RELATIVE, not an index, for the same
+    // reason the trim is: a page rendered a moment ago is still correct, and with
+    // a pack of thousands there is no list to render indices from anyway.
+    using ProjectMStepHandler   = std::function<void(int step)>;
+    using ProjectMToggleHandler = std::function<void(bool on)>;
+
     void set_select_crystal_handler(SelectCrystalHandler handler);
     void set_lyrics_handler(LyricsHandler handler);
     void set_now_playing_handler(NowPlayingHandler handler);
     void set_trim_handler(TrimHandler handler);
     void set_sync_handler(SyncHandler handler);
     void set_advance_handler(AdvanceHandler handler);
+    void set_projectm_step_handler(ProjectMStepHandler handler);
+    void set_projectm_shuffle_handler(ProjectMToggleHandler handler);
+    void set_projectm_lock_handler(ProjectMToggleHandler handler);
 
     // The starting mode, pushed once so the page opens showing the truth rather
     // than the struct's default. Not called per frame: this is intent, and the
@@ -274,6 +308,16 @@ public:
     // the now-playing strings. Safe to call every frame.
     void set_control_tuning(double trim_ms, double headroom_ms, bool sync_showing,
                             const std::string& config_path);
+
+    // Descriptive projectM state: whether one is drawing and which preset. Safe
+    // to call every frame, and deliberately does NOT touch shuffle or lock --
+    // those are intent and belong to the POST handler.
+    void set_control_projectm(bool showing, const std::string& preset, std::size_t count,
+                              std::size_t index);
+
+    // The starting shuffle and lock, pushed once so the page opens showing the
+    // truth rather than the struct's default. Same contract as set_advance.
+    void set_projectm_modes(bool shuffle, bool locked);
 
     // Set before start(). Unset handlers mean the command is logged and
     // acknowledged, which is what happened before anything could play.
