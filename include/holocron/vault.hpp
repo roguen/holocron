@@ -48,6 +48,15 @@ namespace holocron {
 struct VaultEntry {
     std::string stem;
     std::string name;
+
+    // An archive is a stack; a crystal is one shader. BOTH LIVE IN ONE LIST on
+    // purpose (issue 155): from the couch "what is on screen" is one question,
+    // and a separate list would put the loader's convenience in the user's way.
+    //
+    // The player does not branch on this -- it loads a crystal as an archive of
+    // one -- but the scanner has to know which loader to call, and a caller that
+    // wants to say "3 crystals and 2 archives" needs to be able to count them.
+    bool is_archive = false;
 };
 
 // A crystal that announced itself with a manifest and then failed to load.

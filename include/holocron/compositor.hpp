@@ -61,20 +61,12 @@
 #include <span>
 #include <string>
 
+// LayerBlend moved out to its own header when archives arrived: the enum is
+// needed by a library that must never touch GL. See layer.hpp.
+#include <holocron/layer.hpp>
+#include <holocron/track_context.hpp>   // TextureHandle
+
 namespace holocron {
-
-enum class LayerBlend : std::uint8_t {
-    // Alpha over what is below. The bottom layer has nothing below it, so its
-    // alpha is ignored and its colour replaces -- otherwise a crystal that
-    // writes alpha less than one would let the previous frame show through, and
-    // that reads as a smearing bug rather than as a blend mode.
-    kNormal = 0,
-
-    // Added to what is below, and the reason the layers are 16-bit float: the
-    // sum of two crystals routinely exceeds 1.0 and only clips once, at the very
-    // end, on the way to the screen.
-    kAdd,
-};
 
 struct LayerState {
     // Scales the layer on its way into the mix. For kNormal this fades towards
@@ -133,7 +125,14 @@ public:
     // composites fewer of them. The window's framebuffer is bound and cleared
     // first, so a frame in which every layer is dead is black rather than
     // whatever was on screen last.
-    void composite(std::span<const LayerState> states, int screen_width, int screen_height);
+    //
+    // `leave_in_canvas` stops before the last step and hands the assembled
+    // picture back as a texture instead of putting it on the window, which is
+    // what a final pass needs -- it has to READ the finished picture, and a
+    // framebuffer cannot be sampled while it is the draw target. Zero if there
+    // was nothing to assemble.
+    TextureHandle composite(std::span<const LayerState> states, int screen_width,
+                            int screen_height, bool leave_in_canvas = false);
 
 private:
     struct Impl;

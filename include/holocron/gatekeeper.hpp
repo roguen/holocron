@@ -80,6 +80,62 @@ struct Gatekeeper {
     bool vsync    = true;
     bool gl_debug = true;
 
+    // The final pass, which belongs to the DISPLAY rather than to any crystal.
+    //
+    // `grain` is on by default and the others are not, and the difference is that
+    // grain is a FIX rather than a look: the layers are 16-bit float and the
+    // window is 8-bit, so a slow dark gradient quantises into visible bands on a
+    // projector in a dark room. A pixel of noise dithers them away. One 8-bit
+    // step is enough to break a band and too little to read as texture.
+    //
+    // A vignette changes the look of every crystal ever authored -- and all three
+    // shipped ones roll their own -- so it is a key rather than an opinion. A
+    // safe-area mask is measured against a specific projector or it is just a
+    // black border.
+    double bloom           = 0.0;
+    double bloom_threshold = 1.0;
+    double grain     = 1.0;
+    double vignette  = 0.0;
+    double safe_area = 0.0;
+
+    // How big the layers are, as a fraction of the window.
+    //
+    // WHAT THIS BUYS AND WHAT IT COSTS. The crystals are the expensive part and
+    // they cost per pixel: `duel` is six figures of signed distance field and
+    // `storm` is three layers of the stack. At 0.71 a layer has half the pixels,
+    // so the whole picture costs about half -- and the loss is softness in the
+    // visualization only, because the compositor's final pass upscales with
+    // linear filtering and the now-playing card and lyrics are drawn AFTER it, at
+    // full resolution. Text stays sharp; the clouds get slightly softer, and
+    // clouds are already soft.
+    //
+    // 1.0 by default. This is a knob for a machine that needs it -- the Shield at
+    // M8 has nothing like the rack's headroom -- rather than something to reach
+    // for on hardware that is already comfortable.
+    double render_scale = 1.0;
+
+    // When to move to the next thing in the vault by itself.
+    //
+    // THE CAST-AND-FORGET CASE IS THE WHOLE POINT (D-029). An album is forty
+    // minutes and nobody is going to pick up the phone between every track; a
+    // vault that never advances is a vault with one crystal in it as far as an
+    // ordinary evening is concerned.
+    //
+    // "track" is the default rather than "timer" because a track change is a
+    // real boundary in the music and a timer is an arbitrary one -- a transition
+    // that lands mid-chorus draws attention to itself, and one that lands at the
+    // start of a song reads as the visuals following the record.
+    //
+    // Spellings: "off", "track", "timer". Anything else is a bad value, which
+    // load_gatekeeper treats as fatal for a live key.
+    std::string advance = "track";
+
+    // How long "timer" waits. Ignored otherwise.
+    //
+    // Long by default. The transition is the thing that catches the eye, so a
+    // short interval turns the visualization into a slideshow of transitions.
+    int advance_seconds = 180;
+
     // [paths]
     std::string vault = "crystals";
 

@@ -143,6 +143,59 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     read_int(tbl, "render", "height", out.height, bad);
     read_bool(tbl, "render", "vsync", out.vsync, bad);
     read_bool(tbl, "render", "gl_debug", out.gl_debug, bad);
+    read_double(tbl, "render", "scale", out.render_scale, bad);
+    read_double(tbl, "render", "bloom", out.bloom, bad);
+    read_double(tbl, "render", "bloom_threshold", out.bloom_threshold, bad);
+    read_double(tbl, "render", "grain", out.grain, bad);
+    read_double(tbl, "render", "vignette", out.vignette, bad);
+    read_double(tbl, "render", "safe_area", out.safe_area, bad);
+    read_string(tbl, "render", "advance", out.advance, bad);
+    read_int(tbl, "render", "advance_seconds", out.advance_seconds, bad);
+
+    // VALIDATED HERE RATHER THAN AT THE USE SITE, because a live key holding a
+    // value the player cannot act on is fatal by this file's own rule -- and
+    // "advance = trak" silently meaning "off" is exactly the silent fallback that
+    // rule exists to prevent. The trim was the case that established it.
+    if (bad.empty() && out.advance != "off" && out.advance != "track" &&
+        out.advance != "timer") {
+        bad = "[render] advance must be \"off\", \"track\" or \"timer\", not \"" + out.advance +
+              "\"";
+    }
+    if (bad.empty() && (out.render_scale < 0.25 || out.render_scale > 1.0)) {
+        // ABOVE 1.0 IS REFUSED RATHER THAN ALLOWED. Supersampling is a real thing
+        // and a reasonable thing to want, but it is not this key: the layer is
+        // upscaled by a bilinear filter, which is the wrong resolve for
+        // supersampling and would make 2.0 quietly worse than 1.0 at four times
+        // the cost. Below 0.25 the picture is unwatchable and the setting is far
+        // more likely to be a typo than an intention.
+        bad = "[render] scale must be between 0.25 and 1.0";
+    }
+    if (bad.empty() && (out.bloom < 0.0 || out.bloom > 4.0)) {
+        bad = "[render] bloom must be between 0 and 4";
+    }
+    if (bad.empty() && out.bloom_threshold < 0.0) {
+        // Zero is legal and means "bloom everything", which is a look. Negative
+        // is not a look, it is a sign error.
+        bad = "[render] bloom_threshold must not be negative";
+    }
+    if (bad.empty() && (out.grain < 0.0 || out.grain > 8.0)) {
+        // Eight 8-bit steps is well past dither and into visible texture, which
+        // is a look somebody may want; beyond it the noise is the picture.
+        bad = "[render] grain must be between 0 and 8";
+    }
+    if (bad.empty() && (out.vignette < 0.0 || out.vignette > 1.0)) {
+        bad = "[render] vignette must be between 0 and 1";
+    }
+    if (bad.empty() && (out.safe_area < 0.0 || out.safe_area > 0.2)) {
+        // A fifth of the frame off each edge is already 60 percent of the
+        // picture gone. Past that it is a typo, not a mask.
+        bad = "[render] safe_area must be between 0 and 0.2";
+    }
+    if (bad.empty() && out.advance_seconds < 5) {
+        // Below this the transition is most of what is on screen. Refused rather
+        // than clamped: someone typing 1 meant something, and it was not this.
+        bad = "[render] advance_seconds must be at least 5";
+    }
 
     read_string(tbl, "paths", "vault", out.vault, bad);
     read_string(tbl, "paths", "crystal", out.crystal, bad);

@@ -31,7 +31,28 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: M5 — Holocron is a cast target, and it plays what it is sent
+## Status: M3 and M5 are DONE. M4 (projectM) is next.
+
+**Two milestones are finished.** M5 — Holocron is a Plex cast target and plays
+what it is sent, confirmed on the rack from the phone. M3 — the compositor, at
+`v0.3.0`, with all seven exit criteria met.
+
+**M2 is still open and is the odd one out.** Its plumbing has been done since
+`v0.1.13`; what remains is the **visual language**, which is the owner's
+judgement and not a task anyone else can close. Three crystals and one archive
+ship. He has feedback outstanding on `duel` and on the lyric display.
+
+**What M3 delivered**, all of it measured rather than asserted:
+
+| | |
+|---|---|
+| Layers | `GL_RGBA16F` FBOs, owned by the `Compositor` rather than by the facets (D-036). **0.06 ms per frame at 4K.** |
+| Blend modes | All seven. Screen, multiply, overlay and difference read the destination, so they assemble in a canvas — which nothing allocates until one is named. |
+| Archives | A saved facet stack. `<stem>.toml` with `[[layer]]`, opacity bindable to an `AudioFrame` field. `crystals/storm` is the first. |
+| Transitions | Crossfade on switch, 0.4 s, measured. Auto-advance on the track or a timer. |
+| Render scale | `[render] scale`. **duel at 4K: 3.72 ms at 1.0, 1.89 at 0.71, 1.08 at 0.5.** |
+| Final pass | Grain, vignette, safe-area mask, bloom. Grain dithers a dark patch of `drift` from **208 to 288 distinct colours**. Bloom costs **70 µs at 4K**. |
+| C ABI | `facet_abi.h`, compiled as C11 *and* C++20 in CI. `AudioFrame` crosses; `TrackContext` does not. |
 
 **You can cast to it from Plexamp.** Confirmed on the phone 2026-08-04. The
 device appears in the list, a play command resolves against the media server,
@@ -62,7 +83,12 @@ tested:
 | Text | `render_text` — the **platform** rasterizer behind `_WIN32`, no font dependency, same trade as WASAPI and WinHTTP. Returns white with the coverage in alpha so the caller tints it. `OverlayFacet` composites it over whatever drew. Needs a platform layer at M8, like the audio backend. |
 | Lyrics | `parse_lyrics` reads LRC; `choose_lyric_stream` picks the right `streamType=4` off the track's metadata. **Two tracks in five ADVERTISE timed lyrics** — 16 synced, 14 text-only, 10 with none, from a 40-track sample of 50,414. **Advertised is not the same as fetchable**: the body 404s often, so that is the ceiling and not the rate. One line at a time, centred, rasterized only when the line changes. Unsynced lyrics draw **nothing**: a static wall of words over a moving picture is not what was asked for. |
 | Hot reload | `CrystalWatch` — saving the `.frag` or `.toml` rebuilds it in place, on by default with `--crystal`. A shader that fails to compile is reported and the running one keeps drawing; `u_time` carries across. |
-| Vault | `scan_vault` — `--vault DIR` loads every crystal in a directory, arrow keys move between them. Ordered **by manifest name**, because `directory_iterator` order differs between Windows and Linux. One broken crystal is reported and skipped, never fatal. `--crystal` is a vault of one, so both share a single path. |
+| Archives | **A saved facet stack**, which is what the vocabulary has meant since M1. `<stem>.toml` with `[[layer]]` entries, bottom first, each naming a crystal, a blend and an opacity that may **bind to an `AudioFrame` field** — so a layer can breathe with the bass without either shader knowing. Seven blend modes; screen, multiply, overlay and difference need to read what is under them, so they assemble the stack in a canvas, and **nothing allocates that canvas until an archive names one of the four**. Capped at 4 layers because two of `duel` at 4K is already 6.6 ms of a 16.7 ms budget. `crystals/storm` is the first one. |
+| Final pass | `FinalPass` — grain, vignette and a projector safe-area mask, all of which belong to the **display** rather than to any crystal. **Grain is on by default because it is a fix, not a look**: the layers are float and the window is 8-bit, so a dark gradient bands. Measured — the same dark patch of `drift` goes from **208 to 288 distinct colours**, which is quantisation steps being dithered. Costs nothing when everything is zero: the compositor is then told it needs no canvas. Bloom is [#160](https://github.com/roguen/holocron/issues/160) and is what would make the float layers finally pay off. |
+| Facet C ABI | `include/holocron/facet_abi.h` — the M3 criterion **checked by a compiler rather than asserted**: CI compiles it as C11 *and* C++20 under `-Werror`. `AudioFrame` crosses unchanged, as designed. **`TrackContext` does not** — five `std::string`s and a `std::array<glm::vec3>` have no guaranteed layout — so the ABI takes a flattened borrowed view. Finding that now is a struct definition; finding it at M4 is a redesign. Nothing implements it yet, deliberately: a shim with no second caller is a dead path. |
+| Render scale | **`[render] scale`** — the layers are sized as a fraction of the window and the compositor's final pass upscales. Measured on `duel` at 4K: **3.72 ms at 1.0, 1.89 at 0.71, 1.08 at 0.5.** The loss is softness in the *visualization only* — the now-playing card and lyrics are drawn after the upscale, at full resolution, so text stays sharp. Above 1.0 is refused: the resolve is a bilinear filter, which is the wrong one for supersampling and would make 2.0 quietly worse than 1.0 at four times the cost. |
+| Auto-advance | **`[render] advance`** — `off`, `track` (the default) or `timer` with `advance_seconds`. Moves to the next vault entry with the existing crossfade. A track change is a real boundary in the music and a timer is an arbitrary one, which is why `track` is the default. **Not on the first track** — that would move off whatever the `crystal` key chose before a note played. Changeable from the control page. |
+| Vault | `scan_vault` — `--vault DIR` loads every crystal **and archive** in a directory, arrow keys move between them. One list on purpose: from the couch "what is on screen" is one question. An archive's crystals are loaded at scan time too, so a missing layer is reported before anything draws. Ordered **by manifest name**, because `directory_iterator` order differs between Windows and Linux. One broken crystal is reported and skipped, never fatal. `--crystal` is a vault of one, so both share a single path. |
 | Config | `gatekeeper.toml`, read at startup. Audio backend, `trim_ms`, window size, vsync, GL debug and the vault path are **live**; the rest of the example file is still specification. Flags beat the file, the file beats the defaults. |
 | Calibration | `holocron <track> --calibrate` draws `instruments/sync` and moves `trim_ms` with the arrow keys **while the track plays**, then prints the lines to paste into `gatekeeper.toml`. The same two controls are on the phone at **`/control/tuning`**, which is where the judgement is actually made — the trim buttons send a *delta* rather than a value, so a stale page still applies the right change. |
 | Discovery | `GdmResponder` announces over multicast; `CompanionServer` (cpp-httplib) serves `/resources`, the timeline endpoints and `playMedia`. `holocron --discover` runs discovery alone, headless, for diagnosis. |
@@ -374,7 +400,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.2.3`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.3.0`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 

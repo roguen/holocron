@@ -39,19 +39,28 @@ CrystalWatch::Stamp CrystalWatch::stamp_of(const std::string& path)
     return s;
 }
 
-CrystalWatch::CrystalWatch(std::string manifest_path, std::string shader_path,
-                           Clock::time_point now, Clock::duration interval)
-    : manifest_path_(std::move(manifest_path)),
-      shader_path_(std::move(shader_path)),
-      interval_(interval),
-      last_poll_(now)
+CrystalWatch::CrystalWatch(std::vector<std::string> paths, Clock::time_point now,
+                           Clock::duration interval)
+    : paths_(std::move(paths)), interval_(interval), last_poll_(now)
 {
     loaded_ = look();
 }
 
-CrystalWatch::Pair CrystalWatch::look() const
+CrystalWatch::CrystalWatch(std::string manifest_path, std::string shader_path,
+                           Clock::time_point now, Clock::duration interval)
+    : CrystalWatch(std::vector<std::string>{std::move(manifest_path), std::move(shader_path)},
+                   now, interval)
 {
-    return Pair{stamp_of(manifest_path_), stamp_of(shader_path_)};
+}
+
+CrystalWatch::Stamps CrystalWatch::look() const
+{
+    Stamps out;
+    out.reserve(paths_.size());
+    for (const std::string& p : paths_) {
+        out.push_back(stamp_of(p));
+    }
+    return out;
 }
 
 bool CrystalWatch::poll(Clock::time_point now)
@@ -61,7 +70,7 @@ bool CrystalWatch::poll(Clock::time_point now)
     }
     last_poll_ = now;
 
-    const Pair current = look();
+    const Stamps current = look();
 
     if (current == loaded_) {
         // Includes the case where an edit was undone between two polls, which

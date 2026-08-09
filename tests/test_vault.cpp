@@ -14,6 +14,7 @@
 
 #include <holocron/vault.hpp>
 
+#include <holocron/archive.hpp>
 #include <holocron/crystal.hpp>
 
 #include <catch2/catch_test_macros.hpp>
@@ -244,15 +245,44 @@ TEST_CASE("every crystal in the shipped vault may be published", "[vault][proven
     const auto                v = scan_vault(HOLOCRON_CRYSTALS_DIR, problems);
     REQUIRE(v.size() >= 1);
 
-    for (const VaultEntry& e : v) {
+    // AN ARCHIVE CARRIES NO PROVENANCE OF ITS OWN, and must not be skipped
+    // either. It is a list of crystals, so what it publishes is whatever those
+    // crystals are -- and each of them is checked below in its own right, because
+    // an archive may name a crystal that is not itself a vault entry.
+    //
+    // Getting this wrong in the obvious direction would be silent: an archive
+    // handed to load_crystal fails with kShaderNotFound, and a loop that only
+    // REQUIREs the load would report a licence problem as a missing file.
+    std::size_t checked = 0;
+
+    const auto check_crystal = [&](const std::string& stem) {
         Crystal     c;
         std::string detail;
-        INFO("crystal: " << e.name << " (" << e.stem << ")");
+        INFO("crystal: " << stem);
         INFO(detail);
-        REQUIRE(load_crystal(e.stem, c, detail) == CrystalError::kOk);
+        REQUIRE(load_crystal(stem, c, detail) == CrystalError::kOk);
 
         std::string why;
         INFO("why not publishable: " << why);
         CHECK(publishable(c.provenance, why));
+        ++checked;
+    };
+
+    for (const VaultEntry& e : v) {
+        INFO("entry: " << e.name << " (" << e.stem << ")");
+        if (e.is_archive) {
+            Archive     a;
+            std::string detail;
+            INFO(detail);
+            REQUIRE(load_archive(e.stem, a, detail) == ArchiveError::kOk);
+            for (const ArchiveLayer& layer : a.layers) {
+                check_crystal(layer.crystal);
+            }
+            continue;
+        }
+        check_crystal(e.stem);
     }
+
+    // The enforcement surface has to have actually run over something.
+    CHECK(checked >= v.size());
 }

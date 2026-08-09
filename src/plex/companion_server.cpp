@@ -174,6 +174,37 @@ std::string control_page(const CompanionServer::ControlState& state)
            "Only tracks with <i>timed</i> lyrics show anything -- about two in "
            "five. The player says which it is when you turn this on.</div>";
 
+    // -- moving on by itself -------------------------------------------------
+    //
+    // Next to the crystal list rather than under Setup, because it answers the
+    // same question the list does -- what is on screen, and for how long.
+    if (state.crystals.size() > 1) {
+        out += "<h2>Advance</h2>";
+        static const struct {
+            const char* value;
+            const char* label;
+        } kModes[] = {
+            {"off", "Stay on this one"},
+            {"track", "Change with the track"},
+            {"timer", "Change on a timer"},
+        };
+        for (const auto& mode : kModes) {
+            out += "<form method=\"post\" action=\"/control/advance\">";
+            out += "<input type=\"hidden\" name=\"mode\" value=\"";
+            out += mode.value;
+            out += "\"><button class=\"";
+            out += state.advance == mode.value ? "on" : "";
+            out += "\" type=\"submit\">";
+            out += mode.label;
+            if (std::string(mode.value) == "timer" && state.advance_seconds > 0) {
+                char every[48];
+                std::snprintf(every, sizeof(every), " &mdash; every %d s", state.advance_seconds);
+                out += every;
+            }
+            out += "</button></form>";
+        }
+    }
+
     out += "<h2>Setup</h2>";
     out += "<form method=\"get\" action=\"/control/tuning\">"
            "<button type=\"submit\">Tuning &rsaquo;</button></form>";
@@ -362,6 +393,7 @@ struct CompanionServer::Impl {
     CompanionServer::NowPlayingHandler    now_playing_handler;
     CompanionServer::TrimHandler          trim_handler;
     CompanionServer::SyncHandler          sync_handler;
+    CompanionServer::AdvanceHandler       advance_handler;
 
     // Guarded separately from the timeline. The control page is read by an HTTP
     // worker and written by the render thread, and it changes on a crystal
@@ -841,6 +873,35 @@ void CompanionServer::Impl::install_routes()
         redirect_to_control(res);
     });
 
+    self->server.Post("/control/advance", [self, redirect_to_control](
+                                              const httplib::Request& req,
+                                              httplib::Response&      res) {
+        self->decorate(res);
+        const std::string mode = req.get_param_value("mode");
+
+        // VALIDATED BEFORE IT IS STORED, not after. The page only ever offers
+        // three values, but this arrives over HTTP and anyone on the LAN can send
+        // one -- and an unrecognised mode stored here would be shown back as the
+        // current setting on the next render.
+        if (mode == "off" || mode == "track" || mode == "timer") {
+            std::printf("control: advance %s\n", mode.c_str());
+            std::fflush(stdout);
+            {
+                // Set here and before the redirect, same as the crystal index and
+                // for the same reason: the browser's follow-up GET usually beats
+                // the render loop.
+                const std::lock_guard<std::mutex> lock(self->control_mutex);
+                self->control.advance = mode;
+            }
+            if (self->advance_handler) {
+                self->advance_handler(mode);
+            }
+        } else if (!mode.empty()) {
+            std::fprintf(stderr, "control: refusing advance mode `%s`\n", mode.c_str());
+        }
+        redirect_to_control(res);
+    });
+
     self->server.Post("/control/lyrics", [self, redirect_to_control](
                                              const httplib::Request& req,
                                              httplib::Response&      res) {
@@ -1130,6 +1191,18 @@ void CompanionServer::set_trim_handler(TrimHandler handler)
 void CompanionServer::set_sync_handler(SyncHandler handler)
 {
     impl_->sync_handler = std::move(handler);
+}
+
+void CompanionServer::set_advance_handler(AdvanceHandler handler)
+{
+    impl_->advance_handler = std::move(handler);
+}
+
+void CompanionServer::set_advance(const std::string& mode, int seconds)
+{
+    const std::lock_guard<std::mutex> lock(impl_->control_mutex);
+    impl_->control.advance         = mode;
+    impl_->control.advance_seconds = seconds;
 }
 
 void CompanionServer::set_control_tuning(double trim_ms, double headroom_ms, bool sync_showing,

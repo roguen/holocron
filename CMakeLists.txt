@@ -14,7 +14,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(holocron
-    VERSION 0.2.3
+    VERSION 0.3.0
     DESCRIPTION "GPU music visualization engine that is also the music player"
     LANGUAGES CXX
 )
@@ -199,6 +199,7 @@ add_library(holocron_crystal STATIC
     src/crystal/crystal.cpp
     src/crystal/crystal_watch.cpp
     src/crystal/vault.cpp
+    src/crystal/archive.cpp
 )
 
 # ---------------------------------------------------------------------------
@@ -328,6 +329,7 @@ add_library(holocron_render STATIC
     src/render/overlay_facet.cpp
     src/render/render_target.cpp
     src/render/compositor.cpp
+    src/render/final_pass.cpp
 )
 add_library(holocron::render ALIAS holocron_render)
 

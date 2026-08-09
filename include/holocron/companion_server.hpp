@@ -171,6 +171,14 @@ public:
         bool lyrics_visible      = false;
         bool has_art        = false;
 
+        // "off", "track" or "timer", and how long the timer waits.
+        //
+        // INTENT, like `current` and the toggles -- owned by the POST handler and
+        // set synchronously before the redirect, for the reason the whole
+        // ownership split exists. The render loop pushes only descriptive fields.
+        std::string advance = "track";
+        int         advance_seconds = 180;
+
         // -- tuning, which is `GET /control/tuning` -------------------------
         //
         // WHY THE TRIM BELONGS ON THE PHONE. It is measured by watching the
@@ -247,11 +255,20 @@ public:
     using TrimHandler = std::function<void(double delta_ms)>;
     using SyncHandler = std::function<void()>;
 
+    // "off", "track" or "timer". Validated before it reaches the handler.
+    using AdvanceHandler = std::function<void(const std::string& mode)>;
+
     void set_select_crystal_handler(SelectCrystalHandler handler);
     void set_lyrics_handler(LyricsHandler handler);
     void set_now_playing_handler(NowPlayingHandler handler);
     void set_trim_handler(TrimHandler handler);
     void set_sync_handler(SyncHandler handler);
+    void set_advance_handler(AdvanceHandler handler);
+
+    // The starting mode, pushed once so the page opens showing the truth rather
+    // than the struct's default. Not called per frame: this is intent, and the
+    // POST handler owns it from then on.
+    void set_advance(const std::string& mode, int seconds);
 
     // Descriptive tuning state, pushed from the render loop like the vault and
     // the now-playing strings. Safe to call every frame.

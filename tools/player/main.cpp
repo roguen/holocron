@@ -42,11 +42,13 @@
 // the lock-free pieces first.
 
 #include <holocron/analysis.hpp>
+#include <holocron/archive.hpp>
 #include <holocron/art_texture.hpp>
 #include <holocron/audio_frame.hpp>
 #include <holocron/companion_server.hpp>
 #include <holocron/compositor.hpp>
 #include <holocron/crystal.hpp>
+#include <holocron/final_pass.hpp>
 #include <holocron/image_decode.hpp>
 #include <holocron/lyrics.hpp>
 #include <holocron/overlay_facet.hpp>
@@ -395,69 +397,116 @@ void describe(const char* verb, const Crystal& crystal, const CrystalFacet& face
 // Relative to the working directory, exactly as `--calibrate` has always been.
 constexpr const char* kSyncStem = "instruments/sync";
 
-// Build a crystal from disk into a NEW facet, and swap only if it worked.
+// ---------------------------------------------------------------------------
+// A live stack
 //
-// A shader is broken for most of the time an author is editing it. Tearing the
-// live program down before knowing its replacement compiles would blank the
-// screen on every stray semicolon, which would make the reload loop worse than
-// relaunching. So the new facet is built beside the old one and only replaces it
-// on success; on failure the driver's own message is printed -- far more useful
-// than anything invented here -- and what is on screen is left alone.
+// The archive, and one compiled facet per layer. EVERYTHING THE PLAYER DRAWS IS
+// ONE OF THESE, including a plain crystal -- which is an archive of one. That is
+// the same unification `--crystal` got from being "a vault of one", and it buys
+// the same thing: switching, reloading and crossfading have a single code path
+// rather than two that drift apart the first time one of them is fixed.
+// ---------------------------------------------------------------------------
+
+struct LiveStack {
+    Archive                                    archive;
+    std::vector<std::unique_ptr<CrystalFacet>> facets;
+
+    std::size_t size() const { return facets.size(); }
+
+    bool ready() const
+    {
+        if (facets.empty() || facets.size() != archive.layers.size()) {
+            return false;
+        }
+        for (const auto& f : facets) {
+            if (!f || !f->ready()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void clear()
+    {
+        facets.clear();
+        archive = Archive{};
+    }
+};
+
+// Compile every layer of `archive` into a NEW stack, and hand it back only if all
+// of them built.
 //
-// `carry_time` distinguishes the two callers. A RELOAD is the same crystal a
-// moment later, so u_time continues; a SWITCH is a different crystal, which has
-// never been on screen and should start at zero. Getting that backwards would
-// drop an author into the middle of an animation they have not seen the start
-// of.
+// A shader is broken for most of the time an author is editing it, so the new
+// stack is built BESIDE the live one and only replaces it on success -- tearing
+// the live program down first would blank the screen on every stray semicolon
+// and make the reload loop worse than relaunching.
 //
-// Returns the crystal it swapped in, so the caller can re-point the watch at the
-// files that are now live.
-//
-// `out_previous`, when given, receives the facet that WAS live instead of it being
-// destroyed here. That is what makes a crossfade possible: the outgoing crystal has
-// to keep drawing, into its own layer, while the incoming one comes up underneath
-// it. A caller that does not pass one gets the old behaviour -- the outgoing
-// facet's GL objects go at the assignment below and the switch is a hard cut.
-//
-// It is left null for a RELOAD on purpose. A reload is not a transition; fading
-// between a crystal and a recompiled version of itself would make every save look
-// like a glitch.
-bool build_crystal(const char* stem, std::unique_ptr<CrystalFacet>& live, bool carry_time,
-                   const char* verb, Crystal& out,
-                   std::unique_ptr<CrystalFacet>* out_previous = nullptr)
+// ALL OR NOTHING, and that is the other half of the same idea: a
+// stack with one layer missing is not a smaller stack, it is a different picture,
+// and showing it would hide the failure behind something that looks deliberate.
+bool build_stack(const Archive& archive, LiveStack& out, const char* verb)
 {
-    Crystal            crystal;
+    LiveStack next;
+    next.archive = archive;
+    next.facets.reserve(archive.layers.size());
+
+    for (const ArchiveLayer& layer : archive.layers) {
+        Crystal            crystal;
+        std::string        detail;
+        const CrystalError err = load_crystal(layer.crystal, crystal, detail);
+        if (err != CrystalError::kOk) {
+            std::fprintf(stderr, "holocron: %s failed -- %s\n%s\nholocron: still drawing what "
+                                 "was already up\n",
+                         verb, to_string(err), detail.c_str());
+            return false;
+        }
+
+        auto        facet = std::make_unique<CrystalFacet>();
+        std::string log;
+        if (!facet->init(crystal, log)) {
+            std::fprintf(stderr, "holocron: %s failed -- `%s` did not build\n%s\n"
+                                 "holocron: still drawing what was already up\n",
+                         verb, crystal.name.c_str(), log.c_str());
+            return false;
+        }
+
+        // PER LAYER, not once for the stack. The unused-uniform count is the
+        // diagnostic that separates "this crystal ignores the audio" from "this
+        // uniform is misspelled in the .frag", and it belongs to a shader rather
+        // than to the archive that happens to include it. Losing it in the move
+        // to stacks was caught by the Linux job noticing describe() had gone
+        // unused, which is a better fault-finder than it sounds.
+        describe(verb, crystal, *facet);
+        next.facets.push_back(std::move(facet));
+    }
+
+    out = std::move(next);
+
+    if (out.archive.layers.size() > 1) {
+        std::printf("holocron: \"%s\" is %zu layers\n", out.archive.name.c_str(),
+                    out.archive.layers.size());
+    }
+    std::fflush(stdout);
+    return true;
+}
+
+// The archive behind a vault entry, whichever kind it is.
+//
+// This is where "a crystal is an archive of one" actually happens, and it is the
+// only place in the player that knows the difference.
+bool archive_for(const VaultEntry& entry, Archive& out)
+{
+    if (!entry.is_archive) {
+        out = archive_of_crystal(entry.stem, entry.name);
+        return true;
+    }
+
     std::string        detail;
-    const CrystalError err = load_crystal(stem, crystal, detail);
-    if (err != CrystalError::kOk) {
-        std::fprintf(stderr, "holocron: %s failed -- %s\n%s\nholocron: still drawing the "
-                             "previous crystal\n",
-                     verb, to_string(err), detail.c_str());
+    const ArchiveError err = load_archive(entry.stem, out, detail);
+    if (err != ArchiveError::kOk) {
+        std::fprintf(stderr, "holocron: %s -- %s\n", to_string(err), detail.c_str());
         return false;
     }
-
-    auto        next = std::make_unique<CrystalFacet>();
-    std::string log;
-    if (!next->init(crystal, log)) {
-        std::fprintf(stderr, "holocron: %s failed -- crystal did not build\n%s\n"
-                             "holocron: still drawing the previous crystal\n",
-                     verb, log.c_str());
-        return false;
-    }
-
-    if (carry_time) {
-        next->set_elapsed(live->elapsed());
-    }
-    if (out_previous != nullptr) {
-        // Handed over rather than dropped. Empty on the FIRST build of a run,
-        // where `live` holds a default-constructed facet that never compiled --
-        // so a caller must check ready() rather than assume a fade is possible.
-        *out_previous = std::move(live);
-    }
-    live = std::move(next);   // the old facet's GL objects go here, not before
-
-    out = crystal;
-    describe(verb, crystal, *live);
     return true;
 }
 
@@ -731,6 +780,29 @@ struct CastCommand {
         }
         out_delta  = trim_delta;
         trim_delta = 0.0;
+        return true;
+    }
+
+    // How often the picture should move on by itself. Crosses to the render
+    // thread like everything else here, though this one performs no GL work --
+    // it is queued for consistency and because the render loop owns the clock it
+    // resets.
+    std::string advance_mode_asked;
+
+    void request_advance(const std::string& mode)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        advance_mode_asked = mode;
+    }
+
+    bool take_advance(std::string& out_mode)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (advance_mode_asked.empty()) {
+            return false;
+        }
+        out_mode           = advance_mode_asked;
+        advance_mode_asked.clear();
         return true;
     }
 
@@ -1617,6 +1689,10 @@ int main(int argc, char** argv)
         [&cast](bool visible) { cast.request_now_playing(visible); });
     companion.set_trim_handler([&cast](double delta_ms) { cast.request_trim(delta_ms); });
     companion.set_sync_handler([&cast] { cast.request_sync(); });
+    companion.set_advance_handler([&cast](const std::string& mode) {
+        cast.request_advance(mode);
+    });
+    companion.set_advance(cfg.advance, cfg.advance_seconds);
 
     // Linking comes before discovery: it needs the machine identifier and
     // nothing else, and a run that is signing in has no business also
@@ -1764,10 +1840,13 @@ int main(int argc, char** argv)
     }
 
     DebugFacet facet;
-    // Held by pointer so a reload or a switch can swap a freshly compiled facet
-    // in without the live one having been torn down first. See build_crystal.
-    auto                        crystal_facet   = std::make_unique<CrystalFacet>();
     bool                        drawing_crystal = false;
+
+    // WHAT IS ON SCREEN, AND WHAT IS LEAVING IT. Both are stacks, and a plain
+    // crystal is a stack of one -- see LiveStack. Even the beat instrument, which
+    // is loaded by stem rather than from the vault, is a stack of one.
+    LiveStack                   live_stack;
+    LiveStack                   outgoing_stack;
 
     // The beat instrument is up, so `current` no longer describes what is on
     // screen. Tracked rather than inferred, because the hot reload has to know
@@ -1819,15 +1898,18 @@ int main(int argc, char** argv)
             }
         }
     } else if (opt.crystal != nullptr) {
-        vault.push_back(VaultEntry{opt.crystal, opt.crystal});
+        // --crystal names a stem rather than a vault entry, so it is not scanned
+        // and its kind is not known. It is a crystal by definition: an archive is
+        // something found in a vault.
+        vault.push_back(VaultEntry{opt.crystal, opt.crystal, false});
     }
 
     if (!vault.empty()) {
-        Crystal crystal;
-        if (!build_crystal(vault[current].stem.c_str(), crystal_facet, false, "crystal",
-                           crystal)) {
+        Archive archive;
+        if (!archive_for(vault[current], archive) ||
+            !build_stack(archive, live_stack, "opened")) {
             // Unlike a reload, there is nothing already on screen to fall back
-            // to, so this one is fatal. build_crystal has already printed why.
+            // to, so this one is fatal. The builder has already printed why.
             window.close();
             session.stop();
             return 1;
@@ -1836,14 +1918,25 @@ int main(int argc, char** argv)
         drawing_crystal = true;
 
         if (vault.size() > 1) {
-            std::printf("holocron: vault of %zu crystals -- left and right arrows to move\n",
-                        vault.size());
+            std::size_t archives = 0;
+            for (const VaultEntry& e : vault) {
+                archives += e.is_archive ? 1 : 0;
+            }
+            if (archives > 0) {
+                std::printf("holocron: vault of %zu (%zu crystal%s, %zu archive%s) -- left and "
+                            "right arrows to move\n",
+                            vault.size(), vault.size() - archives,
+                            vault.size() - archives == 1 ? "" : "s", archives,
+                            archives == 1 ? "" : "s");
+            } else {
+                std::printf("holocron: vault of %zu crystals -- left and right arrows to move\n",
+                            vault.size());
+            }
         }
         if (!opt.no_watch) {
-            watch.emplace(crystal.manifest_path, crystal.shader_path,
-                          std::chrono::steady_clock::now());
-            std::printf("holocron: watching %s and %s -- save either to reload\n",
-                        crystal.manifest_path.c_str(), crystal.shader_path.c_str());
+            watch.emplace(live_stack.archive.watch_paths, std::chrono::steady_clock::now());
+            std::printf("holocron: watching %zu file(s) -- save any to reload\n",
+                        live_stack.archive.watch_paths.size());
         }
     } else if (!facet.init()) {
         std::fprintf(stderr, "holocron: the debug facet failed to initialise\n");
@@ -1951,6 +2044,44 @@ int main(int argc, char** argv)
         }
     }
 
+    // -- the final pass -------------------------------------------------------
+    //
+    // Grain, vignette and the safe-area mask, all of which belong to the DISPLAY
+    // rather than to any crystal. Grain is on by default because it is a fix
+    // rather than a look: the layers are float and the window is eight bits, and
+    // a slow dark gradient bands visibly on a projector in a dark room.
+    //
+    // COSTS NOTHING WHEN IT DOES NOTHING. A settings block with everything at
+    // zero skips the pass entirely -- and, more to the point, tells the
+    // compositor it does not need a canvas, which at 4K is 66 MB and a
+    // full-screen copy.
+    FinalPass         final_pass;
+    FinalPassSettings final_settings;
+    final_settings.bloom           = static_cast<float>(cfg.bloom);
+    final_settings.bloom_threshold = static_cast<float>(cfg.bloom_threshold);
+    final_settings.grain     = static_cast<float>(cfg.grain);
+    final_settings.vignette  = static_cast<float>(cfg.vignette);
+    final_settings.safe_area = static_cast<float>(cfg.safe_area);
+
+    bool run_final_pass = layered && FinalPass::any(final_settings);
+    if (run_final_pass) {
+        std::string log;
+        if (!final_pass.init(log)) {
+            // Not fatal, exactly like the compositor: losing grain is cosmetic
+            // and the picture is the point.
+            std::fprintf(stderr, "holocron: no final pass -- %s\n", log.c_str());
+            run_final_pass = false;
+        } else {
+            std::printf("holocron: final pass -- bloom %.2f over %.2f, grain %.1f, "
+                        "vignette %.2f, safe area %.3f\n",
+                        static_cast<double>(final_settings.bloom),
+                        static_cast<double>(final_settings.bloom_threshold),
+                        static_cast<double>(final_settings.grain),
+                        static_cast<double>(final_settings.vignette),
+                        static_cast<double>(final_settings.safe_area));
+        }
+    }
+
     // -- crossfading between crystals -----------------------------------------
     //
     // Switching used to be a hard cut: the facet was replaced and the picture
@@ -1960,7 +2091,6 @@ int main(int argc, char** argv)
     // BOTTOM FIRST, so the new crystal is underneath and the old one fades OFF
     // it. The other way round would have the new crystal fading in over a static
     // old one, which reads as a dissolve into the picture rather than out of it.
-    std::unique_ptr<CrystalFacet>         outgoing;
     std::chrono::steady_clock::time_point fade_started{};
 
     // Long enough to read as a transition, short enough that pressing the arrow
@@ -1968,19 +2098,77 @@ int main(int argc, char** argv)
     // mid-fade rather than from the number.
     constexpr float kFadeSeconds = 0.40f;
 
-    // ONE LAYER UNTIL SOMETHING NEEDS TWO, AND THEN TWO FOREVER.
+    // AS MANY LAYERS AS HAVE BEEN NEEDED, AND NEVER FEWER AFTERWARDS.
     //
     // A layer nothing writes into is 66 MB of video memory at 4K that no pixel is
-    // ever read from, so the second is not allocated until the first switch. It
-    // is not given back afterwards either: freeing it at the end of every fade
-    // and allocating it again at the start of the next would put a 66 MB
-    // allocation on the exact frame a transition begins.
+    // ever read from, so nothing is allocated until something draws into it. It
+    // is not given back either: freeing at the end of every fade and allocating
+    // again at the start of the next would put a 66 MB allocation on the exact
+    // frame a transition begins.
     std::size_t layers_wanted = 1;
 
     // Printed when it changes, because this is the branch the whole render path
     // turns on and a branch no log prints is a branch that cannot be diagnosed.
     std::size_t announced_layers = 0;
+    int         announced_size   = 0;
     bool        announced_direct = false;
+
+    // -- moving through the vault by itself -----------------------------------
+    //
+    // Off, on every track change, or on a timer. The cast-and-forget case is the
+    // whole point of this project (D-029): an album is forty minutes and nobody
+    // picks up the phone between tracks, so a vault that never advances is a
+    // vault of one as far as an ordinary evening goes.
+    //
+    // SEQUENTIAL, NOT RANDOM. Random reads better for about ten minutes and then
+    // costs more than it gives: it repeats, it can pick what is already up, and
+    // it makes "what did that one look like" unanswerable. Vault order is by
+    // manifest name, so an author who wants a sequence can simply name one.
+    // NOT const: the control page changes it, because deciding how often the
+    // picture should change is exactly the sort of thing you want to do from the
+    // couch rather than by editing a file and restarting.
+    std::string advance_mode  = cfg.advance;
+    auto        advance_due_at = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(cfg.advance_seconds);
+
+    // Whether the first track of the run has already been seen. See the note at
+    // the use site: advancing on it would move off the crystal the config chose
+    // to start on before a note played.
+    bool advanced_from_first = false;
+
+    // Put `next` on screen, and fade whatever was there out over it.
+    //
+    // A TRANSITION THAT WOULD NOT FIT IS NOT ATTEMPTED. Both stacks are on screen
+    // at once during a fade, so a two-layer archive replacing another needs four
+    // layers -- which is the cap, and the cap is about the frame rather than about
+    // taste: two layers of `duel` at 4K is already 6.6 ms of a 16.7 ms budget.
+    // Beyond that the switch is a hard cut, which is worse to look at and far
+    // better than dropping frames through the whole transition.
+    //
+    // SAID OUT LOUD when it happens. A silent cap reads as "the crossfade is
+    // broken" rather than as "there was no room for one".
+    const auto begin_stack = [&](LiveStack&& next) {
+        const std::size_t total = live_stack.size() + next.size();
+
+        if (layered && live_stack.ready()) {
+            if (total <= kMaxArchiveLayers) {
+                outgoing_stack = std::move(live_stack);
+                fade_started   = std::chrono::steady_clock::now();
+                layers_wanted  = std::max(layers_wanted, total);
+            } else {
+                outgoing_stack.clear();
+                std::printf("holocron: no room to crossfade (%zu + %zu layers, cap %zu) -- "
+                            "cutting\n",
+                            live_stack.size(), next.size(), kMaxArchiveLayers);
+                std::fflush(stdout);
+            }
+        } else {
+            outgoing_stack.clear();
+        }
+
+        live_stack    = std::move(next);
+        layers_wanted = std::max(layers_wanted, live_stack.size());
+    };
 
     bool          show_now_playing = false;
     TextureHandle title_texture    = 0;
@@ -2772,6 +2960,17 @@ int main(int argc, char** argv)
         //
         // Clamped to the same ±2 s the flag would accept. A relative control with
         // no bound can be walked anywhere by holding a button.
+        if (std::string mode; cast.take_advance(mode)) {
+            advance_mode = mode;
+            // The clock restarts, so switching to "timer" does not immediately
+            // fire because the run happens to have been going longer than the
+            // interval.
+            advance_due_at = std::chrono::steady_clock::now() +
+                             std::chrono::seconds(cfg.advance_seconds);
+            std::printf("holocron: advance %s\n", advance_mode.c_str());
+            std::fflush(stdout);
+        }
+
         if (double delta = 0.0; cast.take_trim(delta)) {
             trim_ms = std::clamp(trim_ms + delta, -2000.0, 2000.0);
             trim_us = static_cast<std::int64_t>(trim_ms * 1000.0);
@@ -2815,6 +3014,55 @@ int main(int argc, char** argv)
                 switching = true;
             }
 
+            // -- moving on by itself -------------------------------------------
+            //
+            // A vault of one never advances, because advancing to itself would be
+            // a 0.4 s crossfade from a picture to the same picture -- which reads
+            // as a stutter, not as a transition.
+            //
+            // NOT WHILE THE BEAT INSTRUMENT IS UP. Somebody is measuring with it,
+            // and a measuring tool that wanders off after three minutes is worse
+            // than one that cannot be reached at all.
+            if (vault.size() > 1 && !switching && !showing_sync) {
+                bool due = false;
+
+                // A TRACK CHANGE IS A REAL BOUNDARY IN THE MUSIC and a timer is
+                // an arbitrary one, which is why "track" is the default. The flag
+                // is consumed by exactly one drawn frame, so reading it here is
+                // reading it once.
+                if (advance_mode == "track" && track_context.track_changed_this_frame) {
+                    // NOT THE FIRST ONE. The first track of a cast is a track
+                    // change like any other, and advancing on it would mean the
+                    // `crystal` key in gatekeeper.toml never got to be seen --
+                    // the player would move off whatever was chosen to start on
+                    // before a note played.
+                    if (advanced_from_first) {
+                        due = true;
+                    } else {
+                        advanced_from_first = true;
+                    }
+                }
+                if (advance_mode == "timer" && std::chrono::steady_clock::now() >= advance_due_at) {
+                    due = true;
+                }
+
+                if (due) {
+                    wanted    = (current + 1) % vault.size();
+                    switching = true;
+                    std::printf("holocron: advancing to \"%s\"\n", vault[wanted].name.c_str());
+                    std::fflush(stdout);
+                }
+            }
+
+            // The clock restarts on EVERY switch, including a manual one. Picking
+            // something by hand and having it replaced eight seconds later because
+            // the timer was already most of the way through is the behaviour
+            // nobody wants and everybody writes first.
+            if (switching) {
+                advance_due_at = std::chrono::steady_clock::now() +
+                                 std::chrono::seconds(cfg.advance_seconds);
+            }
+
             // THE BEAT INSTRUMENT IS NOT IN THE VAULT, on purpose: it is a
             // measuring tool, not a visualization, and putting it in the crystal
             // list would offer it as something to watch a record with. It is
@@ -2824,18 +3072,13 @@ int main(int argc, char** argv)
             // the page is told -- otherwise it highlights a crystal that is not
             // running, which is the exact lie the control-page race fix was about.
             if (cast.take_sync()) {
-                Crystal crystal;
-                std::unique_ptr<CrystalFacet> previous;
-                if (build_crystal(kSyncStem, crystal_facet, false, "beat instrument", crystal,
-                                  layered ? &previous : nullptr)) {
+                LiveStack next;
+                if (build_stack(archive_of_crystal(kSyncStem, "sync"), next,
+                                "beat instrument")) {
                     showing_sync = true;
-                    if (previous && previous->ready() && layered) {
-                        outgoing      = std::move(previous);
-                        fade_started  = std::chrono::steady_clock::now();
-                        layers_wanted = 2;
-                    }
+                    begin_stack(std::move(next));
                     if (watch) {
-                        watch.emplace(crystal.manifest_path, crystal.shader_path,
+                        watch.emplace(live_stack.archive.watch_paths,
                                       std::chrono::steady_clock::now());
                     }
                 } else {
@@ -2883,45 +3126,60 @@ int main(int argc, char** argv)
                 // already knows about its own POSTs; this is the other direction.
                 companion.set_current_crystal(current);
 
-                // What was on screen a moment ago, kept rather than destroyed, so
-                // it can be drawn fading out over the new one.
-                //
-                // A SECOND SWITCH MID-FADE REPLACES IT rather than stacking a
-                // third facet: `previous` is then the crystal that was itself
-                // fading in, which is what is mostly on screen, so fading from
-                // that is right. The one it displaces is dropped, which is a small
-                // jump in something already at low opacity.
-                std::unique_ptr<CrystalFacet> previous;
-
-                Crystal crystal;
-                const bool built = build_crystal(vault[current].stem.c_str(), crystal_facet,
-                                                 false, "switched to", crystal,
-                                                 layered ? &previous : nullptr);
-
-                // Only when there is a stack to draw it into. Without a
-                // compositor the switch stays the hard cut it always was, which
-                // is also what --no-compositor gets.
-                if (built && previous && previous->ready() && layered) {
-                    outgoing      = std::move(previous);
-                    fade_started  = std::chrono::steady_clock::now();
-                    layers_wanted = 2;
-                }
-
-                if (built && watch) {
-                    // The watch has to follow, or an author would edit the
-                    // crystal on screen and see the one they left get reloaded.
-                    watch.emplace(crystal.manifest_path, crystal.shader_path,
-                                  std::chrono::steady_clock::now());
+                Archive   archive;
+                LiveStack next;
+                if (archive_for(vault[current], archive) &&
+                    build_stack(archive, next, "switched to")) {
+                    begin_stack(std::move(next));
+                    if (watch) {
+                        // The watch has to follow, or an author would edit what is
+                        // on screen and see the thing they left get reloaded.
+                        watch.emplace(live_stack.archive.watch_paths,
+                                      std::chrono::steady_clock::now());
+                    }
                 }
             }
 
             // The watch does no filesystem work until its interval has passed,
             // so calling it every frame costs nothing.
+            //
+            // A RELOAD REBUILDS THE WHOLE STACK, not the one file that changed.
+            // Which layer a saved `.frag` belongs to is knowable, but a layer's
+            // crystal can also be swapped by editing the archive, and rebuilding
+            // everything is one path that covers both. The cost is a shader
+            // compile per layer on a keystroke-and-save, which is what the author
+            // was already paying for one.
             if (watch && watch->poll(std::chrono::steady_clock::now())) {
-                Crystal crystal;
-                build_crystal(showing_sync ? kSyncStem : vault[current].stem.c_str(),
-                              crystal_facet, true, "reloaded",
-                              crystal);
+                Archive   archive;
+                LiveStack next;
+
+                // Re-read the archive itself, since the edit may have BEEN the
+                // archive. `showing_sync` is not a vault entry, so it is rebuilt
+                // from its stem.
+                const bool got = showing_sync
+                                     ? (archive = archive_of_crystal(kSyncStem, "sync"), true)
+                                     : archive_for(vault[current], archive);
+
+                if (got && build_stack(archive, next, "reloaded")) {
+                    // u_time CARRIES ACROSS, layer for layer, so slow motion does
+                    // not snap back to zero on every save -- the whole reason the
+                    // clock is settable. Only where the stack still has a layer in
+                    // that position: an archive that gained a layer starts the new
+                    // one at zero, which is correct, because it has never been on
+                    // screen.
+                    for (std::size_t i = 0; i < next.facets.size() && i < live_stack.size(); ++i) {
+                        next.facets[i]->set_elapsed(live_stack.facets[i]->elapsed());
+                    }
+                    live_stack = std::move(next);
+
+                    // A reload is NOT a transition and must not fade -- it
+                    // replaces a picture with a recompiled version of itself, and
+                    // fading there makes every save look like a glitch.
+                    if (watch) {
+                        watch.emplace(live_stack.archive.watch_paths,
+                                      std::chrono::steady_clock::now());
+                    }
+                }
             }
         }
 
@@ -2931,14 +3189,14 @@ int main(int argc, char** argv)
         // whether the outgoing crystal is drawn and how it is composited, so the
         // two cannot disagree.
         float fade = 0.0f;
-        if (outgoing && outgoing->ready()) {
+        if (outgoing_stack.ready()) {
             const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
                                    std::chrono::steady_clock::now() - fade_started)
                                    .count();
             fade = 1.0f - static_cast<float>(since) / (kFadeSeconds * 1000.0f);
             if (fade <= 0.0f) {
                 fade = 0.0f;
-                outgoing.reset();   // its GL objects go here, once it is invisible
+                outgoing_stack.clear();   // its GL objects go here, once invisible
 
                 // The MEASURED length, not the constant. A transition is a thing
                 // you can only judge while it is happening, so the one number
@@ -2962,12 +3220,19 @@ int main(int argc, char** argv)
         // is exactly what the player did before M3.
         //
         // draw_w/draw_h is what u_resolution means -- the size of the thing the
-        // crystal is drawing INTO, which is the layer when there is one. Equal to
-        // the window today, and kept as its own pair of values because a layer at
-        // a fraction of the screen is left open (decision 2 of issue 139).
+        // crystal is drawing INTO, which is the layer. That is no longer the
+        // window: `[render] scale` sizes the layers as a fraction of it, and the
+        // compositor's final pass upscales. Decision 2 of issue 139 left this
+        // open; the answer is that the crystals never needed to know, because
+        // u_resolution has always meant the surface rather than the screen.
+        //
+        // AT LEAST ONE PIXEL EACH WAY. A window dragged to nothing must not ask
+        // for a zero-sized texture, which is a GL error rather than a small one.
+        const int layer_w = std::max(1, static_cast<int>(window.width() * cfg.render_scale));
+        const int layer_h = std::max(1, static_cast<int>(window.height() * cfg.render_scale));
+
         const bool into_layer = layered &&
-                                compositor.resize(layers_wanted, window.width(),
-                                                  window.height()) &&
+                                compositor.resize(layers_wanted, layer_w, layer_h) &&
                                 compositor.bind_layer(0);
         if (!into_layer) {
             // Bound explicitly rather than left wherever the last frame put it.
@@ -2976,10 +3241,22 @@ int main(int argc, char** argv)
         const int draw_w = into_layer ? compositor.width() : window.width();
         const int draw_h = into_layer ? compositor.height() : window.height();
 
-        if (into_layer && announced_layers != layers_wanted) {
+        if (into_layer && (announced_layers != layers_wanted || announced_size != draw_w)) {
             announced_layers = layers_wanted;
-            std::printf("holocron: compositing %zu layer%s of %dx%d RGBA16F\n", layers_wanted,
-                        layers_wanted == 1 ? "" : "s", draw_w, draw_h);
+            announced_size   = draw_w;
+            if (draw_w == window.width()) {
+                std::printf("holocron: compositing %zu layer%s of %dx%d RGBA16F\n", layers_wanted,
+                            layers_wanted == 1 ? "" : "s", draw_w, draw_h);
+            } else {
+                // The scale is worth saying out loud every time it is in effect.
+                // A softer picture with no explanation is indistinguishable from
+                // a broken one, and this is a setting somebody turned on once and
+                // will have forgotten.
+                std::printf("holocron: compositing %zu layer%s of %dx%d RGBA16F, upscaled to "
+                            "%dx%d (scale %.2f)\n",
+                            layers_wanted, layers_wanted == 1 ? "" : "s", draw_w, draw_h,
+                            window.width(), window.height(), cfg.render_scale);
+            }
             std::fflush(stdout);
         } else if (!into_layer && !announced_direct) {
             announced_direct = true;
@@ -2990,14 +3267,34 @@ int main(int argc, char** argv)
         // -- the picture ---------------------------------------------------------
 
         if (drawing_crystal) {
-            crystal_facet->draw(frame, track_context, draw_w, draw_h);
+            // -- the live stack, bottom layer first ----------------------------
+            //
+            // Without a compositor only the BOTTOM layer is drawn, straight to the
+            // window. That is not a silent degradation -- a machine with no float
+            // framebuffer still gets a picture, and the alternative is nothing at
+            // all -- but it is why `--no-compositor` says what it is doing.
+            for (std::size_t i = 0; i < live_stack.size(); ++i) {
+                if (into_layer) {
+                    if (!compositor.bind_layer(i)) {
+                        break;
+                    }
+                } else if (i > 0) {
+                    break;
+                }
+                live_stack.facets[i]->draw(frame, track_context, draw_w, draw_h);
+            }
 
-            // The crystal being left, into layer 1, still moving. Freezing it
+            // The stack being left, above the new one, still moving. Freezing it
             // would make the outgoing half of a transition look like a stall
             // rather than a fade -- it is still on screen, so it still has to be
             // alive. It is fed the same AudioFrame, because it is the same moment.
-            if (fading && into_layer && compositor.bind_layer(1)) {
-                outgoing->draw(frame, track_context, draw_w, draw_h);
+            if (fading && into_layer) {
+                for (std::size_t j = 0; j < outgoing_stack.size(); ++j) {
+                    if (!compositor.bind_layer(live_stack.size() + j)) {
+                        break;
+                    }
+                    outgoing_stack.facets[j]->draw(frame, track_context, draw_w, draw_h);
+                }
             }
         } else {
             facet.draw(frame, draw_w, draw_h, playing);
@@ -3009,12 +3306,53 @@ int main(int argc, char** argv)
         // bottom first. Everything after this point is drawing on the window
         // again, which is what the overlay and the shot both need.
         if (into_layer) {
-            const LayerState states[] = {
-                LayerState{1.0f, LayerBlend::kNormal, true},    // the crystal now
-                LayerState{fade, LayerBlend::kNormal, fading},  // the one being left
-            };
-            compositor.composite(std::span<const LayerState>(states, fading ? 2u : 1u),
-                                 window.width(), window.height());
+            LayerState states[kMaxArchiveLayers]{};
+            std::size_t n = 0;
+
+            for (std::size_t i = 0; i < live_stack.size() && n < kMaxArchiveLayers; ++i, ++n) {
+                const ArchiveLayer& spec = live_stack.archive.layers[i];
+                states[n].opacity = layer_opacity(spec.opacity, frame);
+                states[n].blend   = spec.blend;
+                states[n].live    = true;
+            }
+
+            // THE OUTGOING STACK KEEPS ITS OWN BLENDS, scaled by the fade. Its
+            // bottom layer is not the bottom of the composite -- the incoming
+            // stack is under it -- so a normal blend alpha-mixes, which is exactly
+            // a crossfade. Anything it reads back reads the incoming stack for
+            // 0.4 s, which is odd on paper and unnoticeable in motion; forcing
+            // them all to normal was the alternative and it makes an additive
+            // layer flash as it leaves.
+            if (fading) {
+                for (std::size_t j = 0; j < outgoing_stack.size() && n < kMaxArchiveLayers;
+                     ++j, ++n) {
+                    const ArchiveLayer& spec = outgoing_stack.archive.layers[j];
+                    states[n].opacity = layer_opacity(spec.opacity, frame) * fade;
+                    states[n].blend   = spec.blend;
+                    states[n].live    = true;
+                }
+            }
+
+            // Handed back as a texture when there is a final pass to run over it,
+            // and put straight on the window when there is not -- which is the
+            // ordinary case and costs exactly what it did before.
+            const TextureHandle picture =
+                compositor.composite(std::span<const LayerState>(states, n), window.width(),
+                                     window.height(), run_final_pass);
+
+            if (run_final_pass && picture != 0) {
+                // Sized against the WINDOW rather than the layer: the bloom is
+                // added after the upscale, so its resolution follows what is on
+                // screen and not what the crystals drew into.
+                if (final_settings.bloom > 0.0f) {
+                    final_pass.resize(window.width(), window.height());
+                }
+                final_pass.draw(picture, final_settings,
+                                std::chrono::duration<float>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count(),
+                                window.width(), window.height());
+            }
         }
 
         // -- the now-playing card ---------------------------------------------
@@ -3237,7 +3575,12 @@ int main(int argc, char** argv)
     // it lives in one place rather than being repeated at every exit.
     session.stop();
 
-    crystal_facet->shutdown();
+    // The stacks release their own facets, and each facet releases its own GL
+    // objects -- which is why there is no crystal shutdown here any more. The
+    // window is still open at this point, so the context those objects belong to
+    // is still current.
+    live_stack.clear();
+    outgoing_stack.clear();
     facet.shutdown();
     window.close();
     return 0;
