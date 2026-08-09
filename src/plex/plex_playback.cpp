@@ -863,6 +863,20 @@ HttpError fetch_lyrics(const PlayRequest& server, const PlexTrack& track, std::s
     if (err != HttpError::kOk) {
         return err;
     }
+    if (body.status == 404) {
+        // A 404 HERE IS "NO LYRICS", NOT A FAILURE, and the distinction is not
+        // pedantic: the metadata advertises lyric streams the server will not
+        // serve. Observed on the rack -- a stream that returned 1953 bytes
+        // earlier in the same session answered 404 half an hour later, and a
+        // sweep of 40 tracks got 404 on every advertised stream while a track
+        // playing at the time fetched fine.
+        //
+        // Whatever the server is doing, this arrives during ordinary playback
+        // and reporting it as an error puts a red line in the log on tracks
+        // where nothing is wrong -- which buries the times something is.
+        out_detail = "the server has no body for the advertised lyric stream";
+        return HttpError::kBadUrl;
+    }
     if (body.status != 200) {
         out_detail = "the server answered HTTP " + std::to_string(body.status) +
                      " for the lyric stream";
