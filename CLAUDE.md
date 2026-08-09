@@ -31,7 +31,28 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: M5 — Holocron is a cast target, and it plays what it is sent
+## Status: M3 and M5 are DONE. M4 (projectM) is next.
+
+**Two milestones are finished.** M5 — Holocron is a Plex cast target and plays
+what it is sent, confirmed on the rack from the phone. M3 — the compositor, at
+`v0.3.0`, with all seven exit criteria met.
+
+**M2 is still open and is the odd one out.** Its plumbing has been done since
+`v0.1.13`; what remains is the **visual language**, which is the owner's
+judgement and not a task anyone else can close. Three crystals and one archive
+ship. He has feedback outstanding on `duel` and on the lyric display.
+
+**What M3 delivered**, all of it measured rather than asserted:
+
+| | |
+|---|---|
+| Layers | `GL_RGBA16F` FBOs, owned by the `Compositor` rather than by the facets (D-036). **0.06 ms per frame at 4K.** |
+| Blend modes | All seven. Screen, multiply, overlay and difference read the destination, so they assemble in a canvas — which nothing allocates until one is named. |
+| Archives | A saved facet stack. `<stem>.toml` with `[[layer]]`, opacity bindable to an `AudioFrame` field. `crystals/storm` is the first. |
+| Transitions | Crossfade on switch, 0.4 s, measured. Auto-advance on the track or a timer. |
+| Render scale | `[render] scale`. **duel at 4K: 3.72 ms at 1.0, 1.89 at 0.71, 1.08 at 0.5.** |
+| Final pass | Grain, vignette, safe-area mask, bloom. Grain dithers a dark patch of `drift` from **208 to 288 distinct colours**. Bloom costs **70 µs at 4K**. |
+| C ABI | `facet_abi.h`, compiled as C11 *and* C++20 in CI. `AudioFrame` crosses; `TrackContext` does not. |
 
 **You can cast to it from Plexamp.** Confirmed on the phone 2026-08-04. The
 device appears in the list, a play command resolves against the media server,
@@ -379,7 +400,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.2.3`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.3.0`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
