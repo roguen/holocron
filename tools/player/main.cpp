@@ -45,6 +45,7 @@
 #include <holocron/art_texture.hpp>
 #include <holocron/audio_frame.hpp>
 #include <holocron/companion_server.hpp>
+#include <holocron/compositor.hpp>
 #include <holocron/crystal.hpp>
 #include <holocron/image_decode.hpp>
 #include <holocron/overlay_facet.hpp>
@@ -54,6 +55,7 @@
 #include <holocron/gdm_responder.hpp>
 #include <holocron/plex_device.hpp>
 #include <holocron/plex_link.hpp>
+#include <holocron/render_target.hpp>
 #include <holocron/crystal_facet.hpp>
 #include <holocron/crystal_watch.hpp>
 #include <holocron/gatekeeper.hpp>
@@ -154,6 +156,17 @@ struct Options {
     // flag you forget -- leaving you editing a file the player is ignoring. The
     // negative form matches --no-audio.
     bool        no_watch = false;
+    // Draw straight to the window instead of through the layer stack.
+    //
+    // NOT A DEAD FLAG. That fallback exists whether or not anything can reach
+    // it -- a machine that cannot allocate a float framebuffer takes it -- and a
+    // path that cannot be reached on purpose is a path nobody ever finds out is
+    // broken. It is also the only way to measure what the compositor costs,
+    // which issue 139 asked for on this GPU rather than in the abstract.
+    //
+    // Same family as --no-audio, --no-discover and --no-watch: turn one
+    // subsystem off and see what the rest does without it.
+    bool        no_compositor = false;
     bool        help     = false;
 
     // WHICH OPTIONS WERE ACTUALLY TYPED.
@@ -263,6 +276,8 @@ Options parse(int argc, char** argv)
             o.no_audio = true;
         } else if (std::strcmp(a, "--no-watch") == 0) {
             o.no_watch = true;
+        } else if (std::strcmp(a, "--no-compositor") == 0) {
+            o.no_compositor = true;
         } else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
             o.help = true;
         } else if (a[0] != '-' && o.path == nullptr) {
@@ -318,6 +333,12 @@ void usage()
         "                 Prints every request the phone makes. Ctrl-C to stop\n"
         "  --no-discover  do not announce during this run, whatever the config says\n"
         "  --no-audio     decode and draw, but open no audio device\n"
+        "  --no-compositor\n"
+        "                 draw straight to the window instead of through the\n"
+        "                 layer stack. The fallback a machine that cannot\n"
+        "                 allocate a float framebuffer takes anyway, reachable on\n"
+        "                 purpose so it can be tested and so the compositor's\n"
+        "                 cost can be measured\n"
         "  --frames N     render exactly N frames then exit\n"
         "  --shot PATH    write the last rendered frame to PATH as a BMP\n"
         "  --width W      window width in pixels (default 1280)\n"
@@ -1512,6 +1533,16 @@ int main(int argc, char** argv)
     wc.width  = opt.width;
     wc.height = opt.height;
 
+    // FROM THE CONFIG, WHICH IS WHERE THEY ALWAYS CLAIMED TO COME FROM.
+    //
+    // Both keys were parsed, validated and then dropped on the floor -- Window
+    // does the right thing with them and nothing handed them over, so setting
+    // `vsync = false` had no effect and never had (issue 141). When no config
+    // was found, `cfg` holds the same defaults WindowConfig does, so this is a
+    // no-op in that case rather than a second source of truth.
+    wc.vsync    = cfg.vsync;
+    wc.gl_debug = cfg.gl_debug;
+
     Window window;
     const WindowError werr = window.open(wc);
     if (werr != WindowError::kOk) {
@@ -1694,6 +1725,42 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "holocron: no overlay -- %s\n", log.c_str());
         }
     }
+
+    // -- the layer stack ------------------------------------------------------
+    //
+    // The picture is drawn into an off-screen layer and then composited onto the
+    // window, which is what M3 needs and what nothing before it could do: two
+    // things that both draw straight to the screen cannot be blended,
+    // crossfaded, or stacked.
+    //
+    // NOT FATAL IF IT FAILS. `layered` falls back to drawing straight to the
+    // window, which is exactly what the player did before this existed. A
+    // machine that cannot allocate a float framebuffer should still play music
+    // and draw a crystal.
+    Compositor compositor;
+    bool       layered = false;
+    if (!opt.no_compositor) {
+        std::string log;
+        layered = compositor.init(log);
+        if (!layered) {
+            std::fprintf(stderr, "holocron: no compositor -- %s\n"
+                                 "holocron: drawing straight to the window\n",
+                         log.c_str());
+        }
+    }
+
+    // ONE LAYER, BECAUSE ONE THING DRAWS.
+    //
+    // The stack takes a count and the compositing pass takes per-layer state, so
+    // a second layer is one integer and a second draw. Allocating one now that
+    // nothing writes into would cost 66 MB of video memory at 4K for a surface
+    // no pixel is ever read from. The second arrives with the first thing that
+    // needs it -- issue 140, the crossfade between crystals.
+    constexpr std::size_t kLayerCount = 1;
+
+    // Printed once, because this is the branch the whole render path turns on
+    // and a branch no log prints is a branch that cannot be diagnosed.
+    bool announced_layers = false;
 
     bool          show_now_playing = false;
     TextureHandle title_texture    = 0;
@@ -2426,6 +2493,38 @@ int main(int argc, char** argv)
                                        track_context.has_art);
         }
 
+        // -- where the picture goes --------------------------------------------
+        //
+        // Into layer 0 when there is a stack, straight to the window when there
+        // is not. The fallback is not a courtesy: a machine that cannot allocate
+        // a float framebuffer should still play music and draw a crystal, and
+        // this is exactly what the player did before M3.
+        //
+        // draw_w/draw_h is what u_resolution means -- the size of the thing the
+        // crystal is drawing INTO, which is the layer when there is one. Equal to
+        // the window today, and kept as its own pair of values because a layer at
+        // a fraction of the screen is left open (decision 2 of issue 139).
+        const bool into_layer = layered &&
+                                compositor.resize(kLayerCount, window.width(), window.height()) &&
+                                compositor.bind_layer(0);
+        if (!into_layer) {
+            // Bound explicitly rather than left wherever the last frame put it.
+            RenderTarget::bind_default(window.width(), window.height());
+        }
+        const int draw_w = into_layer ? compositor.width() : window.width();
+        const int draw_h = into_layer ? compositor.height() : window.height();
+
+        if (!announced_layers) {
+            announced_layers = true;
+            if (into_layer) {
+                std::printf("holocron: compositing %zu layer%s of %dx%d RGBA16F\n", kLayerCount,
+                            kLayerCount == 1 ? "" : "s", draw_w, draw_h);
+            } else {
+                std::printf("holocron: drawing straight to the window, %dx%d\n", draw_w, draw_h);
+            }
+            std::fflush(stdout);
+        }
+
         if (drawing_crystal) {
             // Switching, then reloading, both here rather than on their own
             // thread: building a program needs the GL context, which belongs to
@@ -2494,15 +2593,26 @@ int main(int argc, char** argv)
                 build_crystal(vault[current].stem.c_str(), crystal_facet, true, "reloaded",
                               crystal);
             }
-            crystal_facet->draw(frame, track_context, window.width(), window.height());
+            crystal_facet->draw(frame, track_context, draw_w, draw_h);
         } else {
-            facet.draw(frame, window.width(), window.height(), playing);
+            facet.draw(frame, draw_w, draw_h, playing);
+        }
+
+        // -- the layers become the picture --------------------------------------
+        //
+        // Binds the window's framebuffer, clears it, and draws the stack onto it
+        // bottom first. Everything after this point is drawing on the window
+        // again, which is what the overlay and the shot both need.
+        if (into_layer) {
+            const LayerState states[] = {LayerState{1.0f, LayerBlend::kNormal, true}};
+            compositor.composite(states, window.width(), window.height());
         }
 
         // -- the now-playing card ---------------------------------------------
         //
         // AFTER the picture and before the swap, which is the whole reason this is
         // a separate facet: it composites over whatever drew, crystal or debug.
+        // Outside the layer stack on purpose -- see compositor.hpp.
         if (overlay_ready && show_now_playing && title_texture != 0) {
             // Rebuilt only when the words change. Comparing the string rather
             // than watching track_changed_this_frame because a seek or a crystal

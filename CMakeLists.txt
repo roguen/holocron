@@ -326,6 +326,8 @@ add_library(holocron_render STATIC
     src/render/crystal_facet.cpp
     src/render/art_texture.cpp
     src/render/overlay_facet.cpp
+    src/render/render_target.cpp
+    src/render/compositor.cpp
 )
 add_library(holocron::render ALIAS holocron_render)
 
