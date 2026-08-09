@@ -165,13 +165,14 @@ std::string control_page(const CompanionServer::ControlState& state)
     out += state.lyrics_visible ? "on" : "";
     out += "\" type=\"submit\">Lyrics</button></form>";
 
-    // SAID PLAINLY RATHER THAN LEFT AS A DEAD BUTTON. Lyrics are not implemented
-    // (issue 122) and a control that silently does nothing is the exact failure
-    // `controllable` is careful to avoid on the Plex side. The now-playing card
-    // above it IS implemented, which is why only this one carries the caveat.
+    // SAID PLAINLY RATHER THAN LEFT LOOKING BROKEN. Lyrics work now, but only for
+    // the tracks that have timed ones -- on this library that is roughly two
+    // tracks in five, so a toggle that turns on and shows nothing is the COMMON
+    // case rather than a fault. A control whose silence has to be interpreted is
+    // the exact failure `controllable` is careful to avoid on the Plex side.
     out += "<div style=\"color:#8a8a92;font-size:13px;margin-top:4px\">"
-           "Lyrics are not implemented yet -- this toggle is wired but has "
-           "nothing to show.</div>";
+           "Only tracks with <i>timed</i> lyrics show anything -- about two in "
+           "five. The player says which it is when you turn this on.</div>";
 
     out += "<h2>Setup</h2>";
     out += "<form method=\"get\" action=\"/control/tuning\">"

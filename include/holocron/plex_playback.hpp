@@ -392,6 +392,20 @@ std::string artwork_path(const PlexTrack& track, const std::string& token, int s
 HttpError fetch_artwork(const PlayRequest& server, const PlexTrack& track, int size,
                         std::vector<std::uint8_t>& out, std::string& out_detail);
 
+// The track's lyrics, as the body of whichever stream is best.
+//
+// TWO ROUND TRIPS, because the lyric streams appear only on the track's own
+// `/library/metadata/{ratingKey}` -- not in a section listing and not on
+// anything a play queue hands over. There is no way to learn the stream key
+// without asking.
+//
+// Returns kBadUrl when the track simply has no lyrics, which is a quarter of a
+// real library and must not be logged as a failure. `out_synced` reports what
+// the stream's `format` claimed; parse_lyrics has the last word on whether the
+// body actually carries timing.
+HttpError fetch_lyrics(const PlayRequest& server, const PlexTrack& track, std::string& out_body,
+                       bool& out_synced, std::string& out_detail);
+
 // ---------------------------------------------------------------------------
 // The small amount of XML reading this needs
 //

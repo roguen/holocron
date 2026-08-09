@@ -404,6 +404,7 @@ add_library(holocron_plex STATIC
     src/plex/plex_link.cpp
     src/plex/https_client.cpp
     src/plex/plex_playback.cpp
+    src/plex/lyrics.cpp
 )
 add_library(holocron::plex ALIAS holocron_plex)
 

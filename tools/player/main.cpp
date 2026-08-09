@@ -48,6 +48,7 @@
 #include <holocron/compositor.hpp>
 #include <holocron/crystal.hpp>
 #include <holocron/image_decode.hpp>
+#include <holocron/lyrics.hpp>
 #include <holocron/overlay_facet.hpp>
 #include <holocron/palette.hpp>
 #include <holocron/text_render.hpp>
@@ -1083,6 +1084,100 @@ private:
     std::uint64_t      hits_ = 0;
 };
 
+// The words, fetched off the render thread.
+//
+// SAME SHAPE AS ArtworkLoader AND FOR THE SAME REASONS -- two HTTPS round trips
+// cannot happen inside a 7 ms frame, and a generation counter is what stops the
+// lyrics of a track skipped past a second ago arriving after the next one has
+// started. Written as its own class rather than folded into ArtworkLoader
+// because the two fetch different things from different endpoints and only one
+// of them is worth caching: a sleeve repeats fifteen times across an album,
+// lyrics never repeat at all.
+class LyricsLoader {
+public:
+    ~LyricsLoader() { join(); }
+
+    void request(const PlayRequest& server, const PlexTrack& track)
+    {
+        join();
+
+        std::uint64_t generation = 0;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            generation_ += 1;
+            generation = generation_;
+            ready_     = false;
+            lyrics_    = Lyrics{};
+        }
+        if (track.rating_key.empty()) {
+            return;
+        }
+
+        worker_ = std::thread([this, server, track, generation] {
+            std::string body;
+            std::string detail;
+            bool        synced = false;
+
+            const HttpError err = fetch_lyrics(server, track, body, synced, detail);
+            if (err != HttpError::kOk) {
+                // A QUARTER OF A REAL LIBRARY HAS NO LYRICS, so kBadUrl is
+                // silent. Anything else is a server or a network problem and is
+                // worth one line -- but still not worth interrupting playback.
+                if (err != HttpError::kBadUrl) {
+                    std::fprintf(stderr, "holocron: no lyrics for \"%s\" -- %s\n",
+                                 track.title.c_str(), detail.c_str());
+                }
+                return;
+            }
+
+            const Lyrics parsed = parse_lyrics(body, synced);
+
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (generation != generation_) {
+                return;   // a newer track has been asked for; this answer is stale
+            }
+            lyrics_ = parsed;
+            ready_  = true;
+        });
+    }
+
+    bool take(Lyrics& out)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (!ready_) {
+            return false;
+        }
+        out    = std::move(lyrics_);
+        lyrics_ = Lyrics{};
+        ready_ = false;
+        return true;
+    }
+
+    // Called before a track is replaced, exactly as the artwork loader is: an
+    // answer for a track that is no longer playing must not land.
+    void abandon()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        generation_ += 1;
+        ready_ = false;
+        lyrics_ = Lyrics{};
+    }
+
+    void join()
+    {
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+    }
+
+private:
+    std::thread        worker_;
+    mutable std::mutex mutex_;
+    std::uint64_t      generation_ = 0;
+    bool               ready_      = false;
+    Lyrics             lyrics_;
+};
+
 extern "C" void on_interrupt(int)
 {
     // Nothing but a flag. A signal handler may call almost nothing, and the two
@@ -1894,6 +1989,18 @@ int main(int argc, char** argv)
     int           artist_w = 0, artist_h = 0;
     std::string   drawn_for_title;   // what the textures currently say
 
+    // -- lyrics (issue 122) ---------------------------------------------------
+    //
+    // ONE LINE AT A TIME, RASTERIZED WHEN IT CHANGES. A synced lyric changes a
+    // few times a minute, so rasterizing per frame would be a GDI call and a
+    // texture upload inside a 7 ms budget for words that have not moved. Compared
+    // by STRING rather than by index, so a repeated chorus line does not
+    // re-rasterize identical pixels.
+    Lyrics        song;
+    TextureHandle lyric_texture = 0;
+    int           lyric_w = 0, lyric_h = 0;
+    std::string   drawn_lyric;
+
     // Rebuild the card's textures. Called when the track changes, and only then.
     const auto build_card = [&](const std::string& title, const std::string& artist) {
         release_art(title_texture);
@@ -1948,6 +2055,7 @@ int main(int argc, char** argv)
     // into the context happen here.
     TrackContext  track_context{};
     ArtworkLoader artwork;
+    LyricsLoader  lyrics;
 
     // The neutral ramp until a sleeve arrives, and after one fails. A crystal
     // must never see a palette of zeroes -- see neutral_palette().
@@ -1985,11 +2093,26 @@ int main(int argc, char** argv)
         if (!track.thumb.empty() || !track.album_thumb.empty()) {
             artwork.request(server, track);
         }
+
+        // Same reasoning as the sleeve: the previous track's words on screen over
+        // the new one is worse than none at all, and worse still because they can
+        // be read.
+        lyrics.abandon();
+        song = Lyrics{};
+        drawn_lyric = std::string();
+        release_art(lyric_texture);
+        lyric_w = lyric_h = 0;
+        lyrics.request(server, track);
     };
 
     // Nothing is playing any more.
     const auto forget_track = [&] {
         artwork.abandon();
+        lyrics.abandon();
+        song = Lyrics{};
+        drawn_lyric = std::string();
+        release_art(lyric_texture);
+        lyric_w = lyric_h = 0;
         release_art(track_context.album_art_texture);
         track_context.has_art = false;
         track_context.title.clear();
@@ -2528,6 +2651,20 @@ int main(int argc, char** argv)
         // program is on this thread. The fetch and the decode already happened
         // elsewhere; what is left costs one texture creation per track.
         {
+            // -- the words --------------------------------------------------
+            //
+            // Taken here rather than where the sleeve is uploaded because there
+            // is nothing to upload: the fetch produces a parsed structure and
+            // the rasterizing happens when the line changes, which is a
+            // different event.
+            if (Lyrics fetched; lyrics.take(fetched)) {
+                song = std::move(fetched);
+                std::printf("holocron: %zu lyric line(s) for \"%s\"%s\n", song.lines.size(),
+                            track_context.title.c_str(),
+                            song.synced ? "" : " -- no timing, so no scrolling");
+                std::fflush(stdout);
+            }
+
             ImageRgba8 art;
             Palette    art_palette;
             if (artwork.take(art, art_palette)) {
@@ -2595,8 +2732,16 @@ int main(int argc, char** argv)
         // handful of short strings and nothing else.
         if (const int asked = cast.take_lyrics(); asked != 0) {
             lyrics_visible = asked == 1;
-            std::printf("holocron: lyrics %s (nothing to show yet -- issue 122)\n",
-                        lyrics_visible ? "on" : "off");
+            // SAYS WHY WHEN THERE IS NOTHING TO SHOW. A quarter of this library
+            // has no lyric stream and a third has one with no timing, so a toggle
+            // that turns on and produces nothing is the COMMON case rather than a
+            // fault -- and indistinguishable from a broken toggle unless it says
+            // so.
+            const char* why = !lyrics_visible          ? ""
+                              : song.lines.empty()     ? " -- this track has none"
+                              : !song.synced           ? " -- this track's lyrics have no timing"
+                                                       : "";
+            std::printf("holocron: lyrics %s%s\n", lyrics_visible ? "on" : "off", why);
             std::fflush(stdout);
         }
         if (const int asked = cast.take_now_playing(); asked != 0) {
@@ -2918,6 +3063,85 @@ int main(int argc, char** argv)
             if (artist_texture != 0) {
                 overlay.draw(artist_texture, left, base - artist_h, artist_w, artist_h,
                              glm::vec3(0.80f), 0.85f, sw, sh);
+            }
+        }
+
+        // -- the lyric line ----------------------------------------------------
+        //
+        // ONE LINE, CENTRED, ABOVE THE NOW-PLAYING CARD. Not a scrolling column
+        // of them: on a projector seen from a couch the line being sung has to be
+        // findable in the time it takes to glance up, and a block of text with one
+        // line highlighted makes that a search rather than a read. The words are
+        // the visualization's guest, not its subject.
+        //
+        // Unsynced lyrics deliberately draw NOTHING. A third of this library has
+        // only a text block, and a static wall of words over a moving picture is
+        // not what was asked for -- the toggle simply has nothing to show, which
+        // the log says once per track.
+        if (overlay_ready && lyrics_visible && song.synced && !song.lines.empty()) {
+            const std::size_t index = lyric_index_at(song, timeline.time_ms);
+
+            // lines.size() is "the first line is not yet due", which is an
+            // ordinary state during an intro and is not an index.
+            const std::string want = index < song.lines.size() ? song.lines[index].text
+                                                               : std::string();
+
+            if (want != drawn_lyric) {
+                drawn_lyric = want;
+                release_art(lyric_texture);
+                lyric_texture = 0;
+                lyric_w = lyric_h = 0;
+
+                if (!want.empty()) {
+                    TextRequest req;
+                    req.text         = want;
+                    req.pixel_height = 44;
+                    req.bold         = false;
+
+                    ImageRgba8  bitmap;
+                    std::string detail;
+                    if (render_text(req, bitmap, detail) == TextError::kOk) {
+                        lyric_texture = upload_art(bitmap);
+                        lyric_w       = bitmap.width;
+                        lyric_h       = bitmap.height;
+                    }
+                }
+            }
+
+            if (lyric_texture != 0 && lyric_w > 0) {
+                const int sw = window.width();
+                const int sh = window.height();
+
+                // A LINE CAN BE WIDER THAN THE SCREEN, and a projector cropping
+                // the end of a lyric is worse than shrinking it: the missing words
+                // are the ones that finish the thought. Scaled to fit rather than
+                // wrapped, because wrapping needs a layout engine this project
+                // does not have and a two-line lyric changes the position of every
+                // other element on screen.
+                const int max_w = sw - sh / 8;
+                int       w     = lyric_w;
+                int       h     = lyric_h;
+                if (w > max_w && max_w > 0) {
+                    h = h * max_w / w;
+                    w = max_w;
+                }
+
+                const int x = (sw - w) / 2;
+                const int y = sh - sh / 4 - h;
+
+                // Tinted from the record like the card, and drawn over its own
+                // scrim: antialiased type over a crystal is illegible wherever the
+                // picture is bright, and a crystal is bright somewhere by design.
+                overlay.fill(x - sh / 40, y - sh / 80, w + sh / 20, h + sh / 40,
+                             glm::vec3(0.0f), 0.42f, sw, sh);
+
+                const glm::vec3 ink =
+                    track_context.has_art
+                        ? glm::vec3(linear_to_srgb(track_context.palette_accent.r),
+                                    linear_to_srgb(track_context.palette_accent.g),
+                                    linear_to_srgb(track_context.palette_accent.b))
+                        : glm::vec3(0.97f);
+                overlay.draw(lyric_texture, x, y, w, h, ink, 1.0f, sw, sh);
             }
         }
 
