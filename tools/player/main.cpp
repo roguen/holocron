@@ -396,72 +396,6 @@ void describe(const char* verb, const Crystal& crystal, const CrystalFacet& face
 // Relative to the working directory, exactly as `--calibrate` has always been.
 constexpr const char* kSyncStem = "instruments/sync";
 
-// Build a crystal from disk into a NEW facet, and swap only if it worked.
-//
-// A shader is broken for most of the time an author is editing it. Tearing the
-// live program down before knowing its replacement compiles would blank the
-// screen on every stray semicolon, which would make the reload loop worse than
-// relaunching. So the new facet is built beside the old one and only replaces it
-// on success; on failure the driver's own message is printed -- far more useful
-// than anything invented here -- and what is on screen is left alone.
-//
-// `carry_time` distinguishes the two callers. A RELOAD is the same crystal a
-// moment later, so u_time continues; a SWITCH is a different crystal, which has
-// never been on screen and should start at zero. Getting that backwards would
-// drop an author into the middle of an animation they have not seen the start
-// of.
-//
-// Returns the crystal it swapped in, so the caller can re-point the watch at the
-// files that are now live.
-//
-// `out_previous`, when given, receives the facet that WAS live instead of it being
-// destroyed here. That is what makes a crossfade possible: the outgoing crystal has
-// to keep drawing, into its own layer, while the incoming one comes up underneath
-// it. A caller that does not pass one gets the old behaviour -- the outgoing
-// facet's GL objects go at the assignment below and the switch is a hard cut.
-//
-// It is left null for a RELOAD on purpose. A reload is not a transition; fading
-// between a crystal and a recompiled version of itself would make every save look
-// like a glitch.
-bool build_crystal(const char* stem, std::unique_ptr<CrystalFacet>& live, bool carry_time,
-                   const char* verb, Crystal& out,
-                   std::unique_ptr<CrystalFacet>* out_previous = nullptr)
-{
-    Crystal            crystal;
-    std::string        detail;
-    const CrystalError err = load_crystal(stem, crystal, detail);
-    if (err != CrystalError::kOk) {
-        std::fprintf(stderr, "holocron: %s failed -- %s\n%s\nholocron: still drawing the "
-                             "previous crystal\n",
-                     verb, to_string(err), detail.c_str());
-        return false;
-    }
-
-    auto        next = std::make_unique<CrystalFacet>();
-    std::string log;
-    if (!next->init(crystal, log)) {
-        std::fprintf(stderr, "holocron: %s failed -- crystal did not build\n%s\n"
-                             "holocron: still drawing the previous crystal\n",
-                     verb, log.c_str());
-        return false;
-    }
-
-    if (carry_time) {
-        next->set_elapsed(live->elapsed());
-    }
-    if (out_previous != nullptr) {
-        // Handed over rather than dropped. Empty on the FIRST build of a run,
-        // where `live` holds a default-constructed facet that never compiled --
-        // so a caller must check ready() rather than assume a fade is possible.
-        *out_previous = std::move(live);
-    }
-    live = std::move(next);   // the old facet's GL objects go here, not before
-
-    out = crystal;
-    describe(verb, crystal, *live);
-    return true;
-}
-
 // ---------------------------------------------------------------------------
 // A live stack
 //
@@ -501,7 +435,12 @@ struct LiveStack {
 // Compile every layer of `archive` into a NEW stack, and hand it back only if all
 // of them built.
 //
-// ALL OR NOTHING, for the same reason build_crystal swaps only on success: a
+// A shader is broken for most of the time an author is editing it, so the new
+// stack is built BESIDE the live one and only replaces it on success -- tearing
+// the live program down first would blank the screen on every stray semicolon
+// and make the reload loop worse than relaunching.
+//
+// ALL OR NOTHING, and that is the other half of the same idea: a
 // stack with one layer missing is not a smaller stack, it is a different picture,
 // and showing it would hide the failure behind something that looks deliberate.
 bool build_stack(const Archive& archive, LiveStack& out, const char* verb)
@@ -529,15 +468,21 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb)
                          verb, crystal.name.c_str(), log.c_str());
             return false;
         }
+
+        // PER LAYER, not once for the stack. The unused-uniform count is the
+        // diagnostic that separates "this crystal ignores the audio" from "this
+        // uniform is misspelled in the .frag", and it belongs to a shader rather
+        // than to the archive that happens to include it. Losing it in the move
+        // to stacks was caught by the Linux job noticing describe() had gone
+        // unused, which is a better fault-finder than it sounds.
+        describe(verb, crystal, *facet);
         next.facets.push_back(std::move(facet));
     }
 
     out = std::move(next);
 
-    if (out.archive.layers.size() == 1) {
-        std::printf("holocron: %s \"%s\"\n", verb, out.archive.name.c_str());
-    } else {
-        std::printf("holocron: %s \"%s\" -- %zu layers\n", verb, out.archive.name.c_str(),
+    if (out.archive.layers.size() > 1) {
+        std::printf("holocron: \"%s\" is %zu layers\n", out.archive.name.c_str(),
                     out.archive.layers.size());
     }
     std::fflush(stdout);
@@ -1867,15 +1812,11 @@ int main(int argc, char** argv)
     }
 
     DebugFacet facet;
-    // Held by pointer so a reload or a switch can swap a freshly compiled facet
-    // in without the live one having been torn down first. See build_crystal.
-    auto                        crystal_facet   = std::make_unique<CrystalFacet>();
     bool                        drawing_crystal = false;
 
     // WHAT IS ON SCREEN, AND WHAT IS LEAVING IT. Both are stacks, and a plain
-    // crystal is a stack of one -- see LiveStack. `crystal_facet` above survives
-    // only for the beat instrument, which is loaded by stem and is deliberately
-    // not a vault entry.
+    // crystal is a stack of one -- see LiveStack. Even the beat instrument, which
+    // is loaded by stem rather than from the vault, is a stack of one.
     LiveStack                   live_stack;
     LiveStack                   outgoing_stack;
 
@@ -3447,7 +3388,12 @@ int main(int argc, char** argv)
     // it lives in one place rather than being repeated at every exit.
     session.stop();
 
-    crystal_facet->shutdown();
+    // The stacks release their own facets, and each facet releases its own GL
+    // objects -- which is why there is no crystal shutdown here any more. The
+    // window is still open at this point, so the context those objects belong to
+    // is still current.
+    live_stack.clear();
+    outgoing_stack.clear();
     facet.shutdown();
     window.close();
     return 0;
