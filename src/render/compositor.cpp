@@ -31,27 +31,58 @@ void main()
 }
 )glsl";
 
-// TWO MODES, AND THEY ARE ABOUT WHERE THE OPACITY GOES.
+// THREE MODES, AND THEY ARE ABOUT WHERE THE ARITHMETIC HAPPENS.
 //
 //   0 -- opaque: the layer's own alpha is discarded and the opacity scales its
 //        colour. Used for the bottom layer, and for anything added.
-//   1 -- alpha:  the layer's alpha is scaled by the opacity and the blend unit
-//        does the mixing. Used for a normal layer with something below it.
+//   1 -- alpha:  the layer's alpha is scaled by the opacity and the fixed-function
+//        blend unit does the mixing. Used for a normal layer over something.
+//   2 -- read-back: the shader samples what is ALREADY on the window and does the
+//        arithmetic itself. Used for screen, multiply, overlay and difference,
+//        none of which the blend unit can express.
 //
-// The blend equation is set alongside it on the C++ side; the two have to agree
-// and are chosen in one place for that reason.
+// WHY MODE 2 EXISTS AT ALL, since it is the expensive one. GL's blend unit
+// computes src*F + dst*G for a small set of factors; multiply is expressible
+// (GL_DST_COLOR, GL_ZERO) but screen, overlay and difference are not, and having
+// four blend modes take three different routes through the code is how one of
+// them ends up subtly wrong. One path that reads the destination does all four,
+// and the destination is a texture the compositor already owns.
 const char* kFragmentShader = R"glsl(
 #version 450 core
 in  vec2 v_uv;
 out vec4 frag_colour;
 
 uniform sampler2D u_layer;
+uniform sampler2D u_under;    // what is already composited, for mode 2
 uniform float     u_opacity;
 uniform int       u_mode;
+uniform int       u_blend;    // matches holocron::LayerBlend
+
+vec3 blend_rgb(int mode, vec3 base, vec3 top)
+{
+    if (mode == 2) { return 1.0 - (1.0 - base) * (1.0 - top); }   // screen
+    if (mode == 3) { return base * top; }                          // multiply
+    if (mode == 4) {                                               // overlay
+        return mix(2.0 * base * top,
+                   1.0 - 2.0 * (1.0 - base) * (1.0 - top),
+                   step(0.5, base));
+    }
+    return abs(base - top);                                        // difference
+}
 
 void main()
 {
     vec4 c = texture(u_layer, v_uv);
+
+    if (u_mode == 2) {
+        vec3 base = texture(u_under, v_uv).rgb;
+        // Faded towards the UNDER layer rather than towards black, so opacity on
+        // one of these reads as "how much of this treatment" rather than as a
+        // dimmer on the whole picture.
+        frag_colour = vec4(mix(base, blend_rgb(u_blend, base, c.rgb), u_opacity), 1.0);
+        return;
+    }
+
     frag_colour = (u_mode == 0) ? vec4(c.rgb * u_opacity, 1.0)
                                 : vec4(c.rgb, c.a * u_opacity);
 }
@@ -84,13 +115,40 @@ struct Compositor::Impl {
     GLuint vao     = 0;
 
     GLint u_layer   = -1;
+    GLint u_under   = -1;
     GLint u_opacity = -1;
     GLint u_mode    = -1;
+    GLint u_blend   = -1;
 
     std::vector<RenderTarget> layers;
-    int                       width  = 0;
-    int                       height = 0;
+
+    // Scratch for the read-back blends, allocated ONLY when one is used.
+    //
+    // A layer that samples what is under it cannot read the framebuffer it is
+    // writing to, so the stack is assembled in `canvas` and `under` holds a copy
+    // of it taken just before each read-back layer draws. Two extra
+    // full-resolution surfaces is 132 MB at 4K, which is why nothing allocates
+    // them until an archive actually names screen, multiply, overlay or
+    // difference -- and why the ordinary path still composites straight to the
+    // window at the 0.06 ms measured for it.
+    RenderTarget canvas;
+    RenderTarget under;
+    bool         canvas_ready = false;
+
+    int width  = 0;
+    int height = 0;
 };
+
+namespace {
+
+// Does this blend have to read what is already there?
+bool reads_back(LayerBlend b)
+{
+    return b == LayerBlend::kScreen || b == LayerBlend::kMultiply ||
+           b == LayerBlend::kOverlay || b == LayerBlend::kDifference;
+}
+
+}  // namespace
 
 Compositor::Compositor() : impl_(std::make_unique<Impl>()) {}
 Compositor::~Compositor() { shutdown(); }
@@ -133,8 +191,10 @@ bool Compositor::init(std::string& out_log)
     }
 
     impl_->u_layer   = glGetUniformLocation(impl_->program, "u_layer");
+    impl_->u_under   = glGetUniformLocation(impl_->program, "u_under");
     impl_->u_opacity = glGetUniformLocation(impl_->program, "u_opacity");
     impl_->u_mode    = glGetUniformLocation(impl_->program, "u_mode");
+    impl_->u_blend   = glGetUniformLocation(impl_->program, "u_blend");
 
     glCreateVertexArrays(1, &impl_->vao);
     return true;
@@ -143,6 +203,9 @@ bool Compositor::init(std::string& out_log)
 void Compositor::shutdown()
 {
     impl_->layers.clear();
+    impl_->canvas.shutdown();
+    impl_->under.shutdown();
+    impl_->canvas_ready = false;
     impl_->width  = 0;
     impl_->height = 0;
 
@@ -178,6 +241,16 @@ bool Compositor::resize(std::size_t count, int width, int height)
 
     impl_->width  = width;
     impl_->height = height;
+
+    // The canvas has to follow the window or a read-back blend samples a surface
+    // of the wrong size. resize() is a no-op at an unchanged size, so this costs
+    // nothing on the ordinary frame and is only reached at all once something has
+    // asked for a read-back blend.
+    if (impl_->canvas_ready) {
+        impl_->canvas_ready = impl_->canvas.resize(width, height) &&
+                              impl_->under.resize(width, height);
+    }
+
     return all_ok;
 }
 
@@ -198,10 +271,40 @@ bool Compositor::bind_layer(std::size_t index)
 void Compositor::composite(std::span<const LayerState> states, int screen_width,
                            int screen_height)
 {
-    RenderTarget::bind_default(screen_width, screen_height);
-
     if (!ready()) {
+        RenderTarget::bind_default(screen_width, screen_height);
         return;
+    }
+
+    const std::size_t n = states.size() < impl_->layers.size() ? states.size()
+                                                              : impl_->layers.size();
+
+    // Does anything this frame need to read what is under it? Asked before
+    // anything is drawn, because the answer decides where the stack is
+    // assembled -- and an archive with no such blend must not pay for the canvas.
+    bool needs_canvas = false;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (states[i].live && states[i].opacity > 0.0f && reads_back(states[i].blend)) {
+            needs_canvas = true;
+            break;
+        }
+    }
+
+    if (needs_canvas && !impl_->canvas_ready) {
+        impl_->canvas_ready = impl_->canvas.resize(impl_->width, impl_->height) &&
+                              impl_->under.resize(impl_->width, impl_->height);
+        if (!impl_->canvas_ready) {
+            // Out of memory for two more full-resolution surfaces. The stack
+            // still draws; the read-back layers fall back to alpha, which is
+            // wrong but is a picture rather than a black screen.
+            needs_canvas = false;
+        }
+    }
+
+    if (needs_canvas) {
+        impl_->canvas.bind();
+    } else {
+        RenderTarget::bind_default(screen_width, screen_height);
     }
 
     // Cleared before anything is drawn, so a frame in which every layer is dead
@@ -213,8 +316,6 @@ void Compositor::composite(std::span<const LayerState> states, int screen_width,
     glUseProgram(impl_->program);
     glBindVertexArray(impl_->vao);
 
-    const std::size_t n = states.size() < impl_->layers.size() ? states.size()
-                                                              : impl_->layers.size();
     bool wrote_bottom = false;
 
     for (std::size_t i = 0; i < n; ++i) {
@@ -229,7 +330,30 @@ void Compositor::composite(std::span<const LayerState> states, int screen_width,
         const bool bottom = !wrote_bottom;
         wrote_bottom      = true;
 
-        if (s.blend == LayerBlend::kAdd) {
+        // A READ-BACK BLEND ON THE BOTTOM LAYER HAS NOTHING TO READ. It would
+        // multiply against the clear, which is black, and multiply by black is
+        // black -- a layer that vanishes for a reason nothing on screen explains.
+        // Treated as normal instead, which is what "there is nothing under this"
+        // means.
+        const bool read_back = needs_canvas && reads_back(s.blend) && !bottom;
+
+        if (read_back) {
+            // The canvas cannot be sampled while it is the draw target, so it is
+            // copied first. glCopyImageSubData rather than a blit: it is a
+            // straight texture-to-texture copy with no framebuffer completeness
+            // rules and no filtering to get wrong.
+            glCopyImageSubData(static_cast<GLuint>(impl_->canvas.texture()), GL_TEXTURE_2D, 0,
+                               0, 0, 0,
+                               static_cast<GLuint>(impl_->under.texture()), GL_TEXTURE_2D, 0,
+                               0, 0, 0,
+                               impl_->width, impl_->height, 1);
+
+            glDisable(GL_BLEND);
+            glUniform1i(impl_->u_mode, 2);
+            glUniform1i(impl_->u_blend, static_cast<GLint>(s.blend));
+            glBindTextureUnit(1, static_cast<GLuint>(impl_->under.texture()));
+            glUniform1i(impl_->u_under, 1);
+        } else if (s.blend == LayerBlend::kAdd) {
             glEnable(GL_BLEND);
             glBlendFunc(GL_ONE, GL_ONE);
             glUniform1i(impl_->u_mode, 0);
@@ -246,6 +370,18 @@ void Compositor::composite(std::span<const LayerState> states, int screen_width,
         glBindTextureUnit(0, static_cast<GLuint>(impl_->layers[i].texture()));
         glUniform1i(impl_->u_layer, 0);
 
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+
+    // The canvas becomes the picture. One more full-screen pass, paid only by a
+    // stack that needed the canvas in the first place.
+    if (needs_canvas) {
+        RenderTarget::bind_default(screen_width, screen_height);
+        glDisable(GL_BLEND);
+        glUniform1i(impl_->u_mode, 0);
+        glUniform1f(impl_->u_opacity, 1.0f);
+        glBindTextureUnit(0, static_cast<GLuint>(impl_->canvas.texture()));
+        glUniform1i(impl_->u_layer, 0);
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
 

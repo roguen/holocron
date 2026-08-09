@@ -199,6 +199,7 @@ add_library(holocron_crystal STATIC
     src/crystal/crystal.cpp
     src/crystal/crystal_watch.cpp
     src/crystal/vault.cpp
+    src/crystal/archive.cpp
 )
 
 # ---------------------------------------------------------------------------
