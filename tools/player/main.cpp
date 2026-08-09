@@ -385,8 +385,19 @@ void describe(const char* verb, const Crystal& crystal, const CrystalFacet& face
 //
 // Returns the crystal it swapped in, so the caller can re-point the watch at the
 // files that are now live.
+//
+// `out_previous`, when given, receives the facet that WAS live instead of it being
+// destroyed here. That is what makes a crossfade possible: the outgoing crystal has
+// to keep drawing, into its own layer, while the incoming one comes up underneath
+// it. A caller that does not pass one gets the old behaviour -- the outgoing
+// facet's GL objects go at the assignment below and the switch is a hard cut.
+//
+// It is left null for a RELOAD on purpose. A reload is not a transition; fading
+// between a crystal and a recompiled version of itself would make every save look
+// like a glitch.
 bool build_crystal(const char* stem, std::unique_ptr<CrystalFacet>& live, bool carry_time,
-                   const char* verb, Crystal& out)
+                   const char* verb, Crystal& out,
+                   std::unique_ptr<CrystalFacet>* out_previous = nullptr)
 {
     Crystal            crystal;
     std::string        detail;
@@ -409,6 +420,12 @@ bool build_crystal(const char* stem, std::unique_ptr<CrystalFacet>& live, bool c
 
     if (carry_time) {
         next->set_elapsed(live->elapsed());
+    }
+    if (out_previous != nullptr) {
+        // Handed over rather than dropped. Empty on the FIRST build of a run,
+        // where `live` holds a default-constructed facet that never compiled --
+        // so a caller must check ready() rather than assume a fade is possible.
+        *out_previous = std::move(live);
     }
     live = std::move(next);   // the old facet's GL objects go here, not before
 
@@ -1749,18 +1766,36 @@ int main(int argc, char** argv)
         }
     }
 
-    // ONE LAYER, BECAUSE ONE THING DRAWS.
+    // -- crossfading between crystals -----------------------------------------
     //
-    // The stack takes a count and the compositing pass takes per-layer state, so
-    // a second layer is one integer and a second draw. Allocating one now that
-    // nothing writes into would cost 66 MB of video memory at 4K for a surface
-    // no pixel is ever read from. The second arrives with the first thing that
-    // needs it -- issue 140, the crossfade between crystals.
-    constexpr std::size_t kLayerCount = 1;
+    // Switching used to be a hard cut: the facet was replaced and the picture
+    // changed between one frame and the next. The outgoing crystal is now kept
+    // and drawn into a second layer at falling opacity, over the incoming one.
+    //
+    // BOTTOM FIRST, so the new crystal is underneath and the old one fades OFF
+    // it. The other way round would have the new crystal fading in over a static
+    // old one, which reads as a dissolve into the picture rather than out of it.
+    std::unique_ptr<CrystalFacet>         outgoing;
+    std::chrono::steady_clock::time_point fade_started{};
 
-    // Printed once, because this is the branch the whole render path turns on
-    // and a branch no log prints is a branch that cannot be diagnosed.
-    bool announced_layers = false;
+    // Long enough to read as a transition, short enough that pressing the arrow
+    // key twice in a row does something sensible. Judged from a screenshot taken
+    // mid-fade rather than from the number.
+    constexpr float kFadeSeconds = 0.40f;
+
+    // ONE LAYER UNTIL SOMETHING NEEDS TWO, AND THEN TWO FOREVER.
+    //
+    // A layer nothing writes into is 66 MB of video memory at 4K that no pixel is
+    // ever read from, so the second is not allocated until the first switch. It
+    // is not given back afterwards either: freeing it at the end of every fade
+    // and allocating it again at the start of the next would put a 66 MB
+    // allocation on the exact frame a transition begins.
+    std::size_t layers_wanted = 1;
+
+    // Printed when it changes, because this is the branch the whole render path
+    // turns on and a branch no log prints is a branch that cannot be diagnosed.
+    std::size_t announced_layers = 0;
+    bool        announced_direct = false;
 
     bool          show_now_playing = false;
     TextureHandle title_texture    = 0;
@@ -2493,38 +2528,13 @@ int main(int argc, char** argv)
                                        track_context.has_art);
         }
 
-        // -- where the picture goes --------------------------------------------
+        // -- switching and hot reload -------------------------------------------
         //
-        // Into layer 0 when there is a stack, straight to the window when there
-        // is not. The fallback is not a courtesy: a machine that cannot allocate
-        // a float framebuffer should still play music and draw a crystal, and
-        // this is exactly what the player did before M3.
-        //
-        // draw_w/draw_h is what u_resolution means -- the size of the thing the
-        // crystal is drawing INTO, which is the layer when there is one. Equal to
-        // the window today, and kept as its own pair of values because a layer at
-        // a fraction of the screen is left open (decision 2 of issue 139).
-        const bool into_layer = layered &&
-                                compositor.resize(kLayerCount, window.width(), window.height()) &&
-                                compositor.bind_layer(0);
-        if (!into_layer) {
-            // Bound explicitly rather than left wherever the last frame put it.
-            RenderTarget::bind_default(window.width(), window.height());
-        }
-        const int draw_w = into_layer ? compositor.width() : window.width();
-        const int draw_h = into_layer ? compositor.height() : window.height();
-
-        if (!announced_layers) {
-            announced_layers = true;
-            if (into_layer) {
-                std::printf("holocron: compositing %zu layer%s of %dx%d RGBA16F\n", kLayerCount,
-                            kLayerCount == 1 ? "" : "s", draw_w, draw_h);
-            } else {
-                std::printf("holocron: drawing straight to the window, %dx%d\n", draw_w, draw_h);
-            }
-            std::fflush(stdout);
-        }
-
+        // BEFORE anything is bound. Building a program needs no framebuffer, and a
+        // switch is what STARTS a crossfade -- so it has to have happened before
+        // the frame works out how many layers it needs. With this after the bind,
+        // the first frame of every transition showed the incoming crystal at full
+        // opacity: a flash of the new picture, then the old one coming back.
         if (drawing_crystal) {
             // Switching, then reloading, both here rather than on their own
             // thread: building a program needs the GL context, which belongs to
@@ -2575,10 +2585,31 @@ int main(int argc, char** argv)
                 // already knows about its own POSTs; this is the other direction.
                 companion.set_current_crystal(current);
 
+                // What was on screen a moment ago, kept rather than destroyed, so
+                // it can be drawn fading out over the new one.
+                //
+                // A SECOND SWITCH MID-FADE REPLACES IT rather than stacking a
+                // third facet: `previous` is then the crystal that was itself
+                // fading in, which is what is mostly on screen, so fading from
+                // that is right. The one it displaces is dropped, which is a small
+                // jump in something already at low opacity.
+                std::unique_ptr<CrystalFacet> previous;
+
                 Crystal crystal;
-                if (build_crystal(vault[current].stem.c_str(), crystal_facet, false, "switched to",
-                                  crystal) &&
-                    watch) {
+                const bool built = build_crystal(vault[current].stem.c_str(), crystal_facet,
+                                                 false, "switched to", crystal,
+                                                 layered ? &previous : nullptr);
+
+                // Only when there is a stack to draw it into. Without a
+                // compositor the switch stays the hard cut it always was, which
+                // is also what --no-compositor gets.
+                if (built && previous && previous->ready() && layered) {
+                    outgoing      = std::move(previous);
+                    fade_started  = std::chrono::steady_clock::now();
+                    layers_wanted = 2;
+                }
+
+                if (built && watch) {
                     // The watch has to follow, or an author would edit the
                     // crystal on screen and see the one they left get reloaded.
                     watch.emplace(crystal.manifest_path, crystal.shader_path,
@@ -2593,7 +2624,82 @@ int main(int argc, char** argv)
                 build_crystal(vault[current].stem.c_str(), crystal_facet, true, "reloaded",
                               crystal);
             }
+        }
+
+        // -- how far through a crossfade ----------------------------------------
+        //
+        // 1 at the moment of the switch, 0 when it is over. One value decides both
+        // whether the outgoing crystal is drawn and how it is composited, so the
+        // two cannot disagree.
+        float fade = 0.0f;
+        if (outgoing && outgoing->ready()) {
+            const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - fade_started)
+                                   .count();
+            fade = 1.0f - static_cast<float>(since) / (kFadeSeconds * 1000.0f);
+            if (fade <= 0.0f) {
+                fade = 0.0f;
+                outgoing.reset();   // its GL objects go here, once it is invisible
+
+                // The MEASURED length, not the constant. A transition is a thing
+                // you can only judge while it is happening, so the one number
+                // that says whether it ran at all -- and for how long -- has to
+                // survive the moment. It is also how this was checked: the fade
+                // is far too short to catch reliably in a screenshot, and two
+                // runs a third of a second apart looked identical enough that
+                // "it works" and "it snaps instantly" were indistinguishable.
+                std::printf("holocron: crossfade done in %lld ms\n",
+                            static_cast<long long>(since));
+                std::fflush(stdout);
+            }
+        }
+        const bool fading = fade > 0.0f;
+
+        // -- where the picture goes ----------------------------------------------
+        //
+        // Into layer 0 when there is a stack, straight to the window when there is
+        // not. The fallback is not a courtesy: a machine that cannot allocate a
+        // float framebuffer should still play music and draw a crystal, and this
+        // is exactly what the player did before M3.
+        //
+        // draw_w/draw_h is what u_resolution means -- the size of the thing the
+        // crystal is drawing INTO, which is the layer when there is one. Equal to
+        // the window today, and kept as its own pair of values because a layer at
+        // a fraction of the screen is left open (decision 2 of issue 139).
+        const bool into_layer = layered &&
+                                compositor.resize(layers_wanted, window.width(),
+                                                  window.height()) &&
+                                compositor.bind_layer(0);
+        if (!into_layer) {
+            // Bound explicitly rather than left wherever the last frame put it.
+            RenderTarget::bind_default(window.width(), window.height());
+        }
+        const int draw_w = into_layer ? compositor.width() : window.width();
+        const int draw_h = into_layer ? compositor.height() : window.height();
+
+        if (into_layer && announced_layers != layers_wanted) {
+            announced_layers = layers_wanted;
+            std::printf("holocron: compositing %zu layer%s of %dx%d RGBA16F\n", layers_wanted,
+                        layers_wanted == 1 ? "" : "s", draw_w, draw_h);
+            std::fflush(stdout);
+        } else if (!into_layer && !announced_direct) {
+            announced_direct = true;
+            std::printf("holocron: drawing straight to the window, %dx%d\n", draw_w, draw_h);
+            std::fflush(stdout);
+        }
+
+        // -- the picture ---------------------------------------------------------
+
+        if (drawing_crystal) {
             crystal_facet->draw(frame, track_context, draw_w, draw_h);
+
+            // The crystal being left, into layer 1, still moving. Freezing it
+            // would make the outgoing half of a transition look like a stall
+            // rather than a fade -- it is still on screen, so it still has to be
+            // alive. It is fed the same AudioFrame, because it is the same moment.
+            if (fading && into_layer && compositor.bind_layer(1)) {
+                outgoing->draw(frame, track_context, draw_w, draw_h);
+            }
         } else {
             facet.draw(frame, draw_w, draw_h, playing);
         }
@@ -2604,8 +2710,12 @@ int main(int argc, char** argv)
         // bottom first. Everything after this point is drawing on the window
         // again, which is what the overlay and the shot both need.
         if (into_layer) {
-            const LayerState states[] = {LayerState{1.0f, LayerBlend::kNormal, true}};
-            compositor.composite(states, window.width(), window.height());
+            const LayerState states[] = {
+                LayerState{1.0f, LayerBlend::kNormal, true},    // the crystal now
+                LayerState{fade, LayerBlend::kNormal, fading},  // the one being left
+            };
+            compositor.composite(std::span<const LayerState>(states, fading ? 2u : 1u),
+                                 window.width(), window.height());
         }
 
         // -- the now-playing card ---------------------------------------------
