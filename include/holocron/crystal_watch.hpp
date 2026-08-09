@@ -56,6 +56,7 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace holocron {
 
@@ -76,6 +77,19 @@ public:
     CrystalWatch(std::string manifest_path, std::string shader_path, Clock::time_point now,
                  Clock::duration interval = kPollInterval);
 
+    // Watch an arbitrary SET of files, which is what an archive needs.
+    //
+    // An archive is a small manifest naming several crystals, and the file
+    // actually being edited is almost always a `.frag` underneath it. Watching
+    // only the pair would mean saving a shader did nothing -- the authoring loop
+    // broken in the least obvious way. `Archive::watch_paths` is exactly this
+    // list, already deduplicated.
+    //
+    // The two-file constructor above is kept because `--crystal` is genuinely a
+    // pair and reads better as one; it delegates here.
+    CrystalWatch(std::vector<std::string> paths, Clock::time_point now,
+                 Clock::duration interval = kPollInterval);
+
     // Returns true once per settled edit, and never twice for the same one.
     //
     // Safe to call every frame; it does no filesystem work until an interval has
@@ -84,8 +98,7 @@ public:
     // shader does not wedge the watch.
     bool poll(Clock::time_point now);
 
-    const std::string& manifest_path() const { return manifest_path_; }
-    const std::string& shader_path() const { return shader_path_; }
+    const std::vector<std::string>& paths() const { return paths_; }
 
 private:
     // A file's identity for change detection. `present` is separate from a zero
@@ -99,28 +112,23 @@ private:
         bool operator==(const Stamp&) const = default;
     };
 
-    struct Pair {
-        Stamp manifest;
-        Stamp shader;
-
-        bool operator==(const Pair&) const = default;
-    };
+    // One stamp per watched path, in the same order.
+    using Stamps = std::vector<Stamp>;
 
     // Reads one file's stamp. A file that is missing for an instant mid-save is
     // NORMAL here rather than exceptional, so this never throws: it reports
     // `present = false` and lets poll() treat it as "still moving".
     static Stamp stamp_of(const std::string& path);
 
-    Pair look() const;
+    Stamps look() const;
 
-    std::string       manifest_path_;
-    std::string       shader_path_;
-    Clock::duration   interval_;
-    Clock::time_point last_poll_;
+    std::vector<std::string> paths_;
+    Clock::duration          interval_;
+    Clock::time_point        last_poll_;
 
-    Pair loaded_;             // what the caller is currently drawing
-    Pair pending_;            // a change seen once, waiting to be seen again
-    bool have_pending_ = false;
+    Stamps loaded_;           // what the caller is currently drawing
+    Stamps pending_;          // a change seen once, waiting to be seen again
+    bool   have_pending_ = false;
 };
 
 }  // namespace holocron
