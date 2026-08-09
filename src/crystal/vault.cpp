@@ -5,10 +5,13 @@
 
 #include <holocron/vault.hpp>
 
+#include <holocron/archive.hpp>
 #include <holocron/crystal.hpp>
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <system_error>
 
 namespace holocron {
@@ -53,14 +56,64 @@ std::vector<VaultEntry> scan_vault(const std::string& dir,
     std::sort(stems.begin(), stems.end());
 
     for (const std::string& stem : stems) {
+        std::string detail;
+
+        // WHICH LOADER, decided by reading the manifest rather than by an
+        // extension. An archive is a `.toml` with `[[layer]]` in it; a crystal is
+        // a `.toml` with a `.frag` beside it. Asking the file is what lets both
+        // sit in one directory and one list.
+        //
+        // A manifest that will not parse falls through to load_crystal, which
+        // produces the real diagnostic with a line number -- more use than
+        // anything the archive path could say about a file it cannot read.
+        std::string text;
+        {
+            std::ifstream in(stem + ".toml", std::ios::binary);
+            if (in) {
+                std::ostringstream ss;
+                ss << in.rdbuf();
+                text = ss.str();
+            }
+        }
+
+        if (is_archive_manifest(text)) {
+            Archive            a;
+            const ArchiveError err = load_archive(stem, a, detail);
+            if (err != ArchiveError::kOk) {
+                out_problems.push_back(VaultProblem{stem, detail});
+                continue;
+            }
+
+            // EVERY CRYSTAL IT NAMES IS LOADED TOO, here and not later. The
+            // vault's whole promise is that a broken thing is reported before
+            // anything is drawn rather than when somebody switches to it
+            // mid-track, and an archive naming a crystal that does not exist is
+            // exactly as broken as a crystal that does not compile.
+            bool ok = true;
+            for (const ArchiveLayer& layer : a.layers) {
+                Crystal            c;
+                std::string        why;
+                const CrystalError cerr = load_crystal(layer.crystal, c, why);
+                if (cerr != CrystalError::kOk) {
+                    out_problems.push_back(VaultProblem{stem, "layer `" + layer.crystal +
+                                                                  "`: " + why});
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok) {
+                entries.push_back(VaultEntry{stem, a.name, true});
+            }
+            continue;
+        }
+
         Crystal            c;
-        std::string        detail;
         const CrystalError err = load_crystal(stem, c, detail);
         if (err != CrystalError::kOk) {
             out_problems.push_back(VaultProblem{stem, detail});
             continue;
         }
-        entries.push_back(VaultEntry{stem, c.name});
+        entries.push_back(VaultEntry{stem, c.name, false});
     }
 
     // By NAME, which is what a person sees, with the stem breaking ties so two

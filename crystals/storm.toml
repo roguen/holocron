@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# storm -- the fight, seen through the weather.
+#
+# THE FIRST ARCHIVE, and it exists to be the thing blend modes and layer-bound
+# opacity are judged against rather than as a showpiece. Two crystals that were
+# never designed to go together is the honest test: an archive that only works
+# because its layers were drawn for each other proves nothing about the format.
+#
+# `drift` underneath because it fills the frame and `duel` does not -- a stack
+# whose bottom layer is mostly black is a stack with one visible layer.
+#
+# `screen` rather than `add` for the fighters. Adding blows the white figure and
+# the impact flash straight past 1.0 and they lose their shape against a bright
+# patch of cloud; screen brightens the same way and cannot exceed 1, so the
+# figures stay figures wherever the weather happens to be.
+#
+# The opacity BINDS TO THE BASS, which is the point of the whole mechanism: the
+# fighters surface out of the weather when the low end is there and sink back
+# when it drops. Neither crystal knows this is happening -- it is a property of
+# this stack, not of either shader, which is exactly why the binding lives on the
+# layer.
+#
+# The floor is 0.35 rather than 0. A layer that vanishes completely on a quiet
+# bar reads as the visualization having broken rather than as a response to the
+# music, and the recovery then looks like a glitch too.
+
+name = "storm"
+
+[[layer]]
+crystal = "drift"
+
+[[layer]]
+crystal = "duel"
+blend   = "screen"
+opacity = { bind = "bass_norm", min = 0.35, max = 1.0 }

@@ -61,20 +61,11 @@
 #include <span>
 #include <string>
 
+// LayerBlend moved out to its own header when archives arrived: the enum is
+// needed by a library that must never touch GL. See layer.hpp.
+#include <holocron/layer.hpp>
+
 namespace holocron {
-
-enum class LayerBlend : std::uint8_t {
-    // Alpha over what is below. The bottom layer has nothing below it, so its
-    // alpha is ignored and its colour replaces -- otherwise a crystal that
-    // writes alpha less than one would let the previous frame show through, and
-    // that reads as a smearing bug rather than as a blend mode.
-    kNormal = 0,
-
-    // Added to what is below, and the reason the layers are 16-bit float: the
-    // sum of two crystals routinely exceeds 1.0 and only clips once, at the very
-    // end, on the way to the screen.
-    kAdd,
-};
 
 struct LayerState {
     // Scales the layer on its way into the mix. For kNormal this fades towards
