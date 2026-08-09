@@ -278,6 +278,35 @@ It also could not have existed before
 to carry a per-track phase error of up to a fifth of a beat. A pulse tolerates
 that; two figures meeting do not.
 
+## MilkDrop presets
+
+Holocron also draws **MilkDrop presets**, through
+[libprojectM](https://github.com/projectM-visualizer/projectm). projectM appears
+as one more entry in the vault: the arrow keys reach it, it crossfades like a
+crystal, and it can be a layer of an archive with a crystal screened over it.
+
+```bash
+holocron --projectm D:/presets/milkdrop
+```
+
+**Neither libprojectM nor any preset ships with Holocron, and neither can.**
+
+libprojectM is LGPL and is opened at **runtime** through its C API — there is no
+vcpkg dependency, no projectM header anywhere in the source tree, and no import
+entry in the executable. A machine without it runs Holocron with one fewer thing
+in the vault.
+
+The presets are somebody else's work. A pack is tens of thousands of `.milk`
+files by hundreds of authors, almost none carrying a licence statement — which
+means all rights reserved, not public domain. Running a pack you obtained
+yourself is normal use and is the intended workflow; redistributing one is not
+ours to do.
+
+[`docs/projectm.md`](docs/projectm.md) is the full account, including the two
+constraints that shape it: libprojectM binds framebuffer 0 itself so its output
+is blitted back into the layer, and its Windows build expects the host to have
+initialised GLEW.
+
 ## Writing a crystal
 
 [`docs/cutting-crystals.md`](docs/cutting-crystals.md) is the practical guide,

@@ -908,6 +908,64 @@ struct CastCommand {
         return asked;
     }
 
+    // -- projectM, from the control page ------------------------------------
+    //
+    // ACCUMULATED LIKE THE TRIM, not replaced like a crystal index. "Next preset"
+    // is relative, so two taps between two frames have to be worth two presets --
+    // and with a pack of thousands, a control that drops half your presses is
+    // worse than no control.
+    int projectm_steps = 0;
+
+    void request_projectm_step(int step)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        projectm_steps += step;
+    }
+
+    bool take_projectm_step(int& out_step)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (projectm_steps == 0) {
+            return false;
+        }
+        out_step       = projectm_steps;
+        projectm_steps = 0;
+        return true;
+    }
+
+    // Tri-state, same shape as `lyrics` below and for the same reason: 0 means
+    // nothing was asked, which is different from "asked for false".
+    int projectm_shuffle = 0;
+    int projectm_lock    = 0;
+
+    void request_projectm_shuffle(bool on)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        projectm_shuffle = on ? 1 : 2;
+    }
+
+    int take_projectm_shuffle()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const int asked  = projectm_shuffle;
+        projectm_shuffle = 0;
+        return asked;
+    }
+
+    void request_projectm_lock(bool on)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        projectm_lock = on ? 1 : 2;
+    }
+
+    int take_projectm_lock()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const int asked = projectm_lock;
+        projectm_lock   = 0;
+        return asked;
+    }
+
     // Tri-state for the same reason `pause` is: 0 nothing asked, 1 show, 2 hide.
     int lyrics = 0;
 
@@ -1768,6 +1826,11 @@ int main(int argc, char** argv)
     companion.set_select_crystal_handler([&cast](std::size_t index) {
         cast.request_crystal(index);
     });
+    companion.set_projectm_step_handler([&cast](int step) { cast.request_projectm_step(step); });
+    companion.set_projectm_shuffle_handler([&cast](bool on) {
+        cast.request_projectm_shuffle(on);
+    });
+    companion.set_projectm_lock_handler([&cast](bool on) { cast.request_projectm_lock(on); });
     companion.set_lyrics_handler([&cast](bool visible) { cast.request_lyrics(visible); });
     companion.set_now_playing_handler(
         [&cast](bool visible) { cast.request_now_playing(visible); });
@@ -1777,6 +1840,11 @@ int main(int argc, char** argv)
         cast.request_advance(mode);
     });
     companion.set_advance(cfg.advance, cfg.advance_seconds);
+
+    // Pushed once so the page opens showing the truth rather than the struct's
+    // default. Same contract as set_advance above: intent, owned by the POST
+    // handler from here on, never pushed from the render loop.
+    companion.set_projectm_modes(cfg.projectm_shuffle, false);
 
     // Linking comes before discovery: it needs the machine identifier and
     // nothing else, and a run that is signing in has no business also
@@ -1954,7 +2022,16 @@ int main(int argc, char** argv)
     ProjectMLibrary projectm_library;
     ProjectMContext projectm_ctx;
 
-    if (opt.projectm != nullptr) {
+    // The flag beats the file, as everywhere else. A preset path from either
+    // source is what turns projectM on: there is no separate `enabled` key,
+    // because a key that says yes while the path is empty is a setting that
+    // cannot work and an error message waiting to be written.
+    const std::string projectm_presets =
+        opt.projectm != nullptr ? std::string(opt.projectm) : cfg.projectm_preset_path;
+    const std::string projectm_lib_dir =
+        opt.projectm_lib != nullptr ? std::string(opt.projectm_lib) : cfg.projectm_library_dir;
+
+    if (!projectm_presets.empty()) {
         std::string why;
 
         // TWO STEPS, and the second one is the whole reason M4 cost a debugging
@@ -1963,12 +2040,33 @@ int main(int argc, char** argv)
         // itself on Windows. See ProjectMLibrary::init_gl.
         //
         // The context is current here because the window is already open above.
-        const bool opened = load_projectm(
-            opt.projectm_lib != nullptr ? opt.projectm_lib : "", projectm_library, why);
+        const bool opened = load_projectm(projectm_lib_dir, projectm_library, why);
 
         if (opened && projectm_library.init_gl(why)) {
-            projectm_ctx.library              = &projectm_library;
-            projectm_ctx.settings.preset_path = opt.projectm;
+            projectm_ctx.library = &projectm_library;
+
+            ProjectMSettings& pm     = projectm_ctx.settings;
+            pm.preset_path           = projectm_presets;
+            pm.texture_path          = cfg.projectm_texture_path;
+            pm.preset_duration       = cfg.projectm_preset_duration;
+            pm.soft_cut_duration     = cfg.projectm_soft_cut_duration;
+            pm.hard_cut_enabled      = cfg.projectm_hard_cut;
+            pm.hard_cut_duration     = cfg.projectm_hard_cut_duration;
+            pm.beat_sensitivity      = cfg.projectm_beat_sensitivity;
+            pm.shuffle               = cfg.projectm_shuffle;
+            pm.mesh_x                = cfg.projectm_mesh_x;
+            pm.mesh_y                = cfg.projectm_mesh_y;
+
+            // WHAT projectM BELIEVES THE FRAME RATE IS, taken from vsync rather
+            // than measured. It converts preset_duration into a frame count, so a
+            // wrong value makes every duration wrong by the same ratio -- and
+            // nothing else, which is why an estimate is survivable here.
+            //
+            // 60 with vsync on is the rack's refresh. With vsync off the real rate
+            // is whatever the GPU manages, and there is no number to give that is
+            // right for the whole run; 60 keeps the durations in the right decade.
+            pm.fps = 60;
+
             std::printf("holocron: libprojectM %s from %s\n", projectm_library.version().c_str(),
                         projectm_library.core_path().c_str());
         } else {
@@ -3136,6 +3234,55 @@ int main(int argc, char** argv)
             companion.set_control_info(names, track_context.title, track_context.artist,
                                        track_context.has_art);
             companion.set_control_tuning(trim_ms, headroom_ms, showing_sync, opt.config);
+
+            // WHETHER THE SECTION APPEARS AT ALL follows the LIVE stack rather
+            // than the vault, so the controls are on the page exactly when they
+            // do something. A projectM entry existing in the vault is not the
+            // same as projectM being what is drawing.
+            const ProjectMFacet* pm = live_stack.projectm;
+            companion.set_control_projectm(pm != nullptr,
+                                           pm != nullptr ? pm->current_preset() : std::string{},
+                                           pm != nullptr ? pm->preset_count() : 0,
+                                           pm != nullptr ? pm->current_index() : 0);
+        }
+
+        // -- projectM, from the phone --------------------------------------------
+        //
+        // Every one of these is a no-op when no projectM is drawing, which is the
+        // ordinary case. They are not gated behind a check here because the page
+        // does not show the buttons then -- but a POST can still arrive from a
+        // page rendered a moment before a switch, and dropping it silently is
+        // correct: the thing it referred to is no longer on screen.
+        if (int step = 0; cast.take_projectm_step(step)) {
+            if (live_stack.projectm != nullptr) {
+                // HARD CUT ON PURPOSE. The soft cut is for the automatic
+                // transition, where a blend reads as the visualization breathing;
+                // someone pressing "next" has decided they are done with this one
+                // and a three-second dissolve reads as the button not working.
+                for (int i = 0; i < step; ++i) {
+                    live_stack.projectm->next_preset(/*hard_cut=*/true);
+                }
+                for (int i = 0; i > step; --i) {
+                    live_stack.projectm->previous_preset(/*hard_cut=*/true);
+                }
+            }
+        }
+        if (const int asked = cast.take_projectm_shuffle(); asked != 0) {
+            // STORED IN THE SETTINGS AS WELL AS APPLIED, and that is the whole
+            // point of keeping ProjectMSettings in the context. The facet is
+            // destroyed and rebuilt on every crossfade, so a toggle applied only
+            // to the live instance would silently revert the next time the vault
+            // moved off projectM and back.
+            projectm_ctx.settings.shuffle = asked == 1;
+            if (live_stack.projectm != nullptr) {
+                live_stack.projectm->set_shuffle(asked == 1);
+            }
+        }
+        if (const int asked = cast.take_projectm_lock(); asked != 0) {
+            projectm_ctx.settings.locked = asked == 1;
+            if (live_stack.projectm != nullptr) {
+                live_stack.projectm->set_locked(asked == 1);
+            }
         }
 
         // -- the trim, moved from the phone --------------------------------------

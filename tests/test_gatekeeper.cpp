@@ -291,3 +291,112 @@ TEST_CASE("the shipped example config is readable", "[gatekeeper]")
     // A drift here means the template silently changes behaviour on copy.
     CHECK(g == Gatekeeper{});
 }
+
+// ---------------------------------------------------------------------------
+// [projectm] (M4)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("the projectm keys are read", "[gatekeeper][projectm]")
+{
+    Scratch s;
+    const std::string path = s.write(R"(
+[projectm]
+preset_path       = "D:/packs/milkdrop"
+library_dir       = "D:/libprojectm"
+texture_path      = "D:/packs/textures"
+preset_duration   = 45.0
+soft_cut_duration = 2.5
+hard_cut          = true
+hard_cut_duration = 20.0
+beat_sensitivity  = 1.4
+shuffle           = false
+mesh_x            = 64
+mesh_y            = 48
+)");
+
+    Gatekeeper  cfg;
+    std::string detail;
+    INFO(detail);
+    REQUIRE(load_gatekeeper(path, cfg, detail) == GatekeeperError::kOk);
+
+    CHECK(cfg.projectm_preset_path == "D:/packs/milkdrop");
+    CHECK(cfg.projectm_library_dir == "D:/libprojectm");
+    CHECK(cfg.projectm_texture_path == "D:/packs/textures");
+    CHECK(cfg.projectm_preset_duration == 45.0);
+    CHECK(cfg.projectm_soft_cut_duration == 2.5);
+    CHECK(cfg.projectm_hard_cut);
+    CHECK(cfg.projectm_hard_cut_duration == 20.0);
+    CHECK(cfg.projectm_beat_sensitivity > 1.39f);
+    CHECK(cfg.projectm_beat_sensitivity < 1.41f);
+    CHECK_FALSE(cfg.projectm_shuffle);
+    CHECK(cfg.projectm_mesh_x == 64);
+    CHECK(cfg.projectm_mesh_y == 48);
+}
+
+TEST_CASE("an absent projectm section leaves projectM off", "[gatekeeper][projectm]")
+{
+    // NO `enabled` KEY, deliberately. What turns projectM on is having somewhere
+    // to read presets from; a key saying yes beside an empty path is a setting
+    // that cannot work and an error message waiting to be written.
+    Scratch s;
+    const std::string path = s.write("[render]\nvsync = false\n");
+
+    Gatekeeper  cfg;
+    std::string detail;
+    REQUIRE(load_gatekeeper(path, cfg, detail) == GatekeeperError::kOk);
+
+    CHECK(cfg.projectm_preset_path.empty());
+    CHECK(cfg.projectm_library_dir.empty());
+
+    // The rest are real defaults rather than zeroes, so a preset_path on its own
+    // is a working configuration.
+    CHECK(cfg.projectm_preset_duration == 30.0);
+    CHECK(cfg.projectm_shuffle);
+    CHECK(cfg.projectm_mesh_x == 48);
+}
+
+TEST_CASE("a projectm value the player cannot act on is fatal", "[gatekeeper][projectm]")
+{
+    // Same rule as [render] advance and scale: a live key holding an impossible
+    // value is refused rather than clamped, because every one of these fails
+    // SILENTLY. preset_duration = 0 is projectM switching every frame; a mesh of
+    // 2 is a picture with no detail and no error anywhere.
+    struct Case {
+        const char* key;
+        const char* value;
+    };
+    const Case bad[] = {
+        {"preset_duration", "0.0"},
+        {"soft_cut_duration", "-1.0"},
+        {"hard_cut_duration", "0.5"},
+        {"beat_sensitivity", "9.0"},
+        {"beat_sensitivity", "-0.5"},
+        {"mesh_x", "2"},
+        {"mesh_y", "4096"},
+    };
+
+    for (const Case& c : bad) {
+        Scratch           s;
+        const std::string path =
+            s.write(std::string("[projectm]\n") + c.key + " = " + c.value + "\n");
+
+        Gatekeeper  cfg;
+        std::string detail;
+        INFO("key: " << c.key << " = " << c.value);
+        CHECK(load_gatekeeper(path, cfg, detail) == GatekeeperError::kBadValue);
+        CHECK(detail.find(c.key) != std::string::npos);
+    }
+}
+
+TEST_CASE("a whole-number projectm duration is accepted as written", "[gatekeeper][projectm]")
+{
+    // TOML distinguishes 30 from 30.0 and somebody will write both. The same
+    // papercut the trim already avoids.
+    Scratch           s;
+    const std::string path = s.write("[projectm]\npreset_duration = 45\n");
+
+    Gatekeeper  cfg;
+    std::string detail;
+    REQUIRE(load_gatekeeper(path, cfg, detail) == GatekeeperError::kOk);
+    CHECK(cfg.projectm_preset_duration == 45.0);
+}
