@@ -308,6 +308,35 @@ if(WIN32)
 endif()
 
 # ---------------------------------------------------------------------------
+# libprojectM binding
+#
+# NO find_package, NO vcpkg dependency, and that is the point (D-039, issue 11).
+# libprojectM is opened with LoadLibrary/dlopen when the player starts and every
+# entry point is a function pointer resolved by name, so this target compiles and
+# links on a machine that has never heard of projectM -- which is every CI runner
+# and every fresh checkout.
+#
+# Its own target rather than a file in holocron_render because there is no GL in
+# it. Opening a shared library and resolving symbols is testable with no window,
+# no context and no GPU, which is the same split that keeps the crystal loader
+# away from the crystal renderer.
+#
+# CMAKE_DL_LIBS is -ldl on the platforms that need it and empty on Windows, where
+# LoadLibrary is in kernel32 and needs no link line entry.
+# ---------------------------------------------------------------------------
+
+add_library(holocron_projectm STATIC
+    src/render/projectm_api.cpp
+)
+add_library(holocron::projectm ALIAS holocron_projectm)
+
+target_link_libraries(holocron_projectm
+    PUBLIC  holocron::contract
+    PRIVATE holocron::warnings
+            ${CMAKE_DL_LIBS}
+)
+
+# ---------------------------------------------------------------------------
 # Render
 #
 # The window, the GL 4.5 core context, and the debug facet. GL is reached
