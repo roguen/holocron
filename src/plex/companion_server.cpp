@@ -14,10 +14,12 @@
 #include <httplib.h>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -49,14 +51,21 @@ std::int64_t parse_int64(const std::string& text, std::int64_t fallback)
     if (text.empty()) {
         return fallback;
     }
-    std::size_t consumed = 0;
-    std::int64_t value   = 0;
-    try {
-        value = std::stoll(text, &consumed);
-    } catch (const std::exception&) {
+
+    // strtoll rather than std::stoll: stoll throws on a non-number, and a
+    // controller sending garbage is an ordinary event on an undocumented
+    // protocol, not an exceptional one.
+    const char* begin = text.c_str();
+    char*       end   = nullptr;
+    errno             = 0;
+    const long long value = std::strtoll(begin, &end, 10);
+
+    // The whole string must be consumed. Otherwise "12abc" parses as 12, which
+    // is obeying a command that was never sent.
+    if (end != begin + text.size() || errno == ERANGE) {
         return fallback;
     }
-    return consumed == text.size() ? value : fallback;
+    return static_cast<std::int64_t>(value);
 }
 
 }  // namespace
@@ -109,8 +118,9 @@ struct CompanionServer::Impl {
     CompanionServer::StopHandler  stop_handler;
     CompanionServer::PauseHandler pause_handler;
     CompanionServer::QueueHandler queue_handler;
-    CompanionServer::SkipHandler  skip_handler;
-    CompanionServer::SeekHandler  seek_handler;
+    CompanionServer::SkipHandler         skip_handler;
+    CompanionServer::SeekHandler         seek_handler;
+    CompanionServer::RefreshQueueHandler refresh_queue_handler;
 
     bool last_reported_playing()
     {
@@ -149,6 +159,24 @@ struct CompanionServer::Impl {
     static bool is_timeline_poll(const httplib::Request& req)
     {
         return req.path == "/player/timeline/poll";
+    }
+
+    // Dragging a slider is one command PER PIXEL, and the interesting part is
+    // that it happened, not each value.
+    //
+    // Measured on the rack 2026-08-08: one volume drag produced 44 consecutive
+    // `setParameters` lines counting 99 down to 71 and back up to 87, in a log
+    // whose other content was about fifty lines. Same failure as the timeline
+    // polls -- the ones that matter get buried.
+    //
+    // COLLAPSED, NOT DROPPED. The project has already learned that a log line
+    // removed for readability is an instrument removed, so a run of these prints
+    // once on arrival and once more with a count when something else happens.
+    // What is lost is the intermediate values, which nothing acts on; what is
+    // kept is that a drag occurred and how far it went.
+    static bool is_set_parameters(const httplib::Request& req)
+    {
+        return req.path == "/player/playback/setParameters";
     }
 
     // Parameter names whose values must never be logged.
@@ -205,6 +233,22 @@ struct CompanionServer::Impl {
             last_path = path;
         }
 
+        // A run of slider commands prints once, then reports its length when the
+        // run ends. See is_set_parameters.
+        if (is_set_parameters(req)) {
+            if (set_parameters_run == 0) {
+                std::printf("companion: %s %s\n", req.method.c_str(), path.c_str());
+                std::fflush(stdout);
+            }
+            ++set_parameters_run;
+            return;
+        }
+        if (set_parameters_run > 1) {
+            std::printf("companion: ... and %llu more setParameters (a slider being dragged)\n",
+                        static_cast<unsigned long long>(set_parameters_run - 1));
+        }
+        set_parameters_run = 0;
+
         // Deliberately unconditional rather than behind a verbosity flag. This
         // transcript is the deliverable's real output: the protocol is
         // community-documented, so what the phone actually asks for is the only
@@ -212,6 +256,12 @@ struct CompanionServer::Impl {
         std::printf("companion: %s %s\n", req.method.c_str(), path.c_str());
         std::fflush(stdout);
     }
+
+    // How many setParameters have arrived back to back. Only ever touched from
+    // note(), which cpp-httplib may call on any of its worker threads -- so it is
+    // atomic rather than a plain counter. Exactness does not matter here; it is a
+    // log line, and a race would misreport a count rather than lose a command.
+    std::atomic<std::uint64_t> set_parameters_run{0};
 
     // Applied to every response.
     //
@@ -425,6 +475,30 @@ void CompanionServer::Impl::install_routes()
     self->server.Get("/player/playback/skipPrevious", skip_route);
     self->server.Get("/player/playback/skipTo", skip_route);
 
+    // refreshPlayQueue -- the controller has changed the queue on the server.
+    //
+    // THE "PLAY NEXT" MECHANISM, and it is a command rather than something to
+    // poll for. Captured on the rack 2026-08-08:
+    //
+    //   GET /player/playback/refreshPlayQueue?commandID=247&playQueueID=11538
+    //
+    // Until this route existed it fell through to the catch-all and was
+    // acknowledged without action, so a track added from the phone showed in
+    // Plexamp's queue, never played, and could not be skipped to.
+    self->server.Get("/player/playback/refreshPlayQueue",
+                     [self](const httplib::Request& req, httplib::Response& res) {
+                         self->note(req);
+                         self->decorate(res);
+
+                         const auto id = req.params.find("playQueueID");
+                         if (id != req.params.end() && self->refresh_queue_handler) {
+                             std::printf("companion: refresh play queue %s\n", id->second.c_str());
+                             std::fflush(stdout);
+                             self->refresh_queue_handler(id->second);
+                         }
+                         res.set_content(response_xml(200, "OK"), "text/xml");
+                     });
+
     // seekTo -- dragging the scrubber.
     //
     // `offset` IS IN MILLISECONDS, like every other position in this protocol.
@@ -623,6 +697,11 @@ void CompanionServer::set_skip_handler(SkipHandler handler)
 void CompanionServer::set_seek_handler(SeekHandler handler)
 {
     impl_->seek_handler = std::move(handler);
+}
+
+void CompanionServer::set_refresh_queue_handler(RefreshQueueHandler handler)
+{
+    impl_->refresh_queue_handler = std::move(handler);
 }
 
 void CompanionServer::set_timeline(const TimelineState& state)

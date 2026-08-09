@@ -26,6 +26,8 @@
 #include <holocron/companion_server.hpp>
 #include <holocron/plex_device.hpp>
 
+#include <functional>
+
 #include <httplib.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -54,6 +56,17 @@ struct RunningServer {
     CompanionError  error;
 
     explicit RunningServer(const PlexDevice& device) : error(server.start(device, detail)) {}
+
+    // With handlers installed FIRST, which is what companion_server.hpp requires:
+    // "Set before start()". Setting them afterwards happens to work because they
+    // are read per request, but a test is also an example, and this one should
+    // not demonstrate the thing the header tells people not to do.
+    RunningServer(const PlexDevice& device, const std::function<void(CompanionServer&)>& configure)
+    {
+        configure(server);
+        error = server.start(device, detail);
+    }
+
     ~RunningServer() { server.stop(); }
 
     httplib::Client client() const
@@ -309,4 +322,114 @@ TEST_CASE("stop is idempotent and leaves the server restartable", "[plex][compan
     REQUIRE(server.start(fixture(), detail) == CompanionError::kOk);
     REQUIRE(server.running());
     server.stop();
+}
+
+// ---------------------------------------------------------------------------
+// refreshPlayQueue -- the "play next" mechanism
+//
+// Captured on the rack 2026-08-08. Adding a track from the phone changes the
+// queue on the SERVER, and the controller then sends this rather than expecting
+// the player to poll for a version bump. Until the route existed it fell through
+// to the catch-all and was acknowledged without action, so the added track
+// showed in Plexamp's queue, never played, and could not be skipped to.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("refreshPlayQueue reaches its handler with the queue id",
+          "[plex][companion][queue]")
+{
+    std::string seen;
+    int         calls = 0;
+
+    RunningServer s(fixture(), [&](CompanionServer& srv) {
+        srv.set_refresh_queue_handler([&](const std::string& id) {
+            seen = id;
+            ++calls;
+        });
+    });
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto client = s.client();
+    auto res    = client.Get("/player/playback/refreshPlayQueue?commandID=247&playQueueID=11538");
+
+    REQUIRE(res);
+    REQUIRE(res->status == 200);
+    REQUIRE(calls == 1);
+    REQUIRE(seen == "11538");
+}
+
+TEST_CASE("refreshPlayQueue is not shadowed by the catch-all", "[plex][companion][queue]")
+{
+    // Routes match in REGISTRATION ORDER. A route registered after the catch-all
+    // never runs, and the symptom is indistinguishable from the handler never
+    // being set: a bare success envelope and nothing happening. The timeline
+    // endpoints already have this test for the same reason.
+    bool called = false;
+
+    RunningServer s(fixture(), [&](CompanionServer& srv) {
+        srv.set_refresh_queue_handler([&](const std::string&) { called = true; });
+    });
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto res = s.client().Get("/player/playback/refreshPlayQueue?playQueueID=1");
+    REQUIRE(res);
+    REQUIRE(res->status == 200);
+    REQUIRE(called);
+}
+
+TEST_CASE("a refreshPlayQueue with no queue id is acknowledged and ignored",
+          "[plex][companion][queue]")
+{
+    // Acknowledged, because a 404 on a path a controller probes can make it
+    // classify the device as broken. Ignored, because there is nothing to
+    // re-read -- and calling the handler with an empty id would make the player
+    // compare it against the queue it is on and log a spurious mismatch.
+    bool called = false;
+
+    RunningServer s(fixture(), [&](CompanionServer& srv) {
+        srv.set_refresh_queue_handler([&](const std::string&) { called = true; });
+    });
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto res = s.client().Get("/player/playback/refreshPlayQueue?commandID=3");
+    REQUIRE(res);
+    REQUIRE(res->status == 200);
+    REQUIRE_FALSE(called);
+}
+
+TEST_CASE("seekTo reaches its handler in milliseconds", "[plex][companion]")
+{
+    // The unit is the whole risk here: reading `offset` as seconds puts a scrub
+    // two thirds through a song somewhere in the following week.
+    std::int64_t seen = -1;
+
+    RunningServer s(fixture(),
+                    [&](CompanionServer& srv) {
+                        srv.set_seek_handler([&](std::int64_t ms) { seen = ms; });
+                    });
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto res = s.client().Get("/player/playback/seekTo?commandID=41&offset=163671");
+    REQUIRE(res);
+    REQUIRE(res->status == 200);
+    REQUIRE(seen == 163671);
+}
+
+TEST_CASE("a seekTo with a nonsense offset is ignored rather than obeyed",
+          "[plex][companion]")
+{
+    // "12abc" must not parse as 12. Partially parsing a command is obeying one
+    // that was never sent.
+    bool called = false;
+
+    RunningServer s(fixture(), [&](CompanionServer& srv) {
+        srv.set_seek_handler([&](std::int64_t) { called = true; });
+    });
+    REQUIRE(s.error == CompanionError::kOk);
+
+    for (const char* offset : {"12abc", "", "-5", "not-a-number"}) {
+        auto res = s.client().Get(std::string("/player/playback/seekTo?offset=") + offset);
+        REQUIRE(res);
+        REQUIRE(res->status == 200);
+    }
+    REQUIRE_FALSE(called);
 }

@@ -84,6 +84,30 @@ struct PlayRequest {
     // Plexamp sends paused=1 when it wants the track loaded but not started.
     bool paused = false;
 
+    // -- how the server should ORDER and REPEAT the queue it builds ------------
+    //
+    // THESE BELONG TO THE SERVER, NOT TO THE PLAYER, and that is why forwarding
+    // them matters. `POST /playQueues` is what decides the running order; the
+    // player only reads back the result. Hardcoding `shuffle=0` therefore made
+    // shuffle a no-op no matter what the phone asked for -- observed on the rack
+    // 2026-08-08, a `createPlayQueue` carrying `shuffle=1` answered with the album
+    // in order.
+    //
+    // Defaults are 0 for all three, which is what they were hardcoded to. That
+    // default is still worth sending explicitly rather than omitting: which way
+    // the server defaults is not documented, and a queue that silently repeats is
+    // the kind of thing nobody notices until an album has played twice.
+
+    bool shuffle = false;
+
+    // Plex's `repeat` is a MODE, not a flag: 0 off, 1 repeat all, 2 repeat one.
+    // Kept as an integer for that reason -- a bool could not express repeat-one,
+    // and mapping it to `true` would repeat the whole album instead of the track.
+    int repeat = 0;
+
+    // Autoplay-similar, which keeps going after the queue is exhausted.
+    bool continuous = false;
+
     bool operator==(const PlayRequest&) const = default;
 };
 
@@ -271,6 +295,26 @@ bool parse_create_play_queue(const std::vector<std::pair<std::string, std::strin
 // a header too -- see the implementation.
 HttpError create_play_queue(const PlayRequest& request, const std::string& client_identifier,
                             PlexQueue& out, std::string& out_detail);
+
+// Re-read a queue that already exists.
+//
+// THIS IS HOW "PLAY NEXT" WORKS, and it is not a poll.
+//
+// Adding a track from the phone changes the queue ON THE SERVER; the player's
+// copy is then stale and every track added is invisible to it. Observed on the
+// rack 2026-08-08: a song added with "play next" appeared in Plexamp's queue,
+// never played, and could not be skipped to.
+//
+// The controller says so explicitly rather than expecting anyone to notice --
+// it sends `/player/playback/refreshPlayQueue?playQueueID=N`. That command is
+// the trigger; this is what answers it.
+//
+// GET, NOT POST. The queue exists. Posting again creates a SECOND queue with a
+// new id that the controller is not watching, leaving the player playing
+// something nothing else knows about.
+HttpError fetch_play_queue(const PlayRequest& request, const std::string& queue_id,
+                           const std::string& client_identifier, PlexQueue& out,
+                           std::string& out_detail);
 
 // Read a `/playQueues` response.
 //
