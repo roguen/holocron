@@ -31,16 +31,49 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: M3 and M5 are DONE. M4 (projectM) is next.
+## Status: M3, M4 and M5 are DONE. Only M2's visual language is open.
 
-**Two milestones are finished.** M5 — Holocron is a Plex cast target and plays
+**Three milestones are finished.** M5 — Holocron is a Plex cast target and plays
 what it is sent, confirmed on the rack from the phone. M3 — the compositor, at
-`v0.3.0`, with all seven exit criteria met.
+`v0.3.0`. M4 — projectM, at `v0.4.0`, all seven exit criteria met.
 
 **M2 is still open and is the odd one out.** Its plumbing has been done since
 `v0.1.13`; what remains is the **visual language**, which is the owner's
 judgement and not a task anyone else can close. Three crystals and one archive
 ship. He has feedback outstanding on `duel` and on the lyric display.
+
+**NOTHING FROM `v0.3.0` OR `v0.4.0` HAS BEEN SEEN ON THE PROJECTOR.** The
+compositor, archives, bloom, the lyric display and now the whole of projectM
+were verified by screenshot, measurement and CI on the desk. Do not describe any
+of it as confirmed in the theatre.
+
+**What M4 delivered:**
+
+| | |
+|---|---|
+| Linkage | **Not linked at all.** `LoadLibrary`/`dlopen` at startup, 39 C entry points resolved by name. No projectM header in the tree, no vcpkg dependency, no import entry (D-039). |
+| Rendering | Into the back buffer at layer size, then blitted into the layer, because `projectm_opengl_render_frame` **binds framebuffer 0 itself** and there is no FBO entry point in any shipped version (D-040). **0.19 ms round trip at 4K.** |
+| Audio | `AudioFrame::waveform`, one analysis hop per frame, gated on `frame_index`. **Not `PcmRing`** — a second decode-side tap would run ~140 ms away from every crystal beside it (D-041). |
+| In the vault | projectM is an entry the arrow keys reach, and a layer source an archive can name beside a crystal (D-042). |
+| From the phone | Preset next/back, hold, shuffle, and the preset's name and place in the playlist. |
+| Config | `[projectm]` in `gatekeeper.toml`, eleven keys, all live. `docs/projectm.md` is the normative account. |
+| Licence | **LGPL-2.1-or-later**, read out of the 4.1.7 headers. vcpkg's port metadata says `-only` and is wrong. Nothing is linked or shipped, so §6(b) is satisfied by construction. |
+
+**Two things about M4 that are not guessable and cost real time:**
+
+**libprojectM never calls `glewInit`.** Its Windows build makes every GL call
+through GLEW's function-pointer table and leaves initialisation to the host,
+because every projectM host links GLEW itself. Holocron uses glad, so all of
+GLEW's pointers were null and `projectm_create` died at `0xC0000005` with nothing
+printed. `glewExperimental` and `glewInit` are now resolved from `glew32.dll` by
+name and called once with a context current.
+
+**Windows puts up a modal dialog for some image-load failures.** A test that
+deliberately loads a corrupt DLL took the Windows CI job from 2m34s to over an
+hour, twice — the loader was waiting for somebody to dismiss a message box on a
+machine with no desktop. `SetThreadErrorMode(SEM_FAILCRITICALERRORS)` turns it
+into a return code. It never reproduced locally because an interactive session
+has somebody to dismiss it.
 
 **What M3 delivered**, all of it measured rather than asserted:
 
@@ -400,16 +433,18 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.3.0`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.4.0`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
 **A patch can contain new subsystems, and `v0.2.2` and `v0.2.3` both do.** The
-rule is minor per milestone *completed*, and neither M2 nor M3 is — M2's visual
-language is still open and M3 has one of seven exit criteria met. So the control
-surface, text rendering, the `duel` crystal, **the whole compositor, the
-crossfade, the tuning page and lyrics** have all landed as patches. That is the
-rule working as written, not a mistake.
+rule is minor per milestone *completed*, so the control surface, text rendering,
+the `duel` crystal, the compositor, the crossfade, the tuning page and lyrics all
+landed as patches while M3 was still open. That is the rule working as written,
+not a mistake.
+
+**`v0.4.0` is M4, the THIRD completed milestone** — after M5 at `v0.2.0` and M3
+at `v0.3.0`. The minor number counts how many are finished, not which one.
 
 **The minor number tracks how many milestones are DONE, not which one.** `v0.2.0`
 is the first completed milestone and that milestone is **M5**, because D-029 made
@@ -607,8 +642,12 @@ pushes fail even though the identity is correct.
 C++20 toolchain, CMake, SDL3, OpenGL loader, FFmpeg (**LGPL build**; `--enable-gpl`
 is fine under GPL-3.0 but `--enable-nonfree` is not, since it is non-redistributable
 under any licence), the platform audio backend (**WASAPI on the target — not ALSA**;
-see D-022), glm, toml++, nlohmann/json, spdlog, and libprojectM 4.x at M4
-(**dynamically linked, C API only**).
+see D-022), glm, toml++, nlohmann/json, spdlog.
+
+**libprojectM is NOT a build dependency and must not become one** (D-039). It is
+opened at runtime through its C API and is not in `vcpkg.json`; a build without it
+compiles, links and runs with one fewer entry in the vault. Adding it here would
+break the M4 exit criterion that says so.
 
 Installed on the rack machine so far: `git` 2.55.0, `gh` 2.97.0, CMake 4.4.1,
 Ninja 1.13.2. **No C++ compiler yet** — MSVC Build Tools needs an elevated install.
