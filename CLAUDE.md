@@ -55,6 +55,7 @@ tested:
 | PCM handoff | `PcmRing` — lock-free SPSC ring, decode thread to audio callback. Lossless and ordered, which is the opposite of `TripleBuffer`'s job. |
 | Sink | `WasapiSink` — **exclusive mode verified bit-perfect on the rack**, 160-frame period, plus a shared-mode fallback. `SdlSink` behind it, exercised headless in CI through SDL's dummy driver. Chosen at runtime through the interface. |
 | Render | `Window` (GL 4.5 core, KHR_debug) and `DebugFacet`, drawing every field as bars and markers. |
+| Compositor | **M3's first step.** The picture is drawn into a `RenderTarget` — an FBO with one `GL_RGBA16F` colour texture — and a `Compositor` pass draws the stack onto the window. Float, not 8-bit, because crystals exceed 1.0 before their vignette and an 8-bit layer would clip differently depending on what else was on screen. **Measured at 0.06 ms per frame at 4K** on the RX 6800, against a 16.7 ms budget. `--no-compositor` draws straight to the window, which is also the fallback if a float framebuffer cannot be allocated. |
 | Crystals | **M2's plumbing is done and three crystals ship.** A crystal is `<stem>.frag` + `<stem>.toml`; the manifest binds uniforms to `AudioFrame` fields BY NAME, validated at load. `pulse` is the reference instrument, `drift` is weather, `duel` is two stick figures fighting on the beat. A test loads the vault so it cannot rot. |
 | Beat grid | **`beat_phase` lands ON the beat** — measured at 0.0 ms median against a real track, quartiles also zero. It was a per-track error of up to 100 ms until #94: the phase was nudged by every onset, so ordinary off-beat content dragged it. Now estimated by correlating seconds of onset history against a pulse train, with the analysis's own ~28 ms flux lag compensated. |
 | Control surface | **`GET /control` on the Companion port** — a phone-browser page that switches crystals and toggles overlays. Plain form POSTs with a 303 back, so it works with no JavaScript and a reload always shows the truth. Starts even with `--no-discover`: not announcing is not the same as not listening. |
@@ -70,6 +71,42 @@ tested:
 | Palette | `extract_palette` — five swatches, a primary and a contrast accent, in **linear** RGB. "Dominant" is deliberately *not* "most common": the most common colour on a sleeve is the border, so population is weighted towards saturated mid-luminance colour, with a floor so a monochrome sleeve still yields something. Buckets in sRGB, answers in linear. |
 | Album art | `decode_image` — JPEG via `avcodec`, colour conversion **hand-rolled** because `vcpkg.json` deliberately excludes `swscale`. PNG is refused cleanly: it needs zlib, which the same `default-features: false` line excludes ([#116](https://github.com/roguen/holocron/issues/116)). Plex serves JPEG through its photo transcoder, so nothing is blocked. |
 | Executables | `holocron` — the player. `holocron-analyze` — the offline harness. |
+
+### M3 has started, and four things about the compositor are worth knowing
+
+**The layers belong to the compositor, not to the facets.** The obvious
+arrangement is for each facet to own the surface it draws into, and it is wrong
+here: hot reload builds a *second* `CrystalFacet` on every save and swaps it in
+only if it compiled, so a facet-owned target would be reallocated on every
+keystroke-and-save — a fresh 66 MB surface and a black frame in the middle of the
+motion the author is trying to judge. With the target owned by the compositor,
+`CrystalFacet` and `DebugFacet` were **unchanged** by the move to layers, which is
+the check on the decision. See D-036.
+
+**The cost was measured, not assumed: 0.06 ms per frame at 3840×2160.** Three
+repetitions, `pulse` and `duel`, timed as the slope between 500 and 4000 frames so
+process startup cancels out. `pulse` went 0.238 → 0.300 ms and `duel` 1.299 →
+1.356 ms, and the two agreeing on the increment is what says it is a fixed extra
+pass rather than anything proportional to the crystal.
+
+That is far below what the arithmetic predicts. The extra traffic is about 132 MB
+per frame, which at 0.06 ms is 2.2 TB/s — well above the card's 512 GB/s of VRAM
+bandwidth, so it cannot be coming from VRAM. The RX 6800's **128 MB Infinity
+Cache** holds a 66 MB layer comfortably, which is the only thing that fits the
+number. **Do not carry this figure to another GPU**, and specifically not to the
+Shield at M8, where there is no such cache.
+
+**`--trim-ms` does NOT need re-measuring for this.** The M3 issue flagged the
+compositor as a risk to the calibration, and the measurement answers it: the pass
+is an extra draw call inside the same frame before the same swap, so it adds no
+buffering stage — only 0.06 ms of GPU time, against a trim of −90 ms recorded on a
+5 ms grid. Three orders of magnitude below the resolution of the instrument. This
+supersedes the warning in issue 139 and in the session-7 handoff.
+
+**`--no-compositor` draws straight to the window.** Not a dead flag: that fallback
+is taken automatically when a float framebuffer cannot be allocated, and a path
+nothing can reach on purpose is a path nobody finds out is broken. It is also how
+the number above was measured.
 
 **M5's behaviour is complete as of `v0.2.1`** and every part of it has been
 confirmed on the rack from the phone: casting, bit-perfect playback, auto-advance,
