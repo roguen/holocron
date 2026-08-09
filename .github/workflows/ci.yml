@@ -71,6 +71,30 @@ jobs:
       # The static_asserts guarantee AudioFrame can cross the analysis/render
       # thread boundary by memcpy. Assert the size too, so an accidental field
       # addition shows up as a deliberate decision rather than a silent change.
+      # THE M3 CRITERION, CHECKED BY A COMPILER RATHER THAN ASSERTED.
+      #
+      # "The facet interface is expressible across a C ABI boundary" is worth
+      # nothing as a claim in a document. A C compiler accepting the header is
+      # the claim: no references, no templates, no std::, no default arguments,
+      # nothing that needs a C++ ABI to describe.
+      #
+      # Compiled as C AND as C++, because the header is included from both sides
+      # and `extern "C"` has to be right in each. -Wpedantic catches the things
+      # that quietly work on one compiler, which is the same reason this job
+      # exists at all.
+      - name: facet_abi.h is valid C and valid C++
+        run: |
+          printf '#include "holocron/facet_abi.h"\n#include "holocron/facet_abi.h"\nint main(void){return 0;}\n' > /tmp/tu_abi.c
+          for cc in gcc clang; do
+            echo "--- $cc (C11) ---"
+            $cc -std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude /tmp/tu_abi.c -o /tmp/tu_abi
+          done
+          printf '#include "holocron/facet_abi.h"\n#include "holocron/facet_abi.h"\n' > /tmp/tu_abi.cpp
+          for cxx in g++ clang++; do
+            echo "--- $cxx (C++20) ---"
+            $cxx -std=c++20 -Wall -Wextra -Wpedantic -Werror -fsyntax-only -Iinclude /tmp/tu_abi.cpp
+          done
+
       - name: AudioFrame invariants hold
         run: |
           cat > /tmp/check.cpp <<'EOF'

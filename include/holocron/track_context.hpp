@@ -25,6 +25,11 @@
 
 #include <glm/vec3.hpp>
 
+// The C facet ABI, for the palette-size check below. A C header, included from
+// C++ deliberately: it is the one place the two sides of the boundary have to
+// agree about a number.
+#include <holocron/facet_abi.h>
+
 namespace holocron {
 
 // GLuint is specified by OpenGL as a 32-bit unsigned integer. Spelling it as
@@ -33,6 +38,14 @@ namespace holocron {
 using TextureHandle = std::uint32_t;
 
 inline constexpr int kPaletteSize = 5;
+
+// The C ABI spells this out as a macro, because a C header cannot include this
+// one. Two definitions of the same number drift silently, and the failure would
+// be a facet reading two swatches past the end of an array -- so they are pinned
+// against each other here, where a mismatch is a compile error rather than a
+// crash on somebody else's machine.
+static_assert(HOLOCRON_PALETTE_SIZE == kPaletteSize,
+              "the C facet ABI and TrackContext disagree about how many swatches a palette has");
 
 struct TrackContext {
     // -- Metadata ------------------------------------------------------------
