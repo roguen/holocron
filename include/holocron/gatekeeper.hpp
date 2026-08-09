@@ -80,6 +80,22 @@ struct Gatekeeper {
     bool vsync    = true;
     bool gl_debug = true;
 
+    // How big the layers are, as a fraction of the window.
+    //
+    // WHAT THIS BUYS AND WHAT IT COSTS. The crystals are the expensive part and
+    // they cost per pixel: `duel` is six figures of signed distance field and
+    // `storm` is three layers of the stack. At 0.71 a layer has half the pixels,
+    // so the whole picture costs about half -- and the loss is softness in the
+    // visualization only, because the compositor's final pass upscales with
+    // linear filtering and the now-playing card and lyrics are drawn AFTER it, at
+    // full resolution. Text stays sharp; the clouds get slightly softer, and
+    // clouds are already soft.
+    //
+    // 1.0 by default. This is a knob for a machine that needs it -- the Shield at
+    // M8 has nothing like the rack's headroom -- rather than something to reach
+    // for on hardware that is already comfortable.
+    double render_scale = 1.0;
+
     // When to move to the next thing in the vault by itself.
     //
     // THE CAST-AND-FORGET CASE IS THE WHOLE POINT (D-029). An album is forty

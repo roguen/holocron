@@ -2071,6 +2071,7 @@ int main(int argc, char** argv)
     // Printed when it changes, because this is the branch the whole render path
     // turns on and a branch no log prints is a branch that cannot be diagnosed.
     std::size_t announced_layers = 0;
+    int         announced_size   = 0;
     bool        announced_direct = false;
 
     // -- moving through the vault by itself -----------------------------------
@@ -3180,12 +3181,19 @@ int main(int argc, char** argv)
         // is exactly what the player did before M3.
         //
         // draw_w/draw_h is what u_resolution means -- the size of the thing the
-        // crystal is drawing INTO, which is the layer when there is one. Equal to
-        // the window today, and kept as its own pair of values because a layer at
-        // a fraction of the screen is left open (decision 2 of issue 139).
+        // crystal is drawing INTO, which is the layer. That is no longer the
+        // window: `[render] scale` sizes the layers as a fraction of it, and the
+        // compositor's final pass upscales. Decision 2 of issue 139 left this
+        // open; the answer is that the crystals never needed to know, because
+        // u_resolution has always meant the surface rather than the screen.
+        //
+        // AT LEAST ONE PIXEL EACH WAY. A window dragged to nothing must not ask
+        // for a zero-sized texture, which is a GL error rather than a small one.
+        const int layer_w = std::max(1, static_cast<int>(window.width() * cfg.render_scale));
+        const int layer_h = std::max(1, static_cast<int>(window.height() * cfg.render_scale));
+
         const bool into_layer = layered &&
-                                compositor.resize(layers_wanted, window.width(),
-                                                  window.height()) &&
+                                compositor.resize(layers_wanted, layer_w, layer_h) &&
                                 compositor.bind_layer(0);
         if (!into_layer) {
             // Bound explicitly rather than left wherever the last frame put it.
@@ -3194,10 +3202,22 @@ int main(int argc, char** argv)
         const int draw_w = into_layer ? compositor.width() : window.width();
         const int draw_h = into_layer ? compositor.height() : window.height();
 
-        if (into_layer && announced_layers != layers_wanted) {
+        if (into_layer && (announced_layers != layers_wanted || announced_size != draw_w)) {
             announced_layers = layers_wanted;
-            std::printf("holocron: compositing %zu layer%s of %dx%d RGBA16F\n", layers_wanted,
-                        layers_wanted == 1 ? "" : "s", draw_w, draw_h);
+            announced_size   = draw_w;
+            if (draw_w == window.width()) {
+                std::printf("holocron: compositing %zu layer%s of %dx%d RGBA16F\n", layers_wanted,
+                            layers_wanted == 1 ? "" : "s", draw_w, draw_h);
+            } else {
+                // The scale is worth saying out loud every time it is in effect.
+                // A softer picture with no explanation is indistinguishable from
+                // a broken one, and this is a setting somebody turned on once and
+                // will have forgotten.
+                std::printf("holocron: compositing %zu layer%s of %dx%d RGBA16F, upscaled to "
+                            "%dx%d (scale %.2f)\n",
+                            layers_wanted, layers_wanted == 1 ? "" : "s", draw_w, draw_h,
+                            window.width(), window.height(), cfg.render_scale);
+            }
             std::fflush(stdout);
         } else if (!into_layer && !announced_direct) {
             announced_direct = true;

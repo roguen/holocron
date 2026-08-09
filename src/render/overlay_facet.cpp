@@ -58,10 +58,23 @@ void main()
     vec4  t = u_textured ? texture(u_texture, v_uv) : vec4(1.0);
     float a = t.a * u_alpha;
 
-    // v_uv.y is 1 at the top of the rect. Squared so the falloff is gentle where
-    // the text sits and quick where it meets the picture.
+    // v_uv.y IS 1 AT THE BOTTOM OF THE RECT, NOT THE TOP, and this was inverted.
+    //
+    // The vertex shader flips y so a texture samples the right way up -- texture
+    // rows are top-first and GL rows are bottom-first. That flip applies to the
+    // gradient too, and the first version assumed it did not: it put FULL alpha
+    // at the top edge of the scrim and none at the bottom, which is a hard
+    // horizontal seam across the picture and no darkening at all under the words.
+    // Exactly the fault a gradient was introduced to avoid, still there, with a
+    // comment above it asserting the opposite.
+    //
+    // Found by looking at a screenshot rather than by reading the shader, which
+    // is the fifth time in this project that has been the difference.
+    //
+    // Raised to 1.6 so the falloff is gentle where the text sits and quick where
+    // it meets the picture.
     if (u_gradient) {
-        a *= pow(1.0 - v_uv.y, 1.6);
+        a *= pow(v_uv.y, 1.6);
     }
 
     frag_colour = vec4(u_tint * t.rgb, a);

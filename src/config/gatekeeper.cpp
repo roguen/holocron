@@ -143,6 +143,7 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     read_int(tbl, "render", "height", out.height, bad);
     read_bool(tbl, "render", "vsync", out.vsync, bad);
     read_bool(tbl, "render", "gl_debug", out.gl_debug, bad);
+    read_double(tbl, "render", "scale", out.render_scale, bad);
     read_string(tbl, "render", "advance", out.advance, bad);
     read_int(tbl, "render", "advance_seconds", out.advance_seconds, bad);
 
@@ -154,6 +155,15 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
         out.advance != "timer") {
         bad = "[render] advance must be \"off\", \"track\" or \"timer\", not \"" + out.advance +
               "\"";
+    }
+    if (bad.empty() && (out.render_scale < 0.25 || out.render_scale > 1.0)) {
+        // ABOVE 1.0 IS REFUSED RATHER THAN ALLOWED. Supersampling is a real thing
+        // and a reasonable thing to want, but it is not this key: the layer is
+        // upscaled by a bilinear filter, which is the wrong resolve for
+        // supersampling and would make 2.0 quietly worse than 1.0 at four times
+        // the cost. Below 0.25 the picture is unwatchable and the setting is far
+        // more likely to be a typo than an intention.
+        bad = "[render] scale must be between 0.25 and 1.0";
     }
     if (bad.empty() && out.advance_seconds < 5) {
         // Below this the transition is most of what is on screen. Refused rather
