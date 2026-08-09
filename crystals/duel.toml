@@ -1,0 +1,53 @@
+# duel -- two stick figures fighting, clashes on the beat.
+#
+# The requested feature from issue 127, and the crystal that proves the beat grid
+# is now trustworthy. A pulse tolerates a phase error of a fifth of a beat; two
+# figures meeting do not, which is why this could not have been written before
+# issue 94 was fixed.
+#
+# See the note at the top of duel.frag for why a fight needs no animation state:
+# figures as distance fields, choreography as a hash of the beat number.
+
+name = "duel"
+
+author  = "Roguen Keller"
+license = "GPL-3.0-or-later"
+
+# `beat_count` is the interesting one and is unusual as a binding.
+#
+# It is a COUNTER, not a quantity -- nothing on screen is proportional to it. It
+# is the seed the choreography is hashed from, which is what makes the fight a
+# pure function of the audio frame instead of accumulated pose state. Beat 41
+# always produces the same move, so a hot reload mid-track does not teleport the
+# figures.
+#
+# `onset_strength` and `beat_phase` are deliberately used for DIFFERENT jobs here.
+# Motion comes off the phase, which is smooth and accurate to a few tens of
+# milliseconds. The impact flash comes off the transient, which has no grid to be
+# offset from. Driving both from the phase would put the flash a fixed distance
+# from the hit; driving both from the onset would make the motion stutter.
+# THE THREE BANDS GO TO THREE DIFFERENT PARTS OF THE BODY, which is what makes
+# this respond to the character of a track rather than only to its clock.
+#
+#   bass    the legs and how far the strike commits -- weight and drive
+#   mid     the striking arm and its lean -- where the blow lands
+#   treble  the guard hand -- small, fast, nervous movement
+#
+# The commercial analogue, Stick Tuber: Punch Fight Dance, authors choreography
+# per track by hand and is reviewed as not always syncing to the song. Deriving
+# from analysis fixes the timing; splitting the spectrum is what stops the result
+# being a metronome with arms, landing on the beat and looking identical whatever
+# is playing.
+#
+# The `_norm` fields are used rather than the raw ones because they are enveloped
+# and auto-gained. A move derived from a jittery signal morphs mid-swing, which
+# reads as the figure changing its mind rather than as a strike.
+[uniforms]
+u_beat       = "beat_phase"
+u_beats      = "beat_count"
+u_bar        = "bar_phase"
+u_onset      = "onset_strength"
+u_bass       = "bass_norm"
+u_mid        = "mid_norm"
+u_treble     = "treble_norm"
+u_confidence = "bpm_confidence"

@@ -42,6 +42,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace holocron {
 
@@ -138,6 +139,58 @@ public:
     // invisible: it shows in Plexamp's queue, never plays, and cannot be skipped
     // to. Observed on the rack 2026-08-08.
     using RefreshQueueHandler = std::function<void(const std::string& play_queue_id)>;
+
+    // ---------------------------------------------------------------------
+    // The control surface -- `GET /control` on this same port.
+    //
+    // THE PICTURE, NOT THE MUSIC. Plexamp already controls playback and does it
+    // well; this is for the half of Holocron that Plexamp knows nothing about --
+    // which crystal is running, and the overlays. It is deliberately NOT a
+    // library browser: D-029 and the M6 scope both say Plexamp is the browser.
+    //
+    // WHY A WEB PAGE AND NOT AN ON-SCREEN MENU. The owner is on a couch with a
+    // phone; the keyboard is at the machine. An on-screen UI needs text
+    // rendering this project does not have, a font dependency, an HID remote and
+    // a focus model. A page on the port already listening needs none of that and
+    // works on the device already in his hand. See issue 130.
+    // ---------------------------------------------------------------------
+
+    // What the control page should show. Copied under a lock, same as the
+    // timeline: the render thread owns these and the HTTP workers read them.
+    struct ControlState {
+        // Vault entries by display name, in the order the arrow keys move
+        // through them, and which one is on screen.
+        std::vector<std::string> crystals;
+        std::size_t              current = 0;
+
+        // Now playing, for orientation only. Empty when nothing is.
+        std::string title;
+        std::string artist;
+
+        bool now_playing_visible = false;
+        bool lyrics_visible      = false;
+        bool has_art        = false;
+    };
+
+    void set_control_state(const ControlState& state);
+
+    // Called when the page asks for a different crystal, BY INDEX into the list
+    // the page was given.
+    //
+    // An index rather than a name because the vault is fixed for a run and the
+    // page is rendered from it -- and because a name would need escaping in two
+    // directions for crystals whose manifests contain spaces or quotes.
+    using SelectCrystalHandler = std::function<void(std::size_t index)>;
+
+    // Called when the page asks to show or hide an overlay. Two separate handlers
+    // rather than one taking a name: there are two overlays, they are wired to
+    // different things, and a string would need validating.
+    using LyricsHandler     = std::function<void(bool visible)>;
+    using NowPlayingHandler = std::function<void(bool visible)>;
+
+    void set_select_crystal_handler(SelectCrystalHandler handler);
+    void set_lyrics_handler(LyricsHandler handler);
+    void set_now_playing_handler(NowPlayingHandler handler);
 
     // Set before start(). Unset handlers mean the command is logged and
     // acknowledged, which is what happened before anything could play.

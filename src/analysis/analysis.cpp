@@ -165,8 +165,12 @@ struct AnalysisStage::Impl {
 
         bpm             = 0.0f;
         bpm_confidence  = 0.0f;
-        beat_phase      = 0.0f;
-        beat_count      = 0;
+        beat_phase        = 0.0f;
+        beat_count        = 0;
+        beat_offset_phase         = 0.0f;
+        beat_offset_frame         = 0;
+        beat_offset_period_frames = 0;
+        have_beat_offset          = false;
         onset_count     = 0;
         frames_since_tempo = 0;
 
@@ -295,6 +299,16 @@ struct AnalysisStage::Impl {
     std::vector<float> ebur_staging;
 
     void  update_rhythm(AudioFrame& f, float raw_flux);
+
+    // Where the beat grid sits, as a phase in 0..1 for the NEWEST frame in the
+    // history. See the definition for why this replaced a per-onset nudge.
+    void estimate_beat_offset(int period_frames, std::size_t start, std::size_t m,
+                              std::size_t n);
+
+    float         beat_offset_phase         = 0.0f;
+    std::uint64_t beat_offset_frame         = 0;
+    int           beat_offset_period_frames = 0;
+    bool          have_beat_offset          = false;
     void  estimate_tempo();
     float short_term_loudness() const;
 
@@ -469,6 +483,103 @@ void AnalysisStage::Impl::estimate_tempo()
     if (confidence >= config.tempo_confidence_floor || bpm == 0.0f) {
         bpm = candidate;
     }
+
+    // WHERE THE GRID SITS, which is a different question from how far apart the
+    // beats are, and the one issue 94 was about.
+    estimate_beat_offset(chosen, start, m, n);
+}
+
+// ---------------------------------------------------------------------------
+// THE FIX FOR ISSUE 94.
+//
+// The tempo was never wrong; the PHASE was, by over 100 ms and differently per
+// track. The old approach nudged the phase toward the nearest beat boundary on
+// every detected onset -- a per-onset phase-locked loop. That is dragged by
+// off-beat hits, and ordinary music is full of them: a kick on the beat and hats
+// between it. Every hat pulled the phase toward whichever boundary happened to be
+// nearer, so the equilibrium landed somewhere determined by the rhythmic figure
+// rather than by the beat. A plain click track has no off-beat content at all,
+// which is exactly why the existing tests never caught it.
+//
+// Instead: correlate the onset history against a pulse train at the estimated
+// period and take the offset that scores highest. Off-beat energy contributes to
+// EVERY candidate offset roughly equally, so it cancels; on-beat energy
+// contributes to one, so it wins. Integrating over several seconds is what makes
+// this robust where a per-onset decision cannot be.
+//
+// Cost is one pass over the history per tempo update, which is every 16 frames --
+// the same budget the autocorrelation above already spends.
+// ---------------------------------------------------------------------------
+
+void AnalysisStage::Impl::estimate_beat_offset(int period_frames, std::size_t start,
+                                               std::size_t m, std::size_t n)
+{
+    if (period_frames <= 1 || m < std::size_t(period_frames) * 2) {
+        // Fewer than two periods of history is not evidence of a phase. Leaving
+        // the previous estimate alone is better than replacing it with noise.
+        return;
+    }
+
+    const auto period = std::size_t(period_frames);
+
+    // Score every candidate offset, measured in frames BEFORE the newest sample.
+    // `offset` frames ago is a beat, and so is every period before that.
+    float       best_score  = -1.0f;
+    std::size_t best_offset = 0;
+
+    for (std::size_t offset = 0; offset < period; ++offset) {
+        float score = 0.0f;
+        for (std::size_t ago = offset; ago < m; ago += period) {
+            // The newest sample sits at m-1 in the oldest-to-newest window, so
+            // `ago` frames back from it is m-1-ago.
+            score += odf_history[(start + (m - 1 - ago)) % n];
+        }
+        if (score > best_score) {
+            best_score  = score;
+            best_offset = offset;
+        }
+    }
+
+    // THE FLUX PEAK IS NOT THE BEAT. It lags the attack, and the lag is a
+    // property of this analysis rather than of the music: spectral flux over a
+    // 2048-sample FFT with a ~512-sample hop spreads one transient across about
+    // four hops, and the peak lands a couple of hops after the attack begins.
+    //
+    // COMPENSATED, on the strength of two INDEPENDENT measurements agreeing --
+    // which is the standard --trim-ms was held to (D-028) and the reason that
+    // number is trusted.
+    //
+    //   a synthetic click track, ground truth in known sample positions:  +25 ms
+    //   Skrillex "First Of The Year", the real track from issue 94:       +32 ms
+    //
+    // Both say the grid runs late, and by a similar amount, on signals with
+    // nothing in common but the analysis that measured them. 28 ms is the
+    // midpoint. Fitting to the synthetic fixture ALONE was rejected earlier in
+    // this same change and would have been wrong -- one measurement cannot tell
+    // a property of the instrument from a property of the test signal.
+    //
+    // A FIXED TIME, NOT A FIXED FRACTION OF A BEAT. The cause is the window
+    // length, which does not know the tempo, so it is converted to phase using
+    // the current period rather than being applied as a constant phase.
+    constexpr float kFluxLagSeconds = 0.028f;
+    const float     lag_frames      = kFluxLagSeconds * kFrameRateHz;
+
+    // The most recent beat was `best_offset` frames ago, so the newest frame sits
+    // that far into the beat -- plus the lag, because the beat happened before
+    // the flux said so.
+    //
+    // STAMPED WITH THE FRAME IT DESCRIBES. This runs every 16 frames, and the
+    // phase it produces is the phase of the newest sample AT THAT MOMENT --
+    // applying it unchanged on later frames steers toward a target that is up to
+    // 16 frames stale, which is a lag of up to 170 ms and about 100 ms on
+    // average. Measured: doing exactly that put the grid a constant 102.7 ms
+    // late on every track, which looked like a worse version of the bug being
+    // fixed rather than like an ageing target.
+    beat_offset_phase = float(best_offset + std::size_t(lag_frames + 0.5f)) / float(period);
+    beat_offset_phase -= std::floor(beat_offset_phase);
+    beat_offset_frame = frame_index;
+    beat_offset_period_frames = period_frames;
+    have_beat_offset  = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -542,11 +653,32 @@ void AnalysisStage::Impl::update_rhythm(AudioFrame& f, float raw_flux)
         const float beat_seconds = 60.0f / bpm;
         beat_phase += kHopSeconds / beat_seconds;
 
-        if (fired) {
-            // Pull toward the nearest beat boundary.
-            const float error = (beat_phase - std::floor(beat_phase) < 0.5f)
-                                    ? -(beat_phase - std::floor(beat_phase))
-                                    : (1.0f - (beat_phase - std::floor(beat_phase)));
+        // STEERED TOWARD A PHASE ESTIMATED OVER SECONDS, not nudged by whichever
+        // onset just fired. See estimate_beat_offset for why the per-onset pull
+        // was the bug rather than the mechanism.
+        //
+        // `fired` no longer influences the phase at all. It still drives
+        // `onset` and `onset_strength`, which is what crystals read for
+        // percussive events -- those want the hit, and this wants the grid.
+        if (have_beat_offset && beat_offset_period_frames > 0 &&
+            bpm_confidence >= config.tempo_confidence_floor) {
+            // AGED FORWARD to this frame. The estimate describes the frame it was
+            // computed on; every frame since has advanced the true phase by one
+            // hop, and a target that does not advance with it is a lag.
+            const auto  elapsed = float(frame_index - beat_offset_frame);
+            const float target =
+                beat_offset_phase + elapsed / float(beat_offset_period_frames);
+
+            // Shortest way round the circle. Without the wrap, a grid sitting at
+            // 0.95 and a target of 0.02 would be corrected the long way -- nearly
+            // a whole beat backwards -- which shows up as the picture stalling
+            // once a second.
+            float error = (target - std::floor(target)) - (beat_phase - std::floor(beat_phase));
+            if (error > 0.5f) {
+                error -= 1.0f;
+            } else if (error < -0.5f) {
+                error += 1.0f;
+            }
             beat_phase += error * config.beat_phase_correction;
         }
 
@@ -554,8 +686,11 @@ void AnalysisStage::Impl::update_rhythm(AudioFrame& f, float raw_flux)
             beat_phase -= 1.0f;
             ++beat_count;
         }
-        if (beat_phase < 0.0f) {
-            beat_phase = 0.0f;
+        // Wraps rather than clamps. A negative correction used to be flattened to
+        // zero, which quietly discarded the part of the correction that pointed
+        // backwards and biased the whole loop forwards.
+        while (beat_phase < 0.0f) {
+            beat_phase += 1.0f;
         }
     }
 
