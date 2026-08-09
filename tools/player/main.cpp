@@ -729,10 +729,15 @@ class ArtworkLoader {
 public:
     ~ArtworkLoader() { join(); }
 
-    // Start fetching the art for `track`. Supersedes any fetch in flight.
+    // Start fetching the art for `track`, or hand back a cached sleeve at once.
     void request(const PlayRequest& server, const PlexTrack& track)
     {
         join();
+
+        // WHICH SLEEVE THIS IS, and deliberately NOT artwork_path(): that string
+        // contains the playback token, which changes per session and would both
+        // defeat the cache and put a credential in a cache key.
+        const std::string key = !track.thumb.empty() ? track.thumb : track.album_thumb;
 
         std::uint64_t generation = 0;
         {
@@ -742,11 +747,34 @@ public:
             ready_     = false;
             image_     = ImageRgba8{};
             palette_   = Palette{};
+
+            // AN ALBUM IS THE SAME SLEEVE FIFTEEN TIMES. For music the art is
+            // almost always the album cover rather than anything per-track, so
+            // without this every track of an album repeats a TLS handshake, an
+            // HTTP round trip and a JPEG decode for bytes that have not changed.
+            //
+            // Served synchronously here rather than by starting a thread that
+            // immediately finds a hit: the render loop picks it up on the very
+            // next frame, so the sleeve does not visibly blink between tracks of
+            // one album.
+            for (const Entry& entry : cache_) {
+                if (entry.key == key && !entry.image.empty()) {
+                    image_   = entry.image;
+                    palette_ = entry.palette;
+                    ready_   = true;
+                    ++hits_;
+                    return;
+                }
+            }
+        }
+
+        if (key.empty()) {
+            return;   // nothing to fetch; the caller already checks, this is belt
         }
 
         // Copied into the thread, not captured by reference: `track` belongs to a
         // queue the render loop may replace while this runs.
-        worker_ = std::thread([this, server, track, generation] {
+        worker_ = std::thread([this, server, track, generation, key] {
             std::vector<std::uint8_t> bytes;
             std::string               detail;
 
@@ -761,13 +789,26 @@ public:
             const Palette palette = extract_palette(image);
 
             const std::lock_guard<std::mutex> lock(mutex_);
+
+            // CACHED EVEN IF THE ANSWER IS STALE. The work is already done and
+            // the bytes are still correct for that sleeve -- skipping back to the
+            // album this belongs to should not have to fetch it again.
+            remember(key, image, palette);
+
             if (generation != generation_) {
                 return;   // a newer track has been asked for; this answer is stale
             }
-            image_   = std::move(image);
+            image_   = image;
             palette_ = palette;
             ready_   = true;
         });
+    }
+
+    // Sleeves served without a fetch, for the run summary.
+    std::uint64_t cache_hits() const
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return hits_;
     }
 
     // Hand over a finished sleeve, once. False when there is nothing new.
@@ -800,6 +841,46 @@ private:
     // texture is mipmapped, so a crystal drawing it small loses nothing.
     static constexpr int kArtworkSize = 512;
 
+    // How many sleeves to keep.
+    //
+    // ONE would already kill fourteen of fifteen fetches on an album, which is
+    // the case that matters. Four costs about 4 MB at 512 square and also covers
+    // skipping back and forth between a couple of records, which is what actually
+    // happens when someone is choosing something to listen to.
+    //
+    // Deliberately small and in memory. The M5 exit criterion asks for an ON-DISK
+    // cache with a configurable path, and that needs metadata-derived filenames
+    // sanitised for Windows -- reserved characters, trailing dots, and the device
+    // names -- which is a separate piece of work with real failure modes. This
+    // removes the cost without the filesystem risk.
+    static constexpr std::size_t kCacheSlots = 4;
+
+    struct Entry {
+        std::string key;
+        ImageRgba8  image;
+        Palette     palette;
+    };
+
+    // Caller holds the lock.
+    void remember(const std::string& key, const ImageRgba8& image, const Palette& palette)
+    {
+        if (key.empty() || image.empty()) {
+            return;
+        }
+        for (Entry& entry : cache_) {
+            if (entry.key == key) {
+                return;   // already have it; no reason to churn the order
+            }
+        }
+        if (cache_.size() >= kCacheSlots) {
+            // Oldest out. A queue rather than a true LRU: the access pattern here
+            // is "the album you are playing", so recency of INSERTION and recency
+            // of use are the same thing, and tracking hits would buy nothing.
+            cache_.erase(cache_.begin());
+        }
+        cache_.push_back(Entry{key, image, palette});
+    }
+
     void join()
     {
         if (worker_.joinable()) {
@@ -807,12 +888,15 @@ private:
         }
     }
 
-    std::mutex    mutex_;
-    std::thread   worker_;
-    std::uint64_t generation_ = 0;
-    bool          ready_      = false;
-    ImageRgba8    image_;
-    Palette       palette_;
+    mutable std::mutex mutex_;
+    std::thread        worker_;
+    std::uint64_t      generation_ = 0;
+    bool               ready_      = false;
+    ImageRgba8         image_;
+    Palette            palette_;
+
+    std::vector<Entry> cache_;
+    std::uint64_t      hits_ = 0;
 };
 
 extern "C" void on_interrupt(int)
@@ -2162,6 +2246,12 @@ int main(int argc, char** argv)
     std::printf("holocron: %d frames drawn, %llu analysis frames published\n",
                 rendered,
                 static_cast<unsigned long long>(session.frames_published()));
+    if (const std::uint64_t hits = artwork.cache_hits(); hits > 0) {
+        // Reported because the whole point of the cache is invisible otherwise:
+        // a fetch that did not happen leaves no trace anywhere.
+        std::printf("holocron: %llu sleeve(s) served from cache, not re-fetched\n",
+                    static_cast<unsigned long long>(hits));
+    }
     if (session.audio_running()) {
         // The underrun count comes from the RING, not the sink -- the ring is
         // the only thing that knows whether it had audio when it was asked.
