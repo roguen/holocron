@@ -61,7 +61,10 @@
 #include <holocron/render_target.hpp>
 #include <holocron/crystal_facet.hpp>
 #include <holocron/crystal_watch.hpp>
+#include <holocron/facet.hpp>
 #include <holocron/gatekeeper.hpp>
+#include <holocron/projectm_api.hpp>
+#include <holocron/projectm_facet.hpp>
 #include <holocron/vault.hpp>
 #include <holocron/debug_facet.hpp>
 #include <holocron/decoder.hpp>
@@ -120,6 +123,17 @@ struct Options {
     // the same machinery with a vault of exactly one, so switching and hot
     // reload have a single code path rather than two that drift.
     const char* vault    = nullptr;
+    // A directory of MilkDrop presets. Adds projectM to the vault as one more
+    // thing the arrow keys reach, exactly like a crystal or an archive.
+    //
+    // A FLAG AS WELL AS A CONFIG KEY because trying a different pack is the thing
+    // you do repeatedly while finding out whether a pack is any good, and editing
+    // gatekeeper.toml between each attempt is the loop that makes people stop
+    // trying. Same argument --vault already made against --crystal.
+    const char* projectm = nullptr;
+    // Where projectM-4 and its playlist module live. Empty lets the OS loader
+    // search, which is what a system-installed libprojectM wants.
+    const char* projectm_lib = nullptr;
     int         frames   = 0;      // 0 = run until the window closes
     int         width    = 1280;
     int         height   = 720;
@@ -193,7 +207,8 @@ struct Options {
         bool trim_ms = false;
         bool width   = false;
         bool height  = false;
-        bool vault   = false;
+        bool vault    = false;
+        bool projectm = false;
     } given;
 
     // AN ARGUMENT THE PARSER DID NOT UNDERSTAND, AND WHY THIS IS NOT OPTIONAL.
@@ -221,6 +236,7 @@ struct Options {
 const char* const kValueOptions[] = {
     "--shot", "--frames", "--width", "--height", "--crystal",
     "--vault", "--config", "--trim-ms", "--sink",
+    "--projectm", "--projectm-lib",
 };
 
 bool takes_a_value(const char* a)
@@ -253,6 +269,11 @@ Options parse(int argc, char** argv)
         } else if (std::strcmp(a, "--vault") == 0 && i + 1 < argc) {
             o.vault       = argv[++i];
             o.given.vault = true;
+        } else if (std::strcmp(a, "--projectm") == 0 && i + 1 < argc) {
+            o.projectm       = argv[++i];
+            o.given.projectm = true;
+        } else if (std::strcmp(a, "--projectm-lib") == 0 && i + 1 < argc) {
+            o.projectm_lib = argv[++i];
         } else if (std::strcmp(a, "--config") == 0 && i + 1 < argc) {
             o.config = argv[++i];
         } else if (std::strcmp(a, "--calibrate") == 0) {
@@ -321,6 +342,13 @@ void usage()
         "                 --crystal crystals/pulse (loads .toml and .frag)\n"
         "  --vault DIR    draw every crystal in DIR, left and right arrows to\n"
         "                 move between them, e.g. --vault crystals\n"
+        "  --projectm DIR add projectM to the vault, rendering MilkDrop presets\n"
+        "                 from DIR (scanned recursively). Needs libprojectM 4\n"
+        "                 installed -- Holocron does not ship it, and does not\n"
+        "                 ship presets either\n"
+        "  --projectm-lib DIR\n"
+        "                 where projectM-4 and its playlist module live. Omit to\n"
+        "                 let the OS loader find a system-installed one\n"
         "  --calibrate    measure --trim-ms. Draws instruments/sync, which flashes\n"
         "                 the whole field on onsets, and lets UP and DOWN move the\n"
         "                 trim while the track plays. Prints the line to paste\n"
@@ -407,9 +435,31 @@ constexpr const char* kSyncStem = "instruments/sync";
 // rather than two that drift apart the first time one of them is fixed.
 // ---------------------------------------------------------------------------
 
+// What the player can build a layer out of, beyond a crystal.
+//
+// Passed rather than reached for. `api` is null on a machine with no libprojectM,
+// which is the ordinary case and is what makes "a build with libprojectM absent
+// still runs, one facet type short" true at the point it matters: an archive that
+// asks for a projectM layer fails to build with a message, and everything else in
+// the vault keeps working.
+struct ProjectMContext {
+    const ProjectMLibrary* library = nullptr;
+    ProjectMSettings       settings;
+
+    bool available() const { return library != nullptr; }
+};
+
 struct LiveStack {
-    Archive                                    archive;
-    std::vector<std::unique_ptr<CrystalFacet>> facets;
+    Archive                              archive;
+    std::vector<std::unique_ptr<Facet>>  facets;
+
+    // The projectM facet in this stack, if it has one, borrowed from `facets`.
+    //
+    // Kept because the control surface has to reach it -- "next preset" and
+    // "lock" are questions only a ProjectMFacet can answer, and finding it again
+    // would mean a dynamic_cast through the layer list on every request. Null for
+    // every stack that is only crystals, which is most of them.
+    ProjectMFacet* projectm = nullptr;
 
     std::size_t size() const { return facets.size(); }
 
@@ -429,7 +479,8 @@ struct LiveStack {
     void clear()
     {
         facets.clear();
-        archive = Archive{};
+        projectm = nullptr;
+        archive  = Archive{};
     }
 };
 
@@ -444,13 +495,42 @@ struct LiveStack {
 // ALL OR NOTHING, and that is the other half of the same idea: a
 // stack with one layer missing is not a smaller stack, it is a different picture,
 // and showing it would hide the failure behind something that looks deliberate.
-bool build_stack(const Archive& archive, LiveStack& out, const char* verb)
+bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
+                 const ProjectMContext& pm)
 {
     LiveStack next;
     next.archive = archive;
     next.facets.reserve(archive.layers.size());
 
     for (const ArchiveLayer& layer : archive.layers) {
+        // -- a projectM layer ---------------------------------------------
+        //
+        // Built beside the live stack like everything else, so a preset path
+        // that turns out to be wrong leaves what is already on screen alone.
+        if (layer.source == LayerSource::kProjectM) {
+            if (!pm.available()) {
+                std::fprintf(stderr,
+                             "holocron: %s failed -- this layer needs libprojectM and none is "
+                             "loaded\nholocron: still drawing what was already up\n",
+                             verb);
+                return false;
+            }
+
+            auto        facet = std::make_unique<ProjectMFacet>();
+            std::string why;
+            if (!facet->init(*pm.library, pm.settings, why)) {
+                std::fprintf(stderr, "holocron: %s failed -- projectM did not start\n%s\n"
+                                     "holocron: still drawing what was already up\n",
+                             verb, why.c_str());
+                return false;
+            }
+
+            std::printf("holocron: %s projectM, %zu presets\n", verb, facet->preset_count());
+            next.projectm = facet.get();
+            next.facets.push_back(std::move(facet));
+            continue;
+        }
+
         Crystal            crystal;
         std::string        detail;
         const CrystalError err = load_crystal(layer.crystal, crystal, detail);
@@ -496,7 +576,11 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb)
 // only place in the player that knows the difference.
 bool archive_for(const VaultEntry& entry, Archive& out)
 {
-    if (!entry.is_archive) {
+    if (entry.kind == VaultKind::kProjectM) {
+        out = archive_of_projectm(entry.name);
+        return true;
+    }
+    if (entry.kind == VaultKind::kCrystal) {
         out = archive_of_crystal(entry.stem, entry.name);
         return true;
     }
@@ -1856,6 +1940,48 @@ int main(int argc, char** argv)
     bool                        showing_sync    = false;
     std::optional<CrystalWatch> watch;
 
+    // -- libprojectM, if there is one -----------------------------------------
+    //
+    // Loaded ONCE for the whole run and never unloaded. The facet is rebuilt on
+    // every crossfade; unloading and reopening a shared library that has GL
+    // objects and driver thread-local state behind it is the kind of thing that
+    // works for months and then does not.
+    //
+    // Failing to load is NOT fatal and is not even a warning unless projectM was
+    // actually asked for. "A build with libprojectM absent still runs, one facet
+    // type short" is an M4 exit criterion, and the honest way to meet it is for
+    // the vault to be one entry shorter with a line saying why.
+    ProjectMLibrary projectm_library;
+    ProjectMContext projectm_ctx;
+
+    if (opt.projectm != nullptr) {
+        std::string why;
+
+        // TWO STEPS, and the second one is the whole reason M4 cost a debugging
+        // session. Opening the module needs no GL; bringing up the GL loader that
+        // libprojectM's own calls go through does, and libprojectM does not do it
+        // itself on Windows. See ProjectMLibrary::init_gl.
+        //
+        // The context is current here because the window is already open above.
+        const bool opened = load_projectm(
+            opt.projectm_lib != nullptr ? opt.projectm_lib : "", projectm_library, why);
+
+        if (opened && projectm_library.init_gl(why)) {
+            projectm_ctx.library              = &projectm_library;
+            projectm_ctx.settings.preset_path = opt.projectm;
+            std::printf("holocron: libprojectM %s from %s\n", projectm_library.version().c_str(),
+                        projectm_library.core_path().c_str());
+        } else {
+            // Asked for and unavailable, so this one IS worth saying loudly. The
+            // player carries on; the vault simply has no projectM in it, which is
+            // the M4 criterion "runs with libprojectM absent, one facet short".
+            std::fprintf(stderr, "holocron: no projectM -- %s\n", why.c_str());
+            std::fprintf(stderr, "holocron: carrying on without it\n");
+            projectm_library.unload();
+        }
+        std::fflush(stdout);
+    }
+
     // The vault, and where in it we are. --crystal is a vault of one, so there
     // is one path through the code below rather than a single-crystal case and a
     // vault case that quietly diverge.
@@ -1871,43 +1997,82 @@ int main(int argc, char** argv)
         for (const VaultProblem& p : problems) {
             std::fprintf(stderr, "holocron: skipping %s\n%s\n", p.stem.c_str(), p.detail.c_str());
         }
-        if (vault.empty()) {
+        if (vault.empty() && !projectm_ctx.available()) {
             std::fprintf(stderr, "holocron: no crystals found in %s\n", opt.vault);
             window.close();
             session.stop();
             return 1;
         }
-
-        // Which one to open on. The vault is ordered by name so the two
-        // platforms agree, not because the first is the one worth looking at.
-        if (!cfg.crystal.empty()) {
-            bool found = false;
-            for (std::size_t i = 0; i < vault.size(); ++i) {
-                if (vault[i].name == cfg.crystal || vault[i].stem == cfg.crystal) {
-                    current = i;
-                    found   = true;
-                    break;
-                }
-            }
-            if (!found) {
-                // Named and absent is worth saying. Falling back silently would
-                // leave someone editing a crystal the player is not drawing.
-                std::fprintf(stderr,
-                             "holocron: no crystal named `%s` in %s -- starting on `%s`\n",
-                             cfg.crystal.c_str(), opt.vault, vault[0].name.c_str());
-            }
-        }
     } else if (opt.crystal != nullptr) {
         // --crystal names a stem rather than a vault entry, so it is not scanned
         // and its kind is not known. It is a crystal by definition: an archive is
         // something found in a vault.
-        vault.push_back(VaultEntry{opt.crystal, opt.crystal, false});
+        vault.push_back(VaultEntry{opt.crystal, opt.crystal, VaultKind::kCrystal});
+    }
+
+    // projectM joins the same list the crystals and archives are in, at the end.
+    //
+    // ONE LIST, which is the rule issue 155 settled: from the couch "what is on
+    // screen" is one question, and a separate key for "now show me projectM"
+    // would be the loader's convenience showing through. The arrow keys reach it,
+    // the crossfade covers it, and auto-advance moves onto and off it.
+    //
+    // Appended rather than sorted into place because it has no manifest name to
+    // sort by and because "the last thing in the list" is a stable answer on both
+    // platforms, which is the whole reason the rest of the vault is sorted.
+    if (projectm_ctx.available()) {
+        vault.push_back(VaultEntry{"", "projectM", VaultKind::kProjectM});
+    }
+
+    // Which one to open on. The vault is ordered by name so the two platforms
+    // agree, not because the first is the one worth looking at.
+    //
+    // Only for a scanned vault: --crystal names a stem outright and a config key
+    // that cannot match it would print a warning about a choice nobody made.
+    if (opt.vault != nullptr && !cfg.crystal.empty() && !vault.empty()) {
+        bool found = false;
+        for (std::size_t i = 0; i < vault.size(); ++i) {
+            if (vault[i].name == cfg.crystal || vault[i].stem == cfg.crystal) {
+                current = i;
+                found   = true;
+                break;
+            }
+        }
+        if (!found) {
+            // Named and absent is worth saying. Falling back silently would
+            // leave someone editing a crystal the player is not drawing.
+            std::fprintf(stderr, "holocron: no crystal named `%s` in %s -- starting on `%s`\n",
+                         cfg.crystal.c_str(), opt.vault, vault[0].name.c_str());
+        }
+    }
+
+    // --projectm ALSO CHOOSES WHERE THE RUN STARTS, unless something NAMED a
+    // starting point.
+    //
+    // Without it, `--projectm DIR` loads the library, adds the entry, and opens
+    // on whatever sorts first in the vault. Typing a flag and being shown
+    // something else reads as the flag not working.
+    //
+    // BUT IT LOSES TO AN EXPLICIT NAME, which is a departure from "flags beat the
+    // file" and is the right way round here: `--projectm` names a preset
+    // DIRECTORY, and "start on projectM" is only an implication of it.
+    // `[paths] crystal` names a thing outright. An implication should not beat a
+    // statement -- and the case that proves it is an archive with a projectM
+    // layer in it, which the flag would otherwise make unreachable at startup:
+    // you would need projectM available to load the archive, and asking for it
+    // would move you off the archive.
+    //
+    // The config key gets no start behaviour at all: `[projectm] preset_path`
+    // says projectM is available, and choosing what a run opens on is already
+    // `[paths] crystal`'s job. It can name `projectM`.
+    if (opt.given.projectm && projectm_ctx.available() && cfg.crystal.empty()) {
+        current = vault.size() - 1;
     }
 
     if (!vault.empty()) {
         Archive archive;
         if (!archive_for(vault[current], archive) ||
-            !build_stack(archive, live_stack, "opened")) {
+            !build_stack(archive, live_stack, "opened", projectm_ctx)) {
             // Unlike a reload, there is nothing already on screen to fall back
             // to, so this one is fatal. The builder has already printed why.
             window.close();
@@ -1918,20 +2083,20 @@ int main(int argc, char** argv)
         drawing_crystal = true;
 
         if (vault.size() > 1) {
+            std::size_t crystals = 0;
             std::size_t archives = 0;
+            std::size_t projectm = 0;
             for (const VaultEntry& e : vault) {
-                archives += e.is_archive ? 1 : 0;
+                switch (e.kind) {
+                case VaultKind::kCrystal:  ++crystals; break;
+                case VaultKind::kArchive:  ++archives; break;
+                case VaultKind::kProjectM: ++projectm; break;
+                }
             }
-            if (archives > 0) {
-                std::printf("holocron: vault of %zu (%zu crystal%s, %zu archive%s) -- left and "
-                            "right arrows to move\n",
-                            vault.size(), vault.size() - archives,
-                            vault.size() - archives == 1 ? "" : "s", archives,
-                            archives == 1 ? "" : "s");
-            } else {
-                std::printf("holocron: vault of %zu crystals -- left and right arrows to move\n",
-                            vault.size());
-            }
+            std::printf("holocron: vault of %zu (%zu crystal%s, %zu archive%s%s) -- left and "
+                        "right arrows to move\n",
+                        vault.size(), crystals, crystals == 1 ? "" : "s", archives,
+                        archives == 1 ? "" : "s", projectm > 0 ? ", projectM" : "");
         }
         if (!opt.no_watch) {
             watch.emplace(live_stack.archive.watch_paths, std::chrono::steady_clock::now());
@@ -2105,7 +2270,28 @@ int main(int argc, char** argv)
     // is not given back either: freeing at the end of every fade and allocating
     // again at the start of the next would put a 66 MB allocation on the exact
     // frame a transition begins.
-    std::size_t layers_wanted = 1;
+    //
+    // STARTED FROM THE STACK THAT IS ALREADY UP, which is the fix for issue 166.
+    //
+    // This was a literal 1, and it was only ever raised inside begin_stack -- the
+    // SWITCH path. The stack built before the render loop, which is what an
+    // ordinary run opens with, never raised it. So an archive opened at startup
+    // was composited one layer deep: bind_layer(1) failed, the layer loop broke,
+    // and the top layer was neither drawn nor composited.
+    //
+    // `crystals/storm` shipped in v0.3.0 with that fault. It has been drawing
+    // `drift` and not `duel` since it landed, and it looks correct the moment you
+    // arrow away and back, because that goes through begin_stack. Every
+    // interactive check of archives went through a switch; nothing ever opened on
+    // one.
+    //
+    // The alternative was to route the initial build through begin_stack too, so
+    // there is one path rather than two. Rejected for now: begin_stack is a lambda
+    // declared with the render loop's state and moving it above the vault means
+    // hoisting `layered`, `fade_started` and both stacks with it, which is a large
+    // edit to fix a one-word bug. The two places that raise this both take a max,
+    // so neither can lower it -- that is the property that matters.
+    std::size_t layers_wanted = std::max<std::size_t>(1, live_stack.size());
 
     // Printed when it changes, because this is the branch the whole render path
     // turns on and a branch no log prints is a branch that cannot be diagnosed.
@@ -3074,7 +3260,7 @@ int main(int argc, char** argv)
             if (cast.take_sync()) {
                 LiveStack next;
                 if (build_stack(archive_of_crystal(kSyncStem, "sync"), next,
-                                "beat instrument")) {
+                                "beat instrument", projectm_ctx)) {
                     showing_sync = true;
                     begin_stack(std::move(next));
                     if (watch) {
@@ -3129,7 +3315,7 @@ int main(int argc, char** argv)
                 Archive   archive;
                 LiveStack next;
                 if (archive_for(vault[current], archive) &&
-                    build_stack(archive, next, "switched to")) {
+                    build_stack(archive, next, "switched to", projectm_ctx)) {
                     begin_stack(std::move(next));
                     if (watch) {
                         // The watch has to follow, or an author would edit what is
@@ -3160,7 +3346,7 @@ int main(int argc, char** argv)
                                      ? (archive = archive_of_crystal(kSyncStem, "sync"), true)
                                      : archive_for(vault[current], archive);
 
-                if (got && build_stack(archive, next, "reloaded")) {
+                if (got && build_stack(archive, next, "reloaded", projectm_ctx)) {
                     // u_time CARRIES ACROSS, layer for layer, so slow motion does
                     // not snap back to zero on every save -- the whole reason the
                     // clock is settable. Only where the stack still has a layer in

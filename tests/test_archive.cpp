@@ -337,11 +337,161 @@ TEST_CASE("every ArchiveError has a distinct description")
         ArchiveError::kManifestUnparseable, ArchiveError::kManifestIncomplete,
         ArchiveError::kNoLayers,     ArchiveError::kTooManyLayers,
         ArchiveError::kUnknownBlend, ArchiveError::kUnknownField,
-        ArchiveError::kBadRange,
+        ArchiveError::kBadRange,     ArchiveError::kAmbiguousSource,
     };
     for (std::size_t i = 0; i < std::size(all); ++i) {
         for (std::size_t j = i + 1; j < std::size(all); ++j) {
             CHECK(std::string(to_string(all[i])) != std::string(to_string(all[j])));
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// projectM as a layer source (M4)
+//
+// The format grew a second kind of layer. These cases exist because the failure
+// mode of getting it wrong is quiet: a manifest that parses into the wrong
+// source draws the wrong thing, and there is no compiler anywhere in that path.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a layer can name projectm instead of a crystal")
+{
+    const std::string stem = write_manifest("pm_layer", R"(
+name = "presets"
+
+[[layer]]
+projectm = true
+)");
+
+    Archive     a;
+    std::string detail;
+    INFO(detail);
+    REQUIRE(load_archive(stem, a, detail) == ArchiveError::kOk);
+
+    REQUIRE(a.layers.size() == 1);
+    CHECK(a.layers[0].source == LayerSource::kProjectM);
+
+    // No stem, because there is no file. An empty string here is what stops the
+    // vault scanner and the watch list asking the filesystem about it.
+    CHECK(a.layers[0].crystal.empty());
+}
+
+TEST_CASE("a projectm layer contributes nothing to the watch list")
+{
+    // The archive's own manifest is still watched -- editing it should still
+    // reload -- but there is no `.frag` or `.toml` under a projectM layer, and
+    // adding ".toml" to an empty stem would put a file named ".toml" into the
+    // poll. Harmless and exactly the sort of thing found years later.
+    const std::string stem = write_manifest("pm_watch", R"(
+name = "presets"
+
+[[layer]]
+projectm = true
+)");
+
+    Archive     a;
+    std::string detail;
+    REQUIRE(load_archive(stem, a, detail) == ArchiveError::kOk);
+
+    REQUIRE(a.watch_paths.size() == 1);
+    CHECK(a.watch_paths[0] == stem + ".toml");
+}
+
+TEST_CASE("a layer naming both a crystal and projectm is refused")
+{
+    // REFUSED RATHER THAN RESOLVED BY PRECEDENCE. Somebody who wrote both meant
+    // something, and silently picking one gives them the other half of the time
+    // with nothing to say which.
+    const std::string stem = write_manifest("pm_both", R"(
+name = "confused"
+
+[[layer]]
+crystal  = "pulse"
+projectm = true
+)");
+
+    Archive     a;
+    std::string detail;
+    CHECK(load_archive(stem, a, detail) == ArchiveError::kAmbiguousSource);
+    CHECK(detail.find("layer 0") != std::string::npos);
+}
+
+TEST_CASE("a layer naming neither is still the missing-crystal error")
+{
+    // `projectm` arriving must not change what an ordinary typo reports. Someone
+    // who forgot `crystal` should be told about `crystal`.
+    const std::string stem = write_manifest("pm_neither", R"(
+name = "empty layer"
+
+[[layer]]
+blend = "add"
+)");
+
+    Archive     a;
+    std::string detail;
+    CHECK(load_archive(stem, a, detail) == ArchiveError::kManifestIncomplete);
+    CHECK(detail.find("crystal") != std::string::npos);
+}
+
+TEST_CASE("projectm = false is not a projectM layer")
+{
+    // Writing it out explicitly is a reasonable thing to do, and it must mean
+    // "this is an ordinary layer" rather than "this layer has no source".
+    const std::string stem = write_manifest("pm_false", R"(
+name = "ordinary"
+
+[[layer]]
+crystal  = "pulse"
+projectm = false
+)");
+
+    Archive     a;
+    std::string detail;
+    INFO(detail);
+    REQUIRE(load_archive(stem, a, detail) == ArchiveError::kOk);
+    CHECK(a.layers[0].source == LayerSource::kCrystal);
+    CHECK(a.layers[0].crystal.find("pulse") != std::string::npos);
+}
+
+TEST_CASE("projectM can be a layer under a crystal")
+{
+    // The point of giving a layer a source rather than giving projectM a fake
+    // crystal stem: a stack can mix the two, and neither side knows.
+    const std::string stem = write_manifest("pm_mixed", R"(
+name = "duel over projectM"
+
+[[layer]]
+projectm = true
+
+[[layer]]
+crystal = "duel"
+blend   = "screen"
+opacity = { bind = "bass_norm", min = 0.35, max = 1.0 }
+)");
+
+    Archive     a;
+    std::string detail;
+    INFO(detail);
+    REQUIRE(load_archive(stem, a, detail) == ArchiveError::kOk);
+
+    REQUIRE(a.layers.size() == 2);
+    CHECK(a.layers[0].source == LayerSource::kProjectM);
+    CHECK(a.layers[1].source == LayerSource::kCrystal);
+    CHECK(a.layers[1].blend == LayerBlend::kScreen);
+    CHECK(a.layers[1].opacity.binding != nullptr);
+}
+
+TEST_CASE("the degenerate projectM archive is one layer with no files")
+{
+    const Archive a = archive_of_projectm("projectM");
+
+    CHECK(a.name == "projectM");
+    REQUIRE(a.layers.size() == 1);
+    CHECK(a.layers[0].source == LayerSource::kProjectM);
+    CHECK(a.layers[0].blend == LayerBlend::kNormal);
+
+    // Nothing to reload: the presets are somebody else's files and libprojectM
+    // has its own schedule for them.
+    CHECK(a.watch_paths.empty());
+    CHECK(a.manifest_path.empty());
 }

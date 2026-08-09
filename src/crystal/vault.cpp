@@ -91,6 +91,21 @@ std::vector<VaultEntry> scan_vault(const std::string& dir,
             // exactly as broken as a crystal that does not compile.
             bool ok = true;
             for (const ArchiveLayer& layer : a.layers) {
+                // A PROJECTM LAYER NAMES NO CRYSTAL and there is nothing here to
+                // check: its presets are configuration, they are somebody else's
+                // files, and whether libprojectM is even installed is not a
+                // property of the vault.
+                //
+                // Without this the scan called load_crystal on an empty stem and
+                // rejected the whole archive with `layer ``: cannot open .toml`,
+                // which reads as a corrupt manifest rather than a scanner asking
+                // the wrong question. Found by writing the first archive with a
+                // projectm layer in it -- the format accepted it and the vault
+                // then refused to offer it.
+                if (layer.source != LayerSource::kCrystal) {
+                    continue;
+                }
+
                 Crystal            c;
                 std::string        why;
                 const CrystalError cerr = load_crystal(layer.crystal, c, why);
@@ -102,7 +117,7 @@ std::vector<VaultEntry> scan_vault(const std::string& dir,
                 }
             }
             if (ok) {
-                entries.push_back(VaultEntry{stem, a.name, true});
+                entries.push_back(VaultEntry{stem, a.name, VaultKind::kArchive});
             }
             continue;
         }
@@ -113,7 +128,7 @@ std::vector<VaultEntry> scan_vault(const std::string& dir,
             out_problems.push_back(VaultProblem{stem, detail});
             continue;
         }
-        entries.push_back(VaultEntry{stem, c.name, false});
+        entries.push_back(VaultEntry{stem, c.name, VaultKind::kCrystal});
     }
 
     // By NAME, which is what a person sees, with the stem breaking ties so two

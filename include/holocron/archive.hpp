@@ -88,9 +88,34 @@ struct LayerOpacity {
     float          max     = 1.0f;
 };
 
+// What draws a layer.
+//
+// A SECOND KIND ARRIVED AT M4 AND THE FORMAT HAD ASSUMED THERE WOULD ONLY EVER BE
+// ONE. `crystal = "drift"` was the whole of a layer's identity, which was right
+// while a crystal was the only thing that could draw one.
+//
+// projectM is not a crystal -- no `.frag`, no manifest, no bound uniforms, and
+// its picture comes from a shared library the user installed. It is still a
+// layer: it composites, it blends, its opacity can breathe with the bass, and it
+// crossfades. So the layer grows a source rather than projectM growing a fake
+// crystal stem, which is what a sentinel string would have amounted to.
+//
+// The visible payoff is that projectM can be a layer in an archive -- `duel`
+// screened over a MilkDrop preset is now a file somebody can write, and neither
+// side knows about the other.
+enum class LayerSource : std::uint8_t {
+    kCrystal = 0,
+    kProjectM,
+};
+
 struct ArchiveLayer {
+    LayerSource source = LayerSource::kCrystal;
+
     // A stem, already joined to the archive's directory, so it is what
-    // load_crystal() takes.
+    // load_crystal() takes. EMPTY when `source` is kProjectM: there is no file,
+    // and the preset path is application configuration rather than something an
+    // archive gets to name. An archive that could point at a preset directory
+    // would be a committed file naming a path that exists on one machine.
     std::string  crystal;
     LayerBlend   blend = LayerBlend::kNormal;
     LayerOpacity opacity;
@@ -122,6 +147,7 @@ enum class ArchiveError : std::uint8_t {
     kManifestIncomplete,   // valid TOML, missing something required
     kNoLayers,             // an archive with no [[layer]] is not an archive
     kTooManyLayers,
+    kAmbiguousSource,      // a layer naming both a crystal and projectm
     kUnknownBlend,
     kUnknownField,         // an opacity bound to a name the contract does not have
     kBadRange,
@@ -148,6 +174,14 @@ ArchiveError load_archive(const std::string& stem_path, Archive& out, std::strin
 
 // The degenerate archive: one layer, one crystal, fully opaque.
 Archive archive_of_crystal(const std::string& stem, const std::string& name);
+
+// The same for projectM: one layer, no file, fully opaque.
+//
+// It exists so the player has ONE type on screen. A vault entry, a `--crystal`
+// stem and a projectM facet all become an Archive, so switching, crossfading and
+// auto-advance keep the single code path they got at M3 -- rather than gaining a
+// projectM special case in each of the three.
+Archive archive_of_projectm(const std::string& name);
 
 // This layer's opacity for this frame, already clamped to [0, 1].
 float layer_opacity(const LayerOpacity& o, const AudioFrame& frame);

@@ -359,11 +359,17 @@ add_library(holocron_render STATIC
     src/render/render_target.cpp
     src/render/compositor.cpp
     src/render/final_pass.cpp
+    src/render/projectm_facet.cpp
 )
 add_library(holocron::render ALIAS holocron_render)
 
 target_link_libraries(holocron_render
     PUBLIC  holocron::contract
+            # projectm_facet.hpp is in this library's public surface and takes a
+            # ProjectMApi by reference, so anything using the renderer needs the
+            # binding's header. It brings no third-party dependency with it --
+            # that is the whole point of the runtime load. See D-039.
+            holocron::projectm
             # crystal_facet.cpp needs Crystal and the binding table. PUBLIC
             # because the facet's own header takes a Crystal by reference, so
             # anything using the renderer needs the type too.
