@@ -108,6 +108,31 @@ is taken automatically when a float framebuffer cannot be allocated, and a path
 nothing can reach on purpose is a path nobody finds out is broken. It is also how
 the number above was measured.
 
+**Switching crystal crossfades over 0.4 s, and that is the stack's second user.**
+The outgoing crystal keeps drawing, into layer 1, at falling opacity over the
+incoming one — bottom first, so the new crystal is underneath and the old one fades
+*off* it. A reload deliberately does **not** fade: it replaces a crystal with a
+recompiled version of itself, and a transition there would make every save look
+like a glitch. The second layer is allocated on the first switch and never given
+back, because freeing and reallocating 66 MB on the exact frame a transition begins
+is the worst possible moment for it.
+
+**A crossfade cannot be checked with a screenshot, and pretending otherwise wasted
+a measurement.** 0.4 s is roughly 24 frames; `--frames N --shot` writes the last
+one, and the wall-clock offset between launching the player and posting the switch
+is not controllable to that precision. Two runs a third of a second apart looked
+identical enough that "it works" and "it snaps instantly" were indistinguishable.
+What settled it was **temporarily raising the duration to 3 s** — where the timing
+slop stops mattering and the blend is unmistakable — and then **printing the
+measured length** on completion, which reads `crossfade done in 400 ms`. The
+picture proves the mechanism; the number proves the duration. Neither alone does.
+
+**A parked copy of a file restored with `Copy-Item` does not rebuild.** `Copy-Item`
+carries the *source's* timestamp, so restoring an older parked copy moves the file's
+mtime backwards and Ninja concludes the object is newer. The 3-second experiment
+above appeared to survive the restore for exactly this reason. Set the timestamp
+after restoring: `(Get-Item path).LastWriteTime = Get-Date`.
+
 **M5's behaviour is complete as of `v0.2.1`** and every part of it has been
 confirmed on the rack from the phone: casting, bit-perfect playback, auto-advance,
 skip both ways, `skipTo`, pause, seeking, shuffle, `refreshPlayQueue` (which is how

@@ -73,6 +73,13 @@ stack several glows: values above 1.0 survive to the compositing pass and are on
 clipped on the way to the screen, so a highlight that overshoots is not lost the
 moment it is written.
 
+**Write `1.0` in the alpha channel.** Every crystal in the vault ends with
+`frag_colour = vec4(colour, 1.0)` and that is not a formality. When your crystal is
+the one being faded out of during a switch, the compositor multiplies your alpha by
+the fade — so a crystal that writes `0.5` there is half transparent for the whole
+transition, and it will look like the crossfade is broken rather than like a choice
+you made.
+
 `u_time` **survives a hot reload**. Edit a colour, save, and any slow motion
 keeps running rather than snapping back to zero. It resets when you *switch* to a
 different crystal, because that one has never been on screen.
