@@ -45,8 +45,10 @@
 #include <holocron/art_texture.hpp>
 #include <holocron/audio_frame.hpp>
 #include <holocron/companion_server.hpp>
+#include <holocron/compositor.hpp>
 #include <holocron/crystal.hpp>
 #include <holocron/image_decode.hpp>
+#include <holocron/lyrics.hpp>
 #include <holocron/overlay_facet.hpp>
 #include <holocron/palette.hpp>
 #include <holocron/text_render.hpp>
@@ -54,6 +56,7 @@
 #include <holocron/gdm_responder.hpp>
 #include <holocron/plex_device.hpp>
 #include <holocron/plex_link.hpp>
+#include <holocron/render_target.hpp>
 #include <holocron/crystal_facet.hpp>
 #include <holocron/crystal_watch.hpp>
 #include <holocron/gatekeeper.hpp>
@@ -154,6 +157,27 @@ struct Options {
     // flag you forget -- leaving you editing a file the player is ignoring. The
     // negative form matches --no-audio.
     bool        no_watch = false;
+    // Draw straight to the window instead of through the layer stack.
+    //
+    // NOT A DEAD FLAG. That fallback exists whether or not anything can reach
+    // it -- a machine that cannot allocate a float framebuffer takes it -- and a
+    // path that cannot be reached on purpose is a path nobody ever finds out is
+    // broken. It is also the only way to measure what the compositor costs,
+    // which issue 139 asked for on this GPU rather than in the abstract.
+    //
+    // Same family as --no-audio, --no-discover and --no-watch: turn one
+    // subsystem off and see what the rest does without it.
+    bool        no_compositor = false;
+    // Draw the debug facet -- every AudioFrame field as bars and markers --
+    // instead of a crystal.
+    //
+    // It needs a flag because it had become UNREACHABLE. The only path to it was
+    // an empty vault and no --crystal, and the config's vault defaults to
+    // "crystals"; a vault that is missing or empty is fatal rather than a
+    // fallback. So on any normal setup the branch could not be entered, and the
+    // only way in was to point --config at a file that does not exist -- which
+    // also throws away the trim, the window size and the Plex token (issue 144).
+    bool        debug_facet = false;
     bool        help     = false;
 
     // WHICH OPTIONS WERE ACTUALLY TYPED.
@@ -263,6 +287,10 @@ Options parse(int argc, char** argv)
             o.no_audio = true;
         } else if (std::strcmp(a, "--no-watch") == 0) {
             o.no_watch = true;
+        } else if (std::strcmp(a, "--no-compositor") == 0) {
+            o.no_compositor = true;
+        } else if (std::strcmp(a, "--debug-facet") == 0) {
+            o.debug_facet = true;
         } else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
             o.help = true;
         } else if (a[0] != '-' && o.path == nullptr) {
@@ -318,6 +346,15 @@ void usage()
         "                 Prints every request the phone makes. Ctrl-C to stop\n"
         "  --no-discover  do not announce during this run, whatever the config says\n"
         "  --no-audio     decode and draw, but open no audio device\n"
+        "  --debug-facet  draw every AudioFrame field as bars and markers instead\n"
+        "                 of a crystal. The instrument that answers whether the\n"
+        "                 analysis is producing anything sane\n"
+        "  --no-compositor\n"
+        "                 draw straight to the window instead of through the\n"
+        "                 layer stack. The fallback a machine that cannot\n"
+        "                 allocate a float framebuffer takes anyway, reachable on\n"
+        "                 purpose so it can be tested and so the compositor's\n"
+        "                 cost can be measured\n"
         "  --frames N     render exactly N frames then exit\n"
         "  --shot PATH    write the last rendered frame to PATH as a BMP\n"
         "  --width W      window width in pixels (default 1280)\n"
@@ -347,6 +384,17 @@ void describe(const char* verb, const Crystal& crystal, const CrystalFacet& face
     }
 }
 
+// The beat-alignment instrument, by stem.
+//
+// NOT IN THE VAULT ON PURPOSE. It is a measuring tool rather than a
+// visualization, and a vault entry is something offered as a thing to watch a
+// record with. Two callers load it -- `--calibrate` and the control page's
+// tuning sub-page -- and they must name the same file, which is why this is a
+// constant rather than a literal in each of them.
+//
+// Relative to the working directory, exactly as `--calibrate` has always been.
+constexpr const char* kSyncStem = "instruments/sync";
+
 // Build a crystal from disk into a NEW facet, and swap only if it worked.
 //
 // A shader is broken for most of the time an author is editing it. Tearing the
@@ -364,8 +412,19 @@ void describe(const char* verb, const Crystal& crystal, const CrystalFacet& face
 //
 // Returns the crystal it swapped in, so the caller can re-point the watch at the
 // files that are now live.
+//
+// `out_previous`, when given, receives the facet that WAS live instead of it being
+// destroyed here. That is what makes a crossfade possible: the outgoing crystal has
+// to keep drawing, into its own layer, while the incoming one comes up underneath
+// it. A caller that does not pass one gets the old behaviour -- the outgoing
+// facet's GL objects go at the assignment below and the switch is a hard cut.
+//
+// It is left null for a RELOAD on purpose. A reload is not a transition; fading
+// between a crystal and a recompiled version of itself would make every save look
+// like a glitch.
 bool build_crystal(const char* stem, std::unique_ptr<CrystalFacet>& live, bool carry_time,
-                   const char* verb, Crystal& out)
+                   const char* verb, Crystal& out,
+                   std::unique_ptr<CrystalFacet>* out_previous = nullptr)
 {
     Crystal            crystal;
     std::string        detail;
@@ -388,6 +447,12 @@ bool build_crystal(const char* stem, std::unique_ptr<CrystalFacet>& live, bool c
 
     if (carry_time) {
         next->set_elapsed(live->elapsed());
+    }
+    if (out_previous != nullptr) {
+        // Handed over rather than dropped. Empty on the FIRST build of a run,
+        // where `live` holds a default-constructed facet that never compiled --
+        // so a caller must check ready() rather than assume a fade is possible.
+        *out_previous = std::move(live);
     }
     live = std::move(next);   // the old facet's GL objects go here, not before
 
@@ -640,6 +705,51 @@ struct CastCommand {
         out_index    = crystal_index;
         want_crystal = false;
         return true;
+    }
+
+    // -- tuning, from the control page's sub-page ---------------------------
+    //
+    // ACCUMULATED RATHER THAN REPLACED, which is the opposite of every other
+    // request here. A seek or a crystal switch is an absolute destination and
+    // only the newest one matters; a trim nudge is relative, so two taps that
+    // arrive between two frames have to be worth two steps. Keeping only the
+    // last would silently drop half of a fast sweep, and the symptom would be a
+    // control that feels like it misses presses.
+    double trim_delta = 0.0;
+
+    void request_trim(double delta_ms)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        trim_delta += delta_ms;
+    }
+
+    bool take_trim(double& out_delta)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (trim_delta == 0.0) {
+            return false;
+        }
+        out_delta  = trim_delta;
+        trim_delta = 0.0;
+        return true;
+    }
+
+    // Show the beat-alignment instrument. Compiles a program, so it has to cross
+    // to the render thread like every other crystal change.
+    bool want_sync = false;
+
+    void request_sync()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        want_sync = true;
+    }
+
+    bool take_sync()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const bool asked = want_sync;
+        want_sync        = false;
+        return asked;
     }
 
     // Tri-state for the same reason `pause` is: 0 nothing asked, 1 show, 2 hide.
@@ -972,6 +1082,100 @@ private:
 
     std::vector<Entry> cache_;
     std::uint64_t      hits_ = 0;
+};
+
+// The words, fetched off the render thread.
+//
+// SAME SHAPE AS ArtworkLoader AND FOR THE SAME REASONS -- two HTTPS round trips
+// cannot happen inside a 7 ms frame, and a generation counter is what stops the
+// lyrics of a track skipped past a second ago arriving after the next one has
+// started. Written as its own class rather than folded into ArtworkLoader
+// because the two fetch different things from different endpoints and only one
+// of them is worth caching: a sleeve repeats fifteen times across an album,
+// lyrics never repeat at all.
+class LyricsLoader {
+public:
+    ~LyricsLoader() { join(); }
+
+    void request(const PlayRequest& server, const PlexTrack& track)
+    {
+        join();
+
+        std::uint64_t generation = 0;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            generation_ += 1;
+            generation = generation_;
+            ready_     = false;
+            lyrics_    = Lyrics{};
+        }
+        if (track.rating_key.empty()) {
+            return;
+        }
+
+        worker_ = std::thread([this, server, track, generation] {
+            std::string body;
+            std::string detail;
+            bool        synced = false;
+
+            const HttpError err = fetch_lyrics(server, track, body, synced, detail);
+            if (err != HttpError::kOk) {
+                // A QUARTER OF A REAL LIBRARY HAS NO LYRICS, so kBadUrl is
+                // silent. Anything else is a server or a network problem and is
+                // worth one line -- but still not worth interrupting playback.
+                if (err != HttpError::kBadUrl) {
+                    std::fprintf(stderr, "holocron: no lyrics for \"%s\" -- %s\n",
+                                 track.title.c_str(), detail.c_str());
+                }
+                return;
+            }
+
+            const Lyrics parsed = parse_lyrics(body, synced);
+
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (generation != generation_) {
+                return;   // a newer track has been asked for; this answer is stale
+            }
+            lyrics_ = parsed;
+            ready_  = true;
+        });
+    }
+
+    bool take(Lyrics& out)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (!ready_) {
+            return false;
+        }
+        out    = std::move(lyrics_);
+        lyrics_ = Lyrics{};
+        ready_ = false;
+        return true;
+    }
+
+    // Called before a track is replaced, exactly as the artwork loader is: an
+    // answer for a track that is no longer playing must not land.
+    void abandon()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        generation_ += 1;
+        ready_ = false;
+        lyrics_ = Lyrics{};
+    }
+
+    void join()
+    {
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+    }
+
+private:
+    std::thread        worker_;
+    mutable std::mutex mutex_;
+    std::uint64_t      generation_ = 0;
+    bool               ready_      = false;
+    Lyrics             lyrics_;
 };
 
 extern "C" void on_interrupt(int)
@@ -1352,7 +1556,17 @@ int main(int argc, char** argv)
     // --calibrate is --crystal instruments/sync with the arrow keys live. Set
     // here rather than in parse() so an explicit --crystal still wins.
     if (opt.calibrate && opt.crystal == nullptr) {
-        opt.crystal = "instruments/sync";
+        opt.crystal = kSyncStem;
+        opt.vault   = nullptr;
+    }
+
+    // --debug-facet is "no crystal at all", which is the state the debug facet
+    // draws in. Set here for the same reason --calibrate is: the vault arrives
+    // from the config a few lines above, and clearing it in parse() would be
+    // undone by that. Loses to --calibrate, which is the more specific request
+    // and names a crystal of its own.
+    if (opt.debug_facet && !opt.calibrate) {
+        opt.crystal = nullptr;
         opt.vault   = nullptr;
     }
 
@@ -1401,6 +1615,8 @@ int main(int argc, char** argv)
     companion.set_lyrics_handler([&cast](bool visible) { cast.request_lyrics(visible); });
     companion.set_now_playing_handler(
         [&cast](bool visible) { cast.request_now_playing(visible); });
+    companion.set_trim_handler([&cast](double delta_ms) { cast.request_trim(delta_ms); });
+    companion.set_sync_handler([&cast] { cast.request_sync(); });
 
     // Linking comes before discovery: it needs the machine identifier and
     // nothing else, and a run that is signing in has no business also
@@ -1482,7 +1698,9 @@ int main(int argc, char** argv)
     if (opt.path != nullptr) {
         NowPlaying  what;
         what.source = opt.path;
-        what.title  = opt.path;
+        // TITLE DELIBERATELY LEFT EMPTY so the container's tags win. It used to be
+        // set to the path, which is not a title and -- because start() only fills
+        // fields the caller left blank -- would have suppressed the tag that is.
 
         std::string detail;
         const SessionError serr = session.start(opt.path, 0, what, detail);
@@ -1509,6 +1727,16 @@ int main(int argc, char** argv)
     wc.title  = "holocron -- debug facet";
     wc.width  = opt.width;
     wc.height = opt.height;
+
+    // FROM THE CONFIG, WHICH IS WHERE THEY ALWAYS CLAIMED TO COME FROM.
+    //
+    // Both keys were parsed, validated and then dropped on the floor -- Window
+    // does the right thing with them and nothing handed them over, so setting
+    // `vsync = false` had no effect and never had (issue 141). When no config
+    // was found, `cfg` holds the same defaults WindowConfig does, so this is a
+    // no-op in that case rather than a second source of truth.
+    wc.vsync    = cfg.vsync;
+    wc.gl_debug = cfg.gl_debug;
 
     Window window;
     const WindowError werr = window.open(wc);
@@ -1540,6 +1768,13 @@ int main(int argc, char** argv)
     // in without the live one having been torn down first. See build_crystal.
     auto                        crystal_facet   = std::make_unique<CrystalFacet>();
     bool                        drawing_crystal = false;
+
+    // The beat instrument is up, so `current` no longer describes what is on
+    // screen. Tracked rather than inferred, because the hot reload has to know
+    // WHICH FILE to reload -- and reloading the vault entry while the instrument
+    // is showing would swap the picture out from under the person measuring with
+    // it, on their next save of anything.
+    bool                        showing_sync    = false;
     std::optional<CrystalWatch> watch;
 
     // The vault, and where in it we are. --crystal is a vault of one, so there
@@ -1693,12 +1928,78 @@ int main(int argc, char** argv)
         }
     }
 
+    // -- the layer stack ------------------------------------------------------
+    //
+    // The picture is drawn into an off-screen layer and then composited onto the
+    // window, which is what M3 needs and what nothing before it could do: two
+    // things that both draw straight to the screen cannot be blended,
+    // crossfaded, or stacked.
+    //
+    // NOT FATAL IF IT FAILS. `layered` falls back to drawing straight to the
+    // window, which is exactly what the player did before this existed. A
+    // machine that cannot allocate a float framebuffer should still play music
+    // and draw a crystal.
+    Compositor compositor;
+    bool       layered = false;
+    if (!opt.no_compositor) {
+        std::string log;
+        layered = compositor.init(log);
+        if (!layered) {
+            std::fprintf(stderr, "holocron: no compositor -- %s\n"
+                                 "holocron: drawing straight to the window\n",
+                         log.c_str());
+        }
+    }
+
+    // -- crossfading between crystals -----------------------------------------
+    //
+    // Switching used to be a hard cut: the facet was replaced and the picture
+    // changed between one frame and the next. The outgoing crystal is now kept
+    // and drawn into a second layer at falling opacity, over the incoming one.
+    //
+    // BOTTOM FIRST, so the new crystal is underneath and the old one fades OFF
+    // it. The other way round would have the new crystal fading in over a static
+    // old one, which reads as a dissolve into the picture rather than out of it.
+    std::unique_ptr<CrystalFacet>         outgoing;
+    std::chrono::steady_clock::time_point fade_started{};
+
+    // Long enough to read as a transition, short enough that pressing the arrow
+    // key twice in a row does something sensible. Judged from a screenshot taken
+    // mid-fade rather than from the number.
+    constexpr float kFadeSeconds = 0.40f;
+
+    // ONE LAYER UNTIL SOMETHING NEEDS TWO, AND THEN TWO FOREVER.
+    //
+    // A layer nothing writes into is 66 MB of video memory at 4K that no pixel is
+    // ever read from, so the second is not allocated until the first switch. It
+    // is not given back afterwards either: freeing it at the end of every fade
+    // and allocating it again at the start of the next would put a 66 MB
+    // allocation on the exact frame a transition begins.
+    std::size_t layers_wanted = 1;
+
+    // Printed when it changes, because this is the branch the whole render path
+    // turns on and a branch no log prints is a branch that cannot be diagnosed.
+    std::size_t announced_layers = 0;
+    bool        announced_direct = false;
+
     bool          show_now_playing = false;
     TextureHandle title_texture    = 0;
     TextureHandle artist_texture   = 0;
     int           title_w = 0, title_h = 0;
     int           artist_w = 0, artist_h = 0;
     std::string   drawn_for_title;   // what the textures currently say
+
+    // -- lyrics (issue 122) ---------------------------------------------------
+    //
+    // ONE LINE AT A TIME, RASTERIZED WHEN IT CHANGES. A synced lyric changes a
+    // few times a minute, so rasterizing per frame would be a GDI call and a
+    // texture upload inside a 7 ms budget for words that have not moved. Compared
+    // by STRING rather than by index, so a repeated chorus line does not
+    // re-rasterize identical pixels.
+    Lyrics        song;
+    TextureHandle lyric_texture = 0;
+    int           lyric_w = 0, lyric_h = 0;
+    std::string   drawn_lyric;
 
     // Rebuild the card's textures. Called when the track changes, and only then.
     const auto build_card = [&](const std::string& title, const std::string& artist) {
@@ -1754,6 +2055,7 @@ int main(int argc, char** argv)
     // into the context happen here.
     TrackContext  track_context{};
     ArtworkLoader artwork;
+    LyricsLoader  lyrics;
 
     // The neutral ramp until a sleeve arrives, and after one fails. A crystal
     // must never see a palette of zeroes -- see neutral_palette().
@@ -1791,11 +2093,26 @@ int main(int argc, char** argv)
         if (!track.thumb.empty() || !track.album_thumb.empty()) {
             artwork.request(server, track);
         }
+
+        // Same reasoning as the sleeve: the previous track's words on screen over
+        // the new one is worse than none at all, and worse still because they can
+        // be read.
+        lyrics.abandon();
+        song = Lyrics{};
+        drawn_lyric = std::string();
+        release_art(lyric_texture);
+        lyric_w = lyric_h = 0;
+        lyrics.request(server, track);
     };
 
     // Nothing is playing any more.
     const auto forget_track = [&] {
         artwork.abandon();
+        lyrics.abandon();
+        song = Lyrics{};
+        drawn_lyric = std::string();
+        release_art(lyric_texture);
+        lyric_w = lyric_h = 0;
         release_art(track_context.album_art_texture);
         track_context.has_art = false;
         track_context.title.clear();
@@ -2334,6 +2651,20 @@ int main(int argc, char** argv)
         // program is on this thread. The fetch and the decode already happened
         // elsewhere; what is left costs one texture creation per track.
         {
+            // -- the words --------------------------------------------------
+            //
+            // Taken here rather than where the sleeve is uploaded because there
+            // is nothing to upload: the fetch produces a parsed structure and
+            // the rasterizing happens when the line changes, which is a
+            // different event.
+            if (Lyrics fetched; lyrics.take(fetched)) {
+                song = std::move(fetched);
+                std::printf("holocron: %zu lyric line(s) for \"%s\"%s\n", song.lines.size(),
+                            track_context.title.c_str(),
+                            song.synced ? "" : " -- no timing, so no scrolling");
+                std::fflush(stdout);
+            }
+
             ImageRgba8 art;
             Palette    art_palette;
             if (artwork.take(art, art_palette)) {
@@ -2352,26 +2683,36 @@ int main(int argc, char** argv)
 
         track_context.playing = playing;
 
-        // A FILE PLAYED FROM THE COMMAND LINE HAS NO METADATA AT ALL.
+        // A FILE PLAYED FROM THE COMMAND LINE FILLS TrackContext FROM ITS TAGS.
         //
-        // TrackContext is populated by begin_track, which only a cast reaches --
-        // so `holocron track.flac` left the title empty and the card silently drew
-        // nothing while reporting itself switched on. Found by rendering it, not by
-        // reading the code.
+        // TrackContext is otherwise populated by begin_track, which only a cast
+        // reaches -- so `holocron track.flac` used to leave everything empty and
+        // the card drew nothing while reporting itself switched on.
         //
-        // The filename is a poor title and an honest one. Reading tags out of the
-        // container would be better and is issue 133; this is the fallback that
-        // makes the overlay work today rather than a substitute for it.
+        // The session has already read the container's tags by the time it is
+        // active (issue 133), so this is a copy rather than any work. The filename
+        // remains the fallback for a file with no tags at all, which is common
+        // enough to be worth handling and honest enough to show.
         if (track_context.title.empty() && session.active()) {
-            const std::string& source = session.now_playing().title;
-            const std::size_t  slash  = source.find_last_of("/\\");
-            std::string        name =
-                slash == std::string::npos ? source : source.substr(slash + 1);
-            const std::size_t dot = name.find_last_of('.');
-            if (dot != std::string::npos && dot > 0) {
-                name = name.substr(0, dot);
+            const NowPlaying& np = session.now_playing();
+            track_context.artist = np.artist;
+            track_context.album  = np.album;
+            track_context.genre  = np.genre;
+            track_context.year   = np.year;
+
+            if (!np.title.empty()) {
+                track_context.title = np.title;
+            } else {
+                const std::string& source = np.source;
+                const std::size_t  slash  = source.find_last_of("/\\");
+                std::string        name =
+                    slash == std::string::npos ? source : source.substr(slash + 1);
+                const std::size_t dot = name.find_last_of('.');
+                if (dot != std::string::npos && dot > 0) {
+                    name = name.substr(0, dot);
+                }
+                track_context.title = name;
             }
-            track_context.title = name;
         }
 
         // The card's words, rebuilt only when they change. Compared as a string
@@ -2391,8 +2732,16 @@ int main(int argc, char** argv)
         // handful of short strings and nothing else.
         if (const int asked = cast.take_lyrics(); asked != 0) {
             lyrics_visible = asked == 1;
-            std::printf("holocron: lyrics %s (nothing to show yet -- issue 122)\n",
-                        lyrics_visible ? "on" : "off");
+            // SAYS WHY WHEN THERE IS NOTHING TO SHOW. A quarter of this library
+            // has no lyric stream and a third has one with no timing, so a toggle
+            // that turns on and produces nothing is the COMMON case rather than a
+            // fault -- and indistinguishable from a broken toggle unless it says
+            // so.
+            const char* why = !lyrics_visible          ? ""
+                              : song.lines.empty()     ? " -- this track has none"
+                              : !song.synced           ? " -- this track's lyrics have no timing"
+                                                       : "";
+            std::printf("holocron: lyrics %s%s\n", lyrics_visible ? "on" : "off", why);
             std::fflush(stdout);
         }
         if (const int asked = cast.take_now_playing(); asked != 0) {
@@ -2401,20 +2750,49 @@ int main(int argc, char** argv)
             std::fflush(stdout);
         }
         {
-            CompanionServer::ControlState control_state;
-            control_state.crystals.reserve(vault.size());
+            // DESCRIPTIVE FIELDS ONLY. `current` and the toggles are owned by the
+            // control page's POST handlers -- pushing them from here every frame is
+            // what made the page race against itself and flip-flop on alternate
+            // taps. See CompanionServer::set_control_info.
+            std::vector<std::string> names;
+            names.reserve(vault.size());
             for (const VaultEntry& entry : vault) {
-                control_state.crystals.push_back(entry.name);
+                names.push_back(entry.name);
             }
-            control_state.current        = current;
-            control_state.title          = track_context.title;
-            control_state.artist         = track_context.artist;
-            control_state.lyrics_visible      = lyrics_visible;
-            control_state.now_playing_visible = show_now_playing;
-            control_state.has_art        = track_context.has_art;
-            companion.set_control_state(control_state);
+            companion.set_control_info(names, track_context.title, track_context.artist,
+                                       track_context.has_art);
+            companion.set_control_tuning(trim_ms, headroom_ms, showing_sync, opt.config);
         }
 
+        // -- the trim, moved from the phone --------------------------------------
+        //
+        // The same value --calibrate moves with the arrow keys, and it has to be
+        // reachable from where the judgement is actually made: on the couch,
+        // watching the picture against the sound, a room away from the keyboard.
+        //
+        // Clamped to the same ±2 s the flag would accept. A relative control with
+        // no bound can be walked anywhere by holding a button.
+        if (double delta = 0.0; cast.take_trim(delta)) {
+            trim_ms = std::clamp(trim_ms + delta, -2000.0, 2000.0);
+            trim_us = static_cast<std::int64_t>(trim_ms * 1000.0);
+            if (trim_ms < 0.0 && -trim_ms >= headroom_ms && headroom_ms > 0.0) {
+                std::printf("holocron: trim_ms = %.0f  -- AT THE FLOOR, only %.0f ms of lead "
+                            "exists; the picture cannot be advanced further\n",
+                            trim_ms, headroom_ms);
+            } else {
+                std::printf("holocron: trim_ms = %.0f  (lead available: %.0f ms)\n", trim_ms,
+                            headroom_ms);
+            }
+            std::fflush(stdout);
+        }
+
+        // -- switching and hot reload -------------------------------------------
+        //
+        // BEFORE anything is bound. Building a program needs no framebuffer, and a
+        // switch is what STARTS a crossfade -- so it has to have happened before
+        // the frame works out how many layers it needs. With this after the bind,
+        // the first frame of every transition showed the incoming crystal at full
+        // opacity: a flash of the new picture, then the old one coming back.
         if (drawing_crystal) {
             // Switching, then reloading, both here rather than on their own
             // thread: building a program needs the GL context, which belongs to
@@ -2437,14 +2815,53 @@ int main(int argc, char** argv)
                 switching = true;
             }
 
+            // THE BEAT INSTRUMENT IS NOT IN THE VAULT, on purpose: it is a
+            // measuring tool, not a visualization, and putting it in the crystal
+            // list would offer it as something to watch a record with. It is
+            // loaded by stem, the same way --calibrate loads it.
+            //
+            // While it is up, `current` no longer describes what is on screen, so
+            // the page is told -- otherwise it highlights a crystal that is not
+            // running, which is the exact lie the control-page race fix was about.
+            if (cast.take_sync()) {
+                Crystal crystal;
+                std::unique_ptr<CrystalFacet> previous;
+                if (build_crystal(kSyncStem, crystal_facet, false, "beat instrument", crystal,
+                                  layered ? &previous : nullptr)) {
+                    showing_sync = true;
+                    if (previous && previous->ready() && layered) {
+                        outgoing      = std::move(previous);
+                        fade_started  = std::chrono::steady_clock::now();
+                        layers_wanted = 2;
+                    }
+                    if (watch) {
+                        watch.emplace(crystal.manifest_path, crystal.shader_path,
+                                      std::chrono::steady_clock::now());
+                    }
+                } else {
+                    // build_crystal has already said why. Worth one more line
+                    // because the likeliest cause is a working directory without
+                    // an instruments/ beside it, which is not obvious from
+                    // "crystal not found" on a phone in another room.
+                    std::fprintf(stderr,
+                                 "holocron: %s is loaded relative to the working directory; "
+                                 "run holocron from the directory that has instruments/\n",
+                                 kSyncStem);
+                }
+            }
+
             if (std::size_t asked = 0; cast.take_crystal(asked)) {
                 // OUT OF RANGE IS IGNORED, NOT CLAMPED. The page is rendered from
                 // the vault so its indices are always valid, but the request
                 // arrives over HTTP and anyone on the LAN can send one. Clamping
                 // would silently switch to a crystal nobody asked for.
                 if (asked < vault.size()) {
-                    wanted    = asked;
-                    switching = wanted != current;
+                    wanted = asked;
+                    // A vault entry is ALWAYS a switch while the instrument is up,
+                    // even to the index that was current before it -- otherwise
+                    // "already on pulse" is reported and the instrument stays on
+                    // screen, which is a control that does nothing.
+                    switching = wanted != current || showing_sync;
                     if (!switching) {
                         std::printf("holocron: already on \"%s\"\n", vault[current].name.c_str());
                         std::fflush(stdout);
@@ -2452,16 +2869,45 @@ int main(int argc, char** argv)
                 } else {
                     std::fprintf(stderr, "holocron: no crystal %zu in a vault of %zu\n", asked,
                                  vault.size());
+                    // The page set itself optimistically to an index this vault does
+                    // not have. Put it back, or it keeps showing a selection that
+                    // was refused.
+                    companion.set_current_crystal(current);
                 }
             }
 
             if (switching) {
-                current = wanted;
+                current      = wanted;
+                showing_sync = false;
+                // Pushed so the control page follows the ARROW KEYS too. The page
+                // already knows about its own POSTs; this is the other direction.
+                companion.set_current_crystal(current);
+
+                // What was on screen a moment ago, kept rather than destroyed, so
+                // it can be drawn fading out over the new one.
+                //
+                // A SECOND SWITCH MID-FADE REPLACES IT rather than stacking a
+                // third facet: `previous` is then the crystal that was itself
+                // fading in, which is what is mostly on screen, so fading from
+                // that is right. The one it displaces is dropped, which is a small
+                // jump in something already at low opacity.
+                std::unique_ptr<CrystalFacet> previous;
 
                 Crystal crystal;
-                if (build_crystal(vault[current].stem.c_str(), crystal_facet, false, "switched to",
-                                  crystal) &&
-                    watch) {
+                const bool built = build_crystal(vault[current].stem.c_str(), crystal_facet,
+                                                 false, "switched to", crystal,
+                                                 layered ? &previous : nullptr);
+
+                // Only when there is a stack to draw it into. Without a
+                // compositor the switch stays the hard cut it always was, which
+                // is also what --no-compositor gets.
+                if (built && previous && previous->ready() && layered) {
+                    outgoing      = std::move(previous);
+                    fade_started  = std::chrono::steady_clock::now();
+                    layers_wanted = 2;
+                }
+
+                if (built && watch) {
                     // The watch has to follow, or an author would edit the
                     // crystal on screen and see the one they left get reloaded.
                     watch.emplace(crystal.manifest_path, crystal.shader_path,
@@ -2473,18 +2919,109 @@ int main(int argc, char** argv)
             // so calling it every frame costs nothing.
             if (watch && watch->poll(std::chrono::steady_clock::now())) {
                 Crystal crystal;
-                build_crystal(vault[current].stem.c_str(), crystal_facet, true, "reloaded",
+                build_crystal(showing_sync ? kSyncStem : vault[current].stem.c_str(),
+                              crystal_facet, true, "reloaded",
                               crystal);
             }
-            crystal_facet->draw(frame, track_context, window.width(), window.height());
+        }
+
+        // -- how far through a crossfade ----------------------------------------
+        //
+        // 1 at the moment of the switch, 0 when it is over. One value decides both
+        // whether the outgoing crystal is drawn and how it is composited, so the
+        // two cannot disagree.
+        float fade = 0.0f;
+        if (outgoing && outgoing->ready()) {
+            const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - fade_started)
+                                   .count();
+            fade = 1.0f - static_cast<float>(since) / (kFadeSeconds * 1000.0f);
+            if (fade <= 0.0f) {
+                fade = 0.0f;
+                outgoing.reset();   // its GL objects go here, once it is invisible
+
+                // The MEASURED length, not the constant. A transition is a thing
+                // you can only judge while it is happening, so the one number
+                // that says whether it ran at all -- and for how long -- has to
+                // survive the moment. It is also how this was checked: the fade
+                // is far too short to catch reliably in a screenshot, and two
+                // runs a third of a second apart looked identical enough that
+                // "it works" and "it snaps instantly" were indistinguishable.
+                std::printf("holocron: crossfade done in %lld ms\n",
+                            static_cast<long long>(since));
+                std::fflush(stdout);
+            }
+        }
+        const bool fading = fade > 0.0f;
+
+        // -- where the picture goes ----------------------------------------------
+        //
+        // Into layer 0 when there is a stack, straight to the window when there is
+        // not. The fallback is not a courtesy: a machine that cannot allocate a
+        // float framebuffer should still play music and draw a crystal, and this
+        // is exactly what the player did before M3.
+        //
+        // draw_w/draw_h is what u_resolution means -- the size of the thing the
+        // crystal is drawing INTO, which is the layer when there is one. Equal to
+        // the window today, and kept as its own pair of values because a layer at
+        // a fraction of the screen is left open (decision 2 of issue 139).
+        const bool into_layer = layered &&
+                                compositor.resize(layers_wanted, window.width(),
+                                                  window.height()) &&
+                                compositor.bind_layer(0);
+        if (!into_layer) {
+            // Bound explicitly rather than left wherever the last frame put it.
+            RenderTarget::bind_default(window.width(), window.height());
+        }
+        const int draw_w = into_layer ? compositor.width() : window.width();
+        const int draw_h = into_layer ? compositor.height() : window.height();
+
+        if (into_layer && announced_layers != layers_wanted) {
+            announced_layers = layers_wanted;
+            std::printf("holocron: compositing %zu layer%s of %dx%d RGBA16F\n", layers_wanted,
+                        layers_wanted == 1 ? "" : "s", draw_w, draw_h);
+            std::fflush(stdout);
+        } else if (!into_layer && !announced_direct) {
+            announced_direct = true;
+            std::printf("holocron: drawing straight to the window, %dx%d\n", draw_w, draw_h);
+            std::fflush(stdout);
+        }
+
+        // -- the picture ---------------------------------------------------------
+
+        if (drawing_crystal) {
+            crystal_facet->draw(frame, track_context, draw_w, draw_h);
+
+            // The crystal being left, into layer 1, still moving. Freezing it
+            // would make the outgoing half of a transition look like a stall
+            // rather than a fade -- it is still on screen, so it still has to be
+            // alive. It is fed the same AudioFrame, because it is the same moment.
+            if (fading && into_layer && compositor.bind_layer(1)) {
+                outgoing->draw(frame, track_context, draw_w, draw_h);
+            }
         } else {
-            facet.draw(frame, window.width(), window.height(), playing);
+            facet.draw(frame, draw_w, draw_h, playing);
+        }
+
+        // -- the layers become the picture --------------------------------------
+        //
+        // Binds the window's framebuffer, clears it, and draws the stack onto it
+        // bottom first. Everything after this point is drawing on the window
+        // again, which is what the overlay and the shot both need.
+        if (into_layer) {
+            const LayerState states[] = {
+                LayerState{1.0f, LayerBlend::kNormal, true},    // the crystal now
+                LayerState{fade, LayerBlend::kNormal, fading},  // the one being left
+            };
+            compositor.composite(std::span<const LayerState>(states, fading ? 2u : 1u),
+                                 window.width(), window.height());
         }
 
         // -- the now-playing card ---------------------------------------------
         //
         // AFTER the picture and before the swap, which is the whole reason this is
         // a separate facet: it composites over whatever drew, crystal or debug.
+        // Outside the layer stack on purpose -- see compositor.hpp.
         if (overlay_ready && show_now_playing && title_texture != 0) {
             // Rebuilt only when the words change. Comparing the string rather
             // than watching track_changed_this_frame because a seek or a crystal
@@ -2526,6 +3063,85 @@ int main(int argc, char** argv)
             if (artist_texture != 0) {
                 overlay.draw(artist_texture, left, base - artist_h, artist_w, artist_h,
                              glm::vec3(0.80f), 0.85f, sw, sh);
+            }
+        }
+
+        // -- the lyric line ----------------------------------------------------
+        //
+        // ONE LINE, CENTRED, ABOVE THE NOW-PLAYING CARD. Not a scrolling column
+        // of them: on a projector seen from a couch the line being sung has to be
+        // findable in the time it takes to glance up, and a block of text with one
+        // line highlighted makes that a search rather than a read. The words are
+        // the visualization's guest, not its subject.
+        //
+        // Unsynced lyrics deliberately draw NOTHING. A third of this library has
+        // only a text block, and a static wall of words over a moving picture is
+        // not what was asked for -- the toggle simply has nothing to show, which
+        // the log says once per track.
+        if (overlay_ready && lyrics_visible && song.synced && !song.lines.empty()) {
+            const std::size_t index = lyric_index_at(song, timeline.time_ms);
+
+            // lines.size() is "the first line is not yet due", which is an
+            // ordinary state during an intro and is not an index.
+            const std::string want = index < song.lines.size() ? song.lines[index].text
+                                                               : std::string();
+
+            if (want != drawn_lyric) {
+                drawn_lyric = want;
+                release_art(lyric_texture);
+                lyric_texture = 0;
+                lyric_w = lyric_h = 0;
+
+                if (!want.empty()) {
+                    TextRequest req;
+                    req.text         = want;
+                    req.pixel_height = 44;
+                    req.bold         = false;
+
+                    ImageRgba8  bitmap;
+                    std::string detail;
+                    if (render_text(req, bitmap, detail) == TextError::kOk) {
+                        lyric_texture = upload_art(bitmap);
+                        lyric_w       = bitmap.width;
+                        lyric_h       = bitmap.height;
+                    }
+                }
+            }
+
+            if (lyric_texture != 0 && lyric_w > 0) {
+                const int sw = window.width();
+                const int sh = window.height();
+
+                // A LINE CAN BE WIDER THAN THE SCREEN, and a projector cropping
+                // the end of a lyric is worse than shrinking it: the missing words
+                // are the ones that finish the thought. Scaled to fit rather than
+                // wrapped, because wrapping needs a layout engine this project
+                // does not have and a two-line lyric changes the position of every
+                // other element on screen.
+                const int max_w = sw - sh / 8;
+                int       w     = lyric_w;
+                int       h     = lyric_h;
+                if (w > max_w && max_w > 0) {
+                    h = h * max_w / w;
+                    w = max_w;
+                }
+
+                const int x = (sw - w) / 2;
+                const int y = sh - sh / 4 - h;
+
+                // Tinted from the record like the card, and drawn over its own
+                // scrim: antialiased type over a crystal is illegible wherever the
+                // picture is bright, and a crystal is bright somewhere by design.
+                overlay.fill(x - sh / 40, y - sh / 80, w + sh / 20, h + sh / 40,
+                             glm::vec3(0.0f), 0.42f, sw, sh);
+
+                const glm::vec3 ink =
+                    track_context.has_art
+                        ? glm::vec3(linear_to_srgb(track_context.palette_accent.r),
+                                    linear_to_srgb(track_context.palette_accent.g),
+                                    linear_to_srgb(track_context.palette_accent.b))
+                        : glm::vec3(0.97f);
+                overlay.draw(lyric_texture, x, y, w, h, ink, 1.0f, sw, sh);
             }
         }
 

@@ -54,15 +54,17 @@ tested:
 | Tap placement | `FrameHistory` — bounded history selectable **by position**, so the frame drawn is the one the speakers are producing. Measured 51 ms of correction against newest-wins (#53). **Heap-allocate it**: 128 `AudioFrame`s is ~1.38 MB, larger than the default stack. |
 | PCM handoff | `PcmRing` — lock-free SPSC ring, decode thread to audio callback. Lossless and ordered, which is the opposite of `TripleBuffer`'s job. |
 | Sink | `WasapiSink` — **exclusive mode verified bit-perfect on the rack**, 160-frame period, plus a shared-mode fallback. `SdlSink` behind it, exercised headless in CI through SDL's dummy driver. Chosen at runtime through the interface. |
-| Render | `Window` (GL 4.5 core, KHR_debug) and `DebugFacet`, drawing every field as bars and markers. |
+| Render | `Window` (GL 4.5 core, KHR_debug) and `DebugFacet`, drawing every field as bars and markers — **`--debug-facet`**, which it needs because the config's vault defaults to `crystals` and there was otherwise no command line that reached it (issue 144). |
+| Compositor | **M3's first step.** The picture is drawn into a `RenderTarget` — an FBO with one `GL_RGBA16F` colour texture — and a `Compositor` pass draws the stack onto the window. Float, not 8-bit, because crystals exceed 1.0 before their vignette and an 8-bit layer would clip differently depending on what else was on screen. **Measured at 0.06 ms per frame at 4K** on the RX 6800, against a 16.7 ms budget. `--no-compositor` draws straight to the window, which is also the fallback if a float framebuffer cannot be allocated. |
 | Crystals | **M2's plumbing is done and three crystals ship.** A crystal is `<stem>.frag` + `<stem>.toml`; the manifest binds uniforms to `AudioFrame` fields BY NAME, validated at load. `pulse` is the reference instrument, `drift` is weather, `duel` is two stick figures fighting on the beat. A test loads the vault so it cannot rot. |
 | Beat grid | **`beat_phase` lands ON the beat** — measured at 0.0 ms median against a real track, quartiles also zero. It was a per-track error of up to 100 ms until #94: the phase was nudged by every onset, so ordinary off-beat content dragged it. Now estimated by correlating seconds of onset history against a pulse train, with the analysis's own ~28 ms flux lag compensated. |
-| Control surface | **`GET /control` on the Companion port** — a phone-browser page that switches crystals and toggles overlays. Plain form POSTs with a 303 back, so it works with no JavaScript and a reload always shows the truth. Starts even with `--no-discover`: not announcing is not the same as not listening. |
+| Control surface | **`GET /control` on the Companion port** — a phone-browser page that switches crystals and toggles overlays, plus **`/control/tuning`** for the A/V trim and the beat instrument. Plain form POSTs with a 303 back, so it works with no JavaScript and a reload always shows the truth. Starts even with `--no-discover`: not announcing is not the same as not listening. |
 | Text | `render_text` — the **platform** rasterizer behind `_WIN32`, no font dependency, same trade as WASAPI and WinHTTP. Returns white with the coverage in alpha so the caller tints it. `OverlayFacet` composites it over whatever drew. Needs a platform layer at M8, like the audio backend. |
+| Lyrics | `parse_lyrics` reads LRC; `choose_lyric_stream` picks the right `streamType=4` off the track's metadata. **Two tracks in five ADVERTISE timed lyrics** — 16 synced, 14 text-only, 10 with none, from a 40-track sample of 50,414. **Advertised is not the same as fetchable**: the body 404s often, so that is the ceiling and not the rate. One line at a time, centred, rasterized only when the line changes. Unsynced lyrics draw **nothing**: a static wall of words over a moving picture is not what was asked for. |
 | Hot reload | `CrystalWatch` — saving the `.frag` or `.toml` rebuilds it in place, on by default with `--crystal`. A shader that fails to compile is reported and the running one keeps drawing; `u_time` carries across. |
 | Vault | `scan_vault` — `--vault DIR` loads every crystal in a directory, arrow keys move between them. Ordered **by manifest name**, because `directory_iterator` order differs between Windows and Linux. One broken crystal is reported and skipped, never fatal. `--crystal` is a vault of one, so both share a single path. |
 | Config | `gatekeeper.toml`, read at startup. Audio backend, `trim_ms`, window size, vsync, GL debug and the vault path are **live**; the rest of the example file is still specification. Flags beat the file, the file beats the defaults. |
-| Calibration | `holocron <track> --calibrate` draws `instruments/sync` and moves `trim_ms` with the arrow keys **while the track plays**, then prints the lines to paste into `gatekeeper.toml`. |
+| Calibration | `holocron <track> --calibrate` draws `instruments/sync` and moves `trim_ms` with the arrow keys **while the track plays**, then prints the lines to paste into `gatekeeper.toml`. The same two controls are on the phone at **`/control/tuning`**, which is where the judgement is actually made — the trim buttons send a *delta* rather than a value, so a stale page still applies the right change. |
 | Discovery | `GdmResponder` announces over multicast; `CompanionServer` (cpp-httplib) serves `/resources`, the timeline endpoints and `playMedia`. `holocron --discover` runs discovery alone, headless, for diagnosis. |
 | Account | `holocron --link` signs in through the plex.tv PIN flow — **no password is ever typed into Holocron**. Registration and connection publishing then happen at every startup. |
 | Playback | `PlaybackSession` owns the decoder, analysis, ring, device and decode thread, and can be **started and replaced**. A cast starts one; `stop` stops it. `holocron` with no track opens the window and waits to be cast to. |
@@ -70,6 +72,67 @@ tested:
 | Palette | `extract_palette` — five swatches, a primary and a contrast accent, in **linear** RGB. "Dominant" is deliberately *not* "most common": the most common colour on a sleeve is the border, so population is weighted towards saturated mid-luminance colour, with a floor so a monochrome sleeve still yields something. Buckets in sRGB, answers in linear. |
 | Album art | `decode_image` — JPEG via `avcodec`, colour conversion **hand-rolled** because `vcpkg.json` deliberately excludes `swscale`. PNG is refused cleanly: it needs zlib, which the same `default-features: false` line excludes ([#116](https://github.com/roguen/holocron/issues/116)). Plex serves JPEG through its photo transcoder, so nothing is blocked. |
 | Executables | `holocron` — the player. `holocron-analyze` — the offline harness. |
+
+### M3 has started, and four things about the compositor are worth knowing
+
+**The layers belong to the compositor, not to the facets.** The obvious
+arrangement is for each facet to own the surface it draws into, and it is wrong
+here: hot reload builds a *second* `CrystalFacet` on every save and swaps it in
+only if it compiled, so a facet-owned target would be reallocated on every
+keystroke-and-save — a fresh 66 MB surface and a black frame in the middle of the
+motion the author is trying to judge. With the target owned by the compositor,
+`CrystalFacet` and `DebugFacet` were **unchanged** by the move to layers, which is
+the check on the decision. See D-036.
+
+**The cost was measured, not assumed: 0.06 ms per frame at 3840×2160.** Three
+repetitions, `pulse` and `duel`, timed as the slope between 500 and 4000 frames so
+process startup cancels out. `pulse` went 0.238 → 0.300 ms and `duel` 1.299 →
+1.356 ms, and the two agreeing on the increment is what says it is a fixed extra
+pass rather than anything proportional to the crystal.
+
+That is far below what the arithmetic predicts. The extra traffic is about 132 MB
+per frame, which at 0.06 ms is 2.2 TB/s — well above the card's 512 GB/s of VRAM
+bandwidth, so it cannot be coming from VRAM. The RX 6800's **128 MB Infinity
+Cache** holds a 66 MB layer comfortably, which is the only thing that fits the
+number. **Do not carry this figure to another GPU**, and specifically not to the
+Shield at M8, where there is no such cache.
+
+**`--trim-ms` does NOT need re-measuring for this.** The M3 issue flagged the
+compositor as a risk to the calibration, and the measurement answers it: the pass
+is an extra draw call inside the same frame before the same swap, so it adds no
+buffering stage — only 0.06 ms of GPU time, against a trim of −90 ms recorded on a
+5 ms grid. Three orders of magnitude below the resolution of the instrument. This
+supersedes the warning in issue 139 and in the session-7 handoff.
+
+**`--no-compositor` draws straight to the window.** Not a dead flag: that fallback
+is taken automatically when a float framebuffer cannot be allocated, and a path
+nothing can reach on purpose is a path nobody finds out is broken. It is also how
+the number above was measured.
+
+**Switching crystal crossfades over 0.4 s, and that is the stack's second user.**
+The outgoing crystal keeps drawing, into layer 1, at falling opacity over the
+incoming one — bottom first, so the new crystal is underneath and the old one fades
+*off* it. A reload deliberately does **not** fade: it replaces a crystal with a
+recompiled version of itself, and a transition there would make every save look
+like a glitch. The second layer is allocated on the first switch and never given
+back, because freeing and reallocating 66 MB on the exact frame a transition begins
+is the worst possible moment for it.
+
+**A crossfade cannot be checked with a screenshot, and pretending otherwise wasted
+a measurement.** 0.4 s is roughly 24 frames; `--frames N --shot` writes the last
+one, and the wall-clock offset between launching the player and posting the switch
+is not controllable to that precision. Two runs a third of a second apart looked
+identical enough that "it works" and "it snaps instantly" were indistinguishable.
+What settled it was **temporarily raising the duration to 3 s** — where the timing
+slop stops mattering and the blend is unmistakable — and then **printing the
+measured length** on completion, which reads `crossfade done in 400 ms`. The
+picture proves the mechanism; the number proves the duration. Neither alone does.
+
+**A parked copy of a file restored with `Copy-Item` does not rebuild.** `Copy-Item`
+carries the *source's* timestamp, so restoring an older parked copy moves the file's
+mtime backwards and Ninja concludes the object is newer. The 3-second experiment
+above appeared to survive the restore for exactly this reason. Set the timestamp
+after restoring: `(Get-Item path).LastWriteTime = Get-Date`.
 
 **M5's behaviour is complete as of `v0.2.1`** and every part of it has been
 confirmed on the rack from the phone: casting, bit-perfect playback, auto-advance,
@@ -311,14 +374,16 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.2.2`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.2.3`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
-**A patch can contain new subsystems, and `v0.2.2` does.** The rule is minor per
-milestone *completed*, and M2 is not — its visual language is still open. So the
-control surface, text rendering and the `duel` crystal all landed as a patch.
-That is the rule working as written, not a mistake.
+**A patch can contain new subsystems, and `v0.2.2` and `v0.2.3` both do.** The
+rule is minor per milestone *completed*, and neither M2 nor M3 is — M2's visual
+language is still open and M3 has one of seven exit criteria met. So the control
+surface, text rendering, the `duel` crystal, **the whole compositor, the
+crossfade, the tuning page and lyrics** have all landed as patches. That is the
+rule working as written, not a mistake.
 
 **The minor number tracks how many milestones are DONE, not which one.** `v0.2.0`
 is the first completed milestone and that milestone is **M5**, because D-029 made

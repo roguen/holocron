@@ -270,6 +270,17 @@ bool Window::save_bmp(const char* path) const
 
     std::vector<unsigned char> pixels(static_cast<std::size_t>(pixel_bytes), 0);
 
+    // THE WINDOW'S FRAMEBUFFER, EXPLICITLY.
+    //
+    // glReadPixels reads whatever is bound as GL_READ_FRAMEBUFFER, and since M3
+    // the picture is assembled in off-screen layers -- so "whatever was bound
+    // last" is no longer reliably the thing on screen. Binding zero here makes
+    // the guarantee this function's whole purpose rests on structural rather
+    // than a property of the caller's draw order: --frames N --shot is how the
+    // renderer is checked without a monitor, and a shot of the wrong buffer
+    // would be a wrong answer that looks like a right one.
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
     glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
 

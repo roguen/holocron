@@ -58,8 +58,27 @@ manifest:
 | Uniform | Meaning |
 |---|---|
 | `in vec2 v_uv` | `0..1` across the framebuffer, `(0,0)` bottom-left |
-| `uniform vec2 u_resolution` | framebuffer size in pixels |
+| `uniform vec2 u_resolution` | the size in pixels of what you are drawing into |
 | `uniform float u_time` | seconds since the crystal was loaded |
+
+`u_resolution` is the size of the **layer**, not of the window. Since M3 a crystal
+draws into an off-screen surface which is then composited onto the screen, and the
+two are the same size today — but they are not the same thing, and a crystal that
+assumes it is looking at the window will be wrong the first time a layer is drawn
+at a fraction of the screen. Use `u_resolution` for aspect ratio and for anything
+measured in pixels; it is always the truth about the surface you are on.
+
+That surface is **16-bit float**, which is worth knowing when you write a bloom or
+stack several glows: values above 1.0 survive to the compositing pass and are only
+clipped on the way to the screen, so a highlight that overshoots is not lost the
+moment it is written.
+
+**Write `1.0` in the alpha channel.** Every crystal in the vault ends with
+`frag_colour = vec4(colour, 1.0)` and that is not a formality. When your crystal is
+the one being faded out of during a switch, the compositor multiplies your alpha by
+the fade — so a crystal that writes `0.5` there is half transparent for the whole
+transition, and it will look like the crossfade is broken rather than like a choice
+you made.
 
 `u_time` **survives a hot reload**. Edit a colour, save, and any slow motion
 keeps running rather than snapping back to zero. It resets when you *switch* to a

@@ -165,13 +165,140 @@ std::string control_page(const CompanionServer::ControlState& state)
     out += state.lyrics_visible ? "on" : "";
     out += "\" type=\"submit\">Lyrics</button></form>";
 
-    // SAID PLAINLY RATHER THAN LEFT AS A DEAD BUTTON. Lyrics are not implemented
-    // (issue 122) and a control that silently does nothing is the exact failure
-    // `controllable` is careful to avoid on the Plex side. The now-playing card
-    // above it IS implemented, which is why only this one carries the caveat.
+    // SAID PLAINLY RATHER THAN LEFT LOOKING BROKEN. Lyrics work now, but only for
+    // the tracks that have timed ones -- on this library that is roughly two
+    // tracks in five, so a toggle that turns on and shows nothing is the COMMON
+    // case rather than a fault. A control whose silence has to be interpreted is
+    // the exact failure `controllable` is careful to avoid on the Plex side.
     out += "<div style=\"color:#8a8a92;font-size:13px;margin-top:4px\">"
-           "Lyrics are not implemented yet -- this toggle is wired but has "
-           "nothing to show.</div>";
+           "Only tracks with <i>timed</i> lyrics show anything -- about two in "
+           "five. The player says which it is when you turn this on.</div>";
+
+    out += "<h2>Setup</h2>";
+    out += "<form method=\"get\" action=\"/control/tuning\">"
+           "<button type=\"submit\">Tuning &rsaquo;</button></form>";
+
+    out += "</body></html>";
+    return out;
+}
+
+// The tuning sub-page: the trim, and the instrument for judging it.
+//
+// A SUB-PAGE RATHER THAN MORE OF THE MAIN ONE. Tuning is something done once per
+// rack and then left alone for months, and the main page is used every session --
+// putting a control that changes A/V sync next to the one that changes the
+// visualization invites a mis-tap in the dark.
+//
+// The trim buttons send a DELTA. See the note in companion_server.hpp: an
+// absolute control has to know the current value to send the next one, so a page
+// rendered a moment ago sends a stale target. Relative is correct at any age,
+// which is why this page needs none of the ownership machinery the crystal list
+// needed.
+std::string tuning_page(const CompanionServer::ControlState& state)
+{
+    std::string out;
+    out.reserve(4096);
+
+    out += "<!doctype html><html><head><meta charset=\"utf-8\">"
+           "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+           "<title>Holocron -- tuning</title><style>"
+           "body{background:#0b0b0d;color:#e8e8ea;font:16px/1.5 system-ui,sans-serif;"
+           "margin:0;padding:20px;-webkit-text-size-adjust:100%}"
+           "h1{font-size:15px;letter-spacing:.14em;text-transform:uppercase;"
+           "color:#8a8a92;font-weight:600;margin:0 0 18px}"
+           "h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;"
+           "color:#8a8a92;font-weight:600;margin:26px 0 10px}"
+           ".np{background:#16161a;border-radius:10px;padding:14px 16px;margin-bottom:6px}"
+           ".big{font-size:34px;font-weight:600;letter-spacing:-.01em}"
+           ".sub{color:#a0a0a8;font-size:13px}"
+           ".warn{color:#ffb26b}"
+           "form{margin:0}"
+           ".row{display:flex;gap:8px;margin-bottom:8px}"
+           ".row form{flex:1}"
+           "button{display:block;width:100%;text-align:center;background:#16161a;"
+           "color:#e8e8ea;border:1px solid #26262c;border-radius:10px;"
+           "padding:15px 10px;font:inherit;cursor:pointer}"
+           "button.wide{text-align:left;margin-bottom:8px}"
+           "button.on{background:#2a2a34;border-color:#4a4a58;font-weight:600}"
+           "pre{background:#16161a;border-radius:10px;padding:14px 16px;overflow-x:auto;"
+           "color:#c8c8d0;font:13px/1.5 ui-monospace,Consolas,monospace}"
+           "</style></head><body>";
+
+    out += "<h1>Tuning</h1>";
+
+    // -- the trim ------------------------------------------------------------
+
+    out += "<h2>Picture / sound offset</h2>";
+
+    char value[64];
+    std::snprintf(value, sizeof(value), "%.0f ms", state.trim_ms);
+    out += "<div class=\"np\"><div class=\"big\">";
+    out += value;
+    out += "</div><div class=\"sub\">Negative pulls the picture EARLIER, which is what a "
+           "projector slower than the audio path needs.</div></div>";
+
+    // AT THE FLOOR IS A DIFFERENT PROBLEM FROM NOT ENOUGH TRIM, and they feel
+    // identical from the couch: nudging simply stops helping. Saying so here is
+    // the same instrument `--calibrate` prints at the terminal.
+    if (state.trim_ms < 0.0 && -state.trim_ms >= state.headroom_ms && state.headroom_ms > 0.0) {
+        char note[160];
+        std::snprintf(note, sizeof(note),
+                      "At the floor -- only %.0f ms of lead exists, so the picture cannot be "
+                      "advanced any further.", state.headroom_ms);
+        out += "<div class=\"np warn\">";
+        out += note;
+        out += "</div>";
+    } else if (state.headroom_ms > 0.0) {
+        char note[96];
+        std::snprintf(note, sizeof(note), "%.0f ms of lead available.", state.headroom_ms);
+        out += "<div class=\"np sub\">";
+        out += note;
+        out += "</div>";
+    }
+
+    // 5 ms is the step --calibrate uses, because the judgement itself resolves to
+    // roughly 20 ms and a finer step would imply a precision the eye cannot
+    // supply. 25 is there so a bracket can be swept without forty taps.
+    static const char* const kSteps[] = {"-25", "-5", "+5", "+25"};
+    out += "<div class=\"row\">";
+    for (const char* step : kSteps) {
+        out += "<form method=\"post\" action=\"/control/trim\">"
+               "<input type=\"hidden\" name=\"delta\" value=\"";
+        out += step;
+        out += "\"><button type=\"submit\">";
+        out += step;
+        out += "</button></form>";
+    }
+    out += "</div>";
+
+    // -- the instrument ------------------------------------------------------
+
+    out += "<h2>Beat check</h2>";
+    out += "<form method=\"post\" action=\"/control/sync\"><button class=\"wide";
+    out += state.sync_showing ? " on" : "";
+    out += "\" type=\"submit\">Show the beat instrument</button></form>";
+    out += "<div class=\"sub\">A hard edge that flips exactly on the beat. Watch it against "
+           "what you can hear and move the offset until they agree. Pick a crystal on the "
+           "main page to go back.</div>";
+
+    // -- how to keep it ------------------------------------------------------
+
+    out += "<h2>Keep it</h2>";
+    out += "<div class=\"sub\" style=\"margin-bottom:8px\">Nothing here is saved. Put this in "
+           "<b>";
+    out += html_escape(state.config_path.empty() ? "gatekeeper.toml" : state.config_path);
+    out += "</b> or it is gone at the next restart.</div>";
+    char lines[128];
+    std::snprintf(lines, sizeof(lines), "[audio]\ntrim_ms = %.1f\n", state.trim_ms);
+    out += "<pre>";
+    out += html_escape(lines);
+    out += "</pre>";
+    out += "<div class=\"sub\">The offset belongs to the whole rack, not to the receiver. "
+           "Changing the display, the resolution, or leaving a direct listening mode "
+           "invalidates it.</div>";
+
+    out += "<h2></h2><form method=\"get\" action=\"/control\">"
+           "<button class=\"wide\" type=\"submit\">&lsaquo; Back</button></form>";
 
     out += "</body></html>";
     return out;
@@ -233,6 +360,8 @@ struct CompanionServer::Impl {
     CompanionServer::SelectCrystalHandler select_crystal_handler;
     CompanionServer::LyricsHandler        lyrics_handler;
     CompanionServer::NowPlayingHandler    now_playing_handler;
+    CompanionServer::TrimHandler          trim_handler;
+    CompanionServer::SyncHandler          sync_handler;
 
     // Guarded separately from the timeline. The control page is read by an HTTP
     // worker and written by the render thread, and it changes on a crystal
@@ -627,17 +756,86 @@ void CompanionServer::Impl::install_routes()
         res.set_content("", "text/plain");
     };
 
+    // -- the tuning sub-page ------------------------------------------------
+
+    self->server.Get("/control/tuning", [self](const httplib::Request&,
+                                               httplib::Response& res) {
+        self->decorate(res);
+        CompanionServer::ControlState state;
+        {
+            const std::lock_guard<std::mutex> lock(self->control_mutex);
+            state = self->control;
+        }
+        res.set_content(tuning_page(state), "text/html; charset=utf-8");
+    });
+
+    // Its own redirect target, so a trim nudge leaves you on the tuning page
+    // rather than bouncing back to the crystal list after every tap.
+    const auto redirect_to_tuning = [](httplib::Response& res) {
+        res.status = 303;
+        res.set_header("Location", "/control/tuning");
+        res.set_content("", "text/plain");
+    };
+
+    self->server.Post("/control/trim", [self, redirect_to_tuning](const httplib::Request& req,
+                                                                  httplib::Response&      res) {
+        self->decorate(res);
+        const auto delta = req.get_param_value("delta");
+        if (!delta.empty()) {
+            // CLAMPED, because this arrives over HTTP and anyone on the LAN can
+            // send one. A trim of several seconds is not a tuning mistake, it is
+            // a picture that has stopped following the music at all -- and the
+            // page only ever offers 25.
+            const std::int64_t ms = parse_int64(delta, 0);
+            if (ms != 0 && ms >= -200 && ms <= 200) {
+                std::printf("control: trim %+lld ms\n", static_cast<long long>(ms));
+                std::fflush(stdout);
+                if (self->trim_handler) {
+                    self->trim_handler(static_cast<double>(ms));
+                }
+            } else if (ms != 0) {
+                std::fprintf(stderr, "control: refusing a trim step of %lld ms\n",
+                             static_cast<long long>(ms));
+            }
+        }
+        redirect_to_tuning(res);
+    });
+
+    self->server.Post("/control/sync", [self, redirect_to_tuning](const httplib::Request&,
+                                                                  httplib::Response& res) {
+        self->decorate(res);
+        std::printf("control: beat instrument\n");
+        std::fflush(stdout);
+        if (self->sync_handler) {
+            self->sync_handler();
+        }
+        redirect_to_tuning(res);
+    });
+
     self->server.Post("/control/crystal", [self, redirect_to_control](
                                               const httplib::Request& req,
                                               httplib::Response&      res) {
         self->decorate(res);
         const auto index = req.get_param_value("index");
-        if (!index.empty() && self->select_crystal_handler) {
+        if (!index.empty()) {
             const std::int64_t chosen = parse_int64(index, -1);
             if (chosen >= 0) {
                 std::printf("control: crystal %lld\n", static_cast<long long>(chosen));
                 std::fflush(stdout);
-                self->select_crystal_handler(static_cast<std::size_t>(chosen));
+
+                // OPTIMISTIC, AND BEFORE THE REDIRECT. The browser's follow-up GET
+                // usually beats the render loop, so the page has to be told now or
+                // it renders the previous selection. If the render loop refuses the
+                // index it calls set_current_crystal to put this right.
+                {
+                    const std::lock_guard<std::mutex> lock(self->control_mutex);
+                    if (std::size_t(chosen) < self->control.crystals.size()) {
+                        self->control.current = std::size_t(chosen);
+                    }
+                }
+                if (self->select_crystal_handler) {
+                    self->select_crystal_handler(static_cast<std::size_t>(chosen));
+                }
             }
         }
         redirect_to_control(res);
@@ -647,10 +845,17 @@ void CompanionServer::Impl::install_routes()
                                              const httplib::Request& req,
                                              httplib::Response&      res) {
         self->decorate(res);
+        const bool visible = req.get_param_value("visible") == "1";
+        std::printf("control: lyrics %s\n", visible ? "on" : "off");
+        std::fflush(stdout);
+        {
+            // Set here, not after the render loop acts. A toggle button carries the
+            // state it wants to move TO, so a page rendered from stale state sends
+            // the wrong target and the thing flips on alternate taps.
+            const std::lock_guard<std::mutex> lock(self->control_mutex);
+            self->control.lyrics_visible = visible;
+        }
         if (self->lyrics_handler) {
-            const bool visible = req.get_param_value("visible") == "1";
-            std::printf("control: lyrics %s\n", visible ? "on" : "off");
-            std::fflush(stdout);
             self->lyrics_handler(visible);
         }
         redirect_to_control(res);
@@ -660,10 +865,14 @@ void CompanionServer::Impl::install_routes()
                                                  const httplib::Request& req,
                                                  httplib::Response&      res) {
         self->decorate(res);
+        const bool visible = req.get_param_value("visible") == "1";
+        std::printf("control: now playing %s\n", visible ? "on" : "off");
+        std::fflush(stdout);
+        {
+            const std::lock_guard<std::mutex> lock(self->control_mutex);
+            self->control.now_playing_visible = visible;
+        }
         if (self->now_playing_handler) {
-            const bool visible = req.get_param_value("visible") == "1";
-            std::printf("control: now playing %s\n", visible ? "on" : "off");
-            std::fflush(stdout);
             self->now_playing_handler(visible);
         }
         redirect_to_control(res);
@@ -913,10 +1122,49 @@ void CompanionServer::set_now_playing_handler(NowPlayingHandler handler)
     impl_->now_playing_handler = std::move(handler);
 }
 
-void CompanionServer::set_control_state(const ControlState& state)
+void CompanionServer::set_trim_handler(TrimHandler handler)
+{
+    impl_->trim_handler = std::move(handler);
+}
+
+void CompanionServer::set_sync_handler(SyncHandler handler)
+{
+    impl_->sync_handler = std::move(handler);
+}
+
+void CompanionServer::set_control_tuning(double trim_ms, double headroom_ms, bool sync_showing,
+                                         const std::string& config_path)
 {
     const std::lock_guard<std::mutex> lock(impl_->control_mutex);
-    impl_->control = state;
+    impl_->control.trim_ms      = trim_ms;
+    impl_->control.headroom_ms  = headroom_ms;
+    impl_->control.sync_showing = sync_showing;
+    impl_->control.config_path  = config_path;
+
+    // ALL DESCRIPTIVE, so all of it may be pushed from the render loop every
+    // frame. The trim is not intent here -- the page never sends a value, only a
+    // delta -- so there is nothing for a stale page to get wrong.
+}
+
+void CompanionServer::set_control_info(const std::vector<std::string>& crystals,
+                                       const std::string& title, const std::string& artist,
+                                       bool has_art)
+{
+    const std::lock_guard<std::mutex> lock(impl_->control_mutex);
+    impl_->control.crystals = crystals;
+    impl_->control.title    = title;
+    impl_->control.artist   = artist;
+    impl_->control.has_art  = has_art;
+
+    // `current` and the toggles are deliberately NOT touched. See the header: they
+    // are intent, owned by the POST handlers, and overwriting them from here every
+    // frame is what made the page race against itself.
+}
+
+void CompanionServer::set_current_crystal(std::size_t index)
+{
+    const std::lock_guard<std::mutex> lock(impl_->control_mutex);
+    impl_->control.current = index;
 }
 
 void CompanionServer::set_timeline(const TimelineState& state)

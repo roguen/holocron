@@ -100,7 +100,22 @@ struct NowPlaying {
     std::string title;
     std::string artist;
     std::string album;
+    std::string genre;
+    std::string year;
     std::int64_t duration_ms = 0;
+
+    // FIELDS LEFT EMPTY ARE FILLED FROM THE CONTAINER'S TAGS by start(), which
+    // already probes the source and therefore already has them.
+    //
+    // That makes the two paths behave sensibly without either knowing about the
+    // other. A cast arrives with everything Plex knows, so nothing is
+    // overwritten. `holocron track.flac` arrives with nothing but the path, and
+    // gets whatever the file says about itself -- which before issue 133 was
+    // nowhere at all, leaving the now-playing card blank.
+    //
+    // `genre` and `year` are the interesting case: they are NOT on a Plex Track
+    // element and would cost a second request per track, so a cast leaves them
+    // empty and a local file fills them for free.
 };
 
 class PlaybackSession {

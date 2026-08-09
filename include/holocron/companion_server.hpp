@@ -170,9 +170,59 @@ public:
         bool now_playing_visible = false;
         bool lyrics_visible      = false;
         bool has_art        = false;
+
+        // -- tuning, which is `GET /control/tuning` -------------------------
+        //
+        // WHY THE TRIM BELONGS ON THE PHONE. It is measured by watching the
+        // picture against the sound, and the person doing the watching is on a
+        // couch across the room from the keyboard. `--calibrate` put the arrow
+        // keys on it, which is right for someone sitting at the machine and
+        // useless for someone sitting where the calibration is actually judged.
+        //
+        // Descriptive only. The page moves the trim by a DELTA rather than by
+        // setting a value, so a page rendered a moment ago still applies the
+        // right change -- which is the same race the crystal list hit, avoided
+        // by making the control relative instead of absolute.
+        double trim_ms     = 0.0;
+        double headroom_ms = 0.0;
+
+        // Whether the beat-alignment instrument is the thing on screen. When it
+        // is, none of the vault entries are current, and the page has to say so
+        // or it claims a crystal is running that is not.
+        bool   sync_showing = false;
+
+        // Where to paste the result. Named rather than assumed: --config can
+        // point anywhere, and a measurement that is awkward to record is a
+        // measurement that stays in a terminal scrollback.
+        std::string config_path;
     };
 
-    void set_control_state(const ControlState& state);
+    // WHO OWNS WHAT, AND WHY IT IS SPLIT IN TWO.
+    //
+    // The first version had the render loop publish the WHOLE control state every
+    // frame, including which crystal was current and whether the overlays were on.
+    // That raced, visibly: a POST queues the change for the render thread and
+    // redirects immediately, so the browser's follow-up GET usually arrived before
+    // the render loop had run. The page therefore rendered the OLD state.
+    //
+    // For the crystal list that looked like "it switched but the menu did not
+    // follow, and I had to tap again". For a toggle it was worse than cosmetic --
+    // the button carries the state it wants to move TO, so a stale page sent the
+    // wrong target and the thing flip-flopped on alternate taps.
+    //
+    // So intent is owned HERE, set synchronously inside the POST handler before
+    // the redirect, and the render loop only performs it. Only the descriptive
+    // fields are pushed from the render loop.
+
+    // Descriptive only: the vault contents and what is playing. Safe to call every
+    // frame; deliberately does NOT touch `current` or the toggles.
+    void set_control_info(const std::vector<std::string>& crystals, const std::string& title,
+                          const std::string& artist, bool has_art);
+
+    // Which crystal is current. Called by the render loop ONLY when it changes it
+    // itself -- the arrow keys, or refusing an out-of-range index -- so it corrects
+    // the page rather than fighting it.
+    void set_current_crystal(std::size_t index);
 
     // Called when the page asks for a different crystal, BY INDEX into the list
     // the page was given.
@@ -188,9 +238,25 @@ public:
     using LyricsHandler     = std::function<void(bool visible)>;
     using NowPlayingHandler = std::function<void(bool visible)>;
 
+    // Move the trim by `delta_ms`, and show the beat-alignment instrument.
+    //
+    // A DELTA, NOT A VALUE, and that is the whole reason the tuning page does not
+    // need the ownership split the crystal list needed. An absolute control has to
+    // know the current value to send the next one, so a stale page sends a stale
+    // target; a relative one is correct however old the page is.
+    using TrimHandler = std::function<void(double delta_ms)>;
+    using SyncHandler = std::function<void()>;
+
     void set_select_crystal_handler(SelectCrystalHandler handler);
     void set_lyrics_handler(LyricsHandler handler);
     void set_now_playing_handler(NowPlayingHandler handler);
+    void set_trim_handler(TrimHandler handler);
+    void set_sync_handler(SyncHandler handler);
+
+    // Descriptive tuning state, pushed from the render loop like the vault and
+    // the now-playing strings. Safe to call every frame.
+    void set_control_tuning(double trim_ms, double headroom_ms, bool sync_showing,
+                            const std::string& config_path);
 
     // Set before start(). Unset handlers mean the command is logged and
     // acknowledged, which is what happened before anything could play.

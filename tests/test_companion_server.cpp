@@ -442,24 +442,13 @@ TEST_CASE("a seekTo with a nonsense offset is ignored rather than obeyed",
 // on a couch. See issue 130.
 // ---------------------------------------------------------------------------
 
-namespace {
-
-CompanionServer::ControlState two_crystals()
-{
-    CompanionServer::ControlState state;
-    state.crystals = {"drift", "pulse"};
-    state.current  = 1;
-    return state;
-}
-
-}  // namespace
-
 TEST_CASE("the control page lists the vault and marks what is running",
           "[plex][companion][control]")
 {
     RunningServer s(fixture());
     REQUIRE(s.error == CompanionError::kOk);
-    s.server.set_control_state(two_crystals());
+    s.server.set_control_info({"drift", "pulse"}, "", "", false);
+    s.server.set_current_crystal(1);
 
     auto res = s.client().Get("/control");
     REQUIRE(res);
@@ -568,10 +557,8 @@ TEST_CASE("a track title is escaped into the page", "[plex][companion][control]"
     RunningServer s(fixture());
     REQUIRE(s.error == CompanionError::kOk);
 
-    CompanionServer::ControlState state = two_crystals();
-    state.title  = "Forty Six & 2";
-    state.artist = "<script>alert(1)</script>";
-    s.server.set_control_state(state);
+    s.server.set_control_info({"drift", "pulse"}, "Forty Six & 2",
+                              "<script>alert(1)</script>", false);
 
     auto res = s.client().Get("/control");
     REQUIRE(res);
@@ -610,4 +597,64 @@ TEST_CASE("the control page copes with no vault at all", "[plex][companion][cont
     REQUIRE(res);
     REQUIRE(res->status == 200);
     REQUIRE(res->body.find("Holocron") != std::string::npos);
+}
+
+TEST_CASE("the control page shows a change immediately, without waiting for the render loop",
+          "[plex][companion][control]")
+{
+    // THE BUG THE OWNER HIT. The first version had the render loop publish the
+    // whole control state every frame, so a POST queued the change, redirected,
+    // and the browser's GET arrived before the render loop had run -- rendering
+    // the OLD selection.
+    //
+    // For the crystal list that read as "it switched but the menu did not follow,
+    // and I had to tap again". For a toggle it was worse: the button carries the
+    // state it wants to move TO, so a stale page sent the wrong target and the
+    // overlay flipped on alternate taps.
+    //
+    // Simulated here by installing NO handler at all, which is the extreme case of
+    // a render loop that never gets round to it. The page must still be correct.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_info({"drift", "duel", "pulse"}, "", "", false);
+
+    auto client = s.client();
+    client.set_follow_location(false);
+
+    client.Post("/control/crystal", "index=2", "application/x-www-form-urlencoded");
+    auto after = client.Get("/control");
+    REQUIRE(after);
+    REQUIRE(after->body.find("class=\"on\" type=\"submit\">pulse<") != std::string::npos);
+    REQUIRE(after->body.find("class=\"on\" type=\"submit\">drift<") == std::string::npos);
+
+    // And a toggle survives the round trip, so the next tap sends the right target.
+    client.Post("/control/nowplaying", "visible=1", "application/x-www-form-urlencoded");
+    auto on = client.Get("/control");
+    REQUIRE(on);
+    REQUIRE(on->body.find("class=\"on\" type=\"submit\">Now playing<") != std::string::npos);
+
+    // The button now offers to turn it OFF. Tapping it again must actually do so
+    // rather than re-sending "on", which is what the flip-flop was.
+    REQUIRE(on->body.find("action=\"/control/nowplaying\"><input type=\"hidden\" "
+                          "name=\"visible\" value=\"0\"") != std::string::npos);
+}
+
+TEST_CASE("an index the vault does not have leaves the page's selection alone",
+          "[plex][companion][control]")
+{
+    // The optimistic update must not accept an out-of-range index, or the page
+    // shows a selection that the render loop refuses -- which is the same
+    // disagreement as before, just in the other direction.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_info({"drift", "pulse"}, "", "", false);
+    s.server.set_current_crystal(0);
+
+    auto client = s.client();
+    client.set_follow_location(false);
+    client.Post("/control/crystal", "index=99", "application/x-www-form-urlencoded");
+
+    auto res = client.Get("/control");
+    REQUIRE(res);
+    REQUIRE(res->body.find("class=\"on\" type=\"submit\">drift<") != std::string::npos);
 }
