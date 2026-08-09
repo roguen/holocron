@@ -167,6 +167,16 @@ struct Options {
     // Same family as --no-audio, --no-discover and --no-watch: turn one
     // subsystem off and see what the rest does without it.
     bool        no_compositor = false;
+    // Draw the debug facet -- every AudioFrame field as bars and markers --
+    // instead of a crystal.
+    //
+    // It needs a flag because it had become UNREACHABLE. The only path to it was
+    // an empty vault and no --crystal, and the config's vault defaults to
+    // "crystals"; a vault that is missing or empty is fatal rather than a
+    // fallback. So on any normal setup the branch could not be entered, and the
+    // only way in was to point --config at a file that does not exist -- which
+    // also throws away the trim, the window size and the Plex token (issue 144).
+    bool        debug_facet = false;
     bool        help     = false;
 
     // WHICH OPTIONS WERE ACTUALLY TYPED.
@@ -278,6 +288,8 @@ Options parse(int argc, char** argv)
             o.no_watch = true;
         } else if (std::strcmp(a, "--no-compositor") == 0) {
             o.no_compositor = true;
+        } else if (std::strcmp(a, "--debug-facet") == 0) {
+            o.debug_facet = true;
         } else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
             o.help = true;
         } else if (a[0] != '-' && o.path == nullptr) {
@@ -333,6 +345,9 @@ void usage()
         "                 Prints every request the phone makes. Ctrl-C to stop\n"
         "  --no-discover  do not announce during this run, whatever the config says\n"
         "  --no-audio     decode and draw, but open no audio device\n"
+        "  --debug-facet  draw every AudioFrame field as bars and markers instead\n"
+        "                 of a crystal. The instrument that answers whether the\n"
+        "                 analysis is producing anything sane\n"
         "  --no-compositor\n"
         "                 draw straight to the window instead of through the\n"
         "                 layer stack. The fallback a machine that cannot\n"
@@ -1391,6 +1406,16 @@ int main(int argc, char** argv)
     // here rather than in parse() so an explicit --crystal still wins.
     if (opt.calibrate && opt.crystal == nullptr) {
         opt.crystal = "instruments/sync";
+        opt.vault   = nullptr;
+    }
+
+    // --debug-facet is "no crystal at all", which is the state the debug facet
+    // draws in. Set here for the same reason --calibrate is: the vault arrives
+    // from the config a few lines above, and clearing it in parse() would be
+    // undone by that. Loses to --calibrate, which is the more specific request
+    // and names a crystal of its own.
+    if (opt.debug_facet && !opt.calibrate) {
+        opt.crystal = nullptr;
         opt.vault   = nullptr;
     }
 
