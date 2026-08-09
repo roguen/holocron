@@ -383,6 +383,17 @@ void describe(const char* verb, const Crystal& crystal, const CrystalFacet& face
     }
 }
 
+// The beat-alignment instrument, by stem.
+//
+// NOT IN THE VAULT ON PURPOSE. It is a measuring tool rather than a
+// visualization, and a vault entry is something offered as a thing to watch a
+// record with. Two callers load it -- `--calibrate` and the control page's
+// tuning sub-page -- and they must name the same file, which is why this is a
+// constant rather than a literal in each of them.
+//
+// Relative to the working directory, exactly as `--calibrate` has always been.
+constexpr const char* kSyncStem = "instruments/sync";
+
 // Build a crystal from disk into a NEW facet, and swap only if it worked.
 //
 // A shader is broken for most of the time an author is editing it. Tearing the
@@ -693,6 +704,51 @@ struct CastCommand {
         out_index    = crystal_index;
         want_crystal = false;
         return true;
+    }
+
+    // -- tuning, from the control page's sub-page ---------------------------
+    //
+    // ACCUMULATED RATHER THAN REPLACED, which is the opposite of every other
+    // request here. A seek or a crystal switch is an absolute destination and
+    // only the newest one matters; a trim nudge is relative, so two taps that
+    // arrive between two frames have to be worth two steps. Keeping only the
+    // last would silently drop half of a fast sweep, and the symptom would be a
+    // control that feels like it misses presses.
+    double trim_delta = 0.0;
+
+    void request_trim(double delta_ms)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        trim_delta += delta_ms;
+    }
+
+    bool take_trim(double& out_delta)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (trim_delta == 0.0) {
+            return false;
+        }
+        out_delta  = trim_delta;
+        trim_delta = 0.0;
+        return true;
+    }
+
+    // Show the beat-alignment instrument. Compiles a program, so it has to cross
+    // to the render thread like every other crystal change.
+    bool want_sync = false;
+
+    void request_sync()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        want_sync = true;
+    }
+
+    bool take_sync()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const bool asked = want_sync;
+        want_sync        = false;
+        return asked;
     }
 
     // Tri-state for the same reason `pause` is: 0 nothing asked, 1 show, 2 hide.
@@ -1405,7 +1461,7 @@ int main(int argc, char** argv)
     // --calibrate is --crystal instruments/sync with the arrow keys live. Set
     // here rather than in parse() so an explicit --crystal still wins.
     if (opt.calibrate && opt.crystal == nullptr) {
-        opt.crystal = "instruments/sync";
+        opt.crystal = kSyncStem;
         opt.vault   = nullptr;
     }
 
@@ -1464,6 +1520,8 @@ int main(int argc, char** argv)
     companion.set_lyrics_handler([&cast](bool visible) { cast.request_lyrics(visible); });
     companion.set_now_playing_handler(
         [&cast](bool visible) { cast.request_now_playing(visible); });
+    companion.set_trim_handler([&cast](double delta_ms) { cast.request_trim(delta_ms); });
+    companion.set_sync_handler([&cast] { cast.request_sync(); });
 
     // Linking comes before discovery: it needs the machine identifier and
     // nothing else, and a run that is signing in has no business also
@@ -1615,6 +1673,13 @@ int main(int argc, char** argv)
     // in without the live one having been torn down first. See build_crystal.
     auto                        crystal_facet   = std::make_unique<CrystalFacet>();
     bool                        drawing_crystal = false;
+
+    // The beat instrument is up, so `current` no longer describes what is on
+    // screen. Tracked rather than inferred, because the hot reload has to know
+    // WHICH FILE to reload -- and reloading the vault entry while the instrument
+    // is showing would swap the picture out from under the person measuring with
+    // it, on their next save of anything.
+    bool                        showing_sync    = false;
     std::optional<CrystalWatch> watch;
 
     // The vault, and where in it we are. --crystal is a vault of one, so there
@@ -2551,6 +2616,29 @@ int main(int argc, char** argv)
             }
             companion.set_control_info(names, track_context.title, track_context.artist,
                                        track_context.has_art);
+            companion.set_control_tuning(trim_ms, headroom_ms, showing_sync, opt.config);
+        }
+
+        // -- the trim, moved from the phone --------------------------------------
+        //
+        // The same value --calibrate moves with the arrow keys, and it has to be
+        // reachable from where the judgement is actually made: on the couch,
+        // watching the picture against the sound, a room away from the keyboard.
+        //
+        // Clamped to the same ±2 s the flag would accept. A relative control with
+        // no bound can be walked anywhere by holding a button.
+        if (double delta = 0.0; cast.take_trim(delta)) {
+            trim_ms = std::clamp(trim_ms + delta, -2000.0, 2000.0);
+            trim_us = static_cast<std::int64_t>(trim_ms * 1000.0);
+            if (trim_ms < 0.0 && -trim_ms >= headroom_ms && headroom_ms > 0.0) {
+                std::printf("holocron: trim_ms = %.0f  -- AT THE FLOOR, only %.0f ms of lead "
+                            "exists; the picture cannot be advanced further\n",
+                            trim_ms, headroom_ms);
+            } else {
+                std::printf("holocron: trim_ms = %.0f  (lead available: %.0f ms)\n", trim_ms,
+                            headroom_ms);
+            }
+            std::fflush(stdout);
         }
 
         // -- switching and hot reload -------------------------------------------
@@ -2582,14 +2670,53 @@ int main(int argc, char** argv)
                 switching = true;
             }
 
+            // THE BEAT INSTRUMENT IS NOT IN THE VAULT, on purpose: it is a
+            // measuring tool, not a visualization, and putting it in the crystal
+            // list would offer it as something to watch a record with. It is
+            // loaded by stem, the same way --calibrate loads it.
+            //
+            // While it is up, `current` no longer describes what is on screen, so
+            // the page is told -- otherwise it highlights a crystal that is not
+            // running, which is the exact lie the control-page race fix was about.
+            if (cast.take_sync()) {
+                Crystal crystal;
+                std::unique_ptr<CrystalFacet> previous;
+                if (build_crystal(kSyncStem, crystal_facet, false, "beat instrument", crystal,
+                                  layered ? &previous : nullptr)) {
+                    showing_sync = true;
+                    if (previous && previous->ready() && layered) {
+                        outgoing      = std::move(previous);
+                        fade_started  = std::chrono::steady_clock::now();
+                        layers_wanted = 2;
+                    }
+                    if (watch) {
+                        watch.emplace(crystal.manifest_path, crystal.shader_path,
+                                      std::chrono::steady_clock::now());
+                    }
+                } else {
+                    // build_crystal has already said why. Worth one more line
+                    // because the likeliest cause is a working directory without
+                    // an instruments/ beside it, which is not obvious from
+                    // "crystal not found" on a phone in another room.
+                    std::fprintf(stderr,
+                                 "holocron: %s is loaded relative to the working directory; "
+                                 "run holocron from the directory that has instruments/\n",
+                                 kSyncStem);
+                }
+            }
+
             if (std::size_t asked = 0; cast.take_crystal(asked)) {
                 // OUT OF RANGE IS IGNORED, NOT CLAMPED. The page is rendered from
                 // the vault so its indices are always valid, but the request
                 // arrives over HTTP and anyone on the LAN can send one. Clamping
                 // would silently switch to a crystal nobody asked for.
                 if (asked < vault.size()) {
-                    wanted    = asked;
-                    switching = wanted != current;
+                    wanted = asked;
+                    // A vault entry is ALWAYS a switch while the instrument is up,
+                    // even to the index that was current before it -- otherwise
+                    // "already on pulse" is reported and the instrument stays on
+                    // screen, which is a control that does nothing.
+                    switching = wanted != current || showing_sync;
                     if (!switching) {
                         std::printf("holocron: already on \"%s\"\n", vault[current].name.c_str());
                         std::fflush(stdout);
@@ -2605,7 +2732,8 @@ int main(int argc, char** argv)
             }
 
             if (switching) {
-                current = wanted;
+                current      = wanted;
+                showing_sync = false;
                 // Pushed so the control page follows the ARROW KEYS too. The page
                 // already knows about its own POSTs; this is the other direction.
                 companion.set_current_crystal(current);
@@ -2646,7 +2774,8 @@ int main(int argc, char** argv)
             // so calling it every frame costs nothing.
             if (watch && watch->poll(std::chrono::steady_clock::now())) {
                 Crystal crystal;
-                build_crystal(vault[current].stem.c_str(), crystal_facet, true, "reloaded",
+                build_crystal(showing_sync ? kSyncStem : vault[current].stem.c_str(),
+                              crystal_facet, true, "reloaded",
                               crystal);
             }
         }
