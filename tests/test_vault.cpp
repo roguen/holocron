@@ -270,7 +270,7 @@ TEST_CASE("every crystal in the shipped vault may be published", "[vault][proven
 
     for (const VaultEntry& e : v) {
         INFO("entry: " << e.name << " (" << e.stem << ")");
-        if (e.is_archive) {
+        if (e.kind == VaultKind::kArchive) {
             Archive     a;
             std::string detail;
             INFO(detail);
@@ -285,4 +285,55 @@ TEST_CASE("every crystal in the shipped vault may be published", "[vault][proven
 
     // The enforcement surface has to have actually run over something.
     CHECK(checked >= v.size());
+}
+
+TEST_CASE("an archive with a projectM layer scans clean", "[vault]")
+{
+    // THE SCAN USED TO REJECT IT. Every layer was handed to load_crystal to prove
+    // it exists before anything is drawn, which is the vault's whole promise --
+    // but a projectM layer names no crystal, so the scanner called load_crystal
+    // on an empty stem and reported `layer ``: cannot open .toml`. The archive
+    // parsed fine and the vault refused to offer it, which reads as a corrupt
+    // manifest rather than as the scanner asking the wrong question.
+    Scratch s;
+    s.crystal("duel", "duel");
+    s.file("mixed.toml", "name = \"duel over projectM\"\n"
+                         "\n[[layer]]\nprojectm = true\n"
+                         "\n[[layer]]\ncrystal = \"duel\"\nblend = \"screen\"\n");
+
+    std::vector<VaultProblem> problems;
+    const auto                v = scan_vault(s.path(), problems);
+
+    for (const VaultProblem& p : problems) {
+        INFO("problem: " << p.stem << " -- " << p.detail);
+    }
+    CHECK(problems.empty());
+    REQUIRE(v.size() == 2);
+
+    bool found = false;
+    for (const VaultEntry& e : v) {
+        if (e.name == "duel over projectM") {
+            found = true;
+            CHECK(e.kind == VaultKind::kArchive);
+        }
+    }
+    CHECK(found);
+}
+
+TEST_CASE("an archive whose CRYSTAL layer is missing is still a problem", "[vault]")
+{
+    // The check above must not have been weakened into "skip validation for any
+    // archive that mentions projectM". A crystal layer naming something absent is
+    // exactly as broken as it ever was.
+    Scratch s;
+    s.file("mixed.toml", "name = \"half missing\"\n"
+                         "\n[[layer]]\nprojectm = true\n"
+                         "\n[[layer]]\ncrystal = \"nothing-here\"\n");
+
+    std::vector<VaultProblem> problems;
+    const auto                v = scan_vault(s.path(), problems);
+
+    CHECK(v.empty());
+    REQUIRE(problems.size() == 1);
+    CHECK(problems[0].detail.find("nothing-here") != std::string::npos);
 }

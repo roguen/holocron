@@ -38,25 +38,41 @@
 
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace holocron {
 
-// One crystal found in a vault. `stem` is what load_crystal() takes; `name` is
-// what the manifest calls itself, which is what a person should ever be shown.
+// What a vault entry is.
+//
+// An archive is a stack; a crystal is one shader; projectM is a shared library
+// full of somebody else's presets. ALL THREE LIVE IN ONE LIST on purpose (issue
+// 155): from the couch "what is on screen" is one question, and a separate list
+// would put the loader's convenience in the user's way.
+//
+// The player does not branch on this to draw -- everything becomes an Archive --
+// but something has to know which loader to call, and a caller that wants to say
+// "3 crystals and 2 archives" needs to be able to count them.
+//
+// kProjectM IS NEVER PRODUCED BY A SCAN. There is no file on disk to find: the
+// player synthesises the entry when `[projectm]` is configured and the library
+// actually loaded. It is in this enum rather than beside it because it is one of
+// the things the arrow keys move between, which is the only thing a vault entry
+// really means.
+enum class VaultKind : std::uint8_t {
+    kCrystal = 0,
+    kArchive,
+    kProjectM,
+};
+
+// One entry in a vault. `stem` is what the loader takes -- empty for projectM,
+// which has no file. `name` is what the manifest calls itself, which is what a
+// person should ever be shown.
 struct VaultEntry {
     std::string stem;
     std::string name;
-
-    // An archive is a stack; a crystal is one shader. BOTH LIVE IN ONE LIST on
-    // purpose (issue 155): from the couch "what is on screen" is one question,
-    // and a separate list would put the loader's convenience in the user's way.
-    //
-    // The player does not branch on this -- it loads a crystal as an archive of
-    // one -- but the scanner has to know which loader to call, and a caller that
-    // wants to say "3 crystals and 2 archives" needs to be able to count them.
-    bool is_archive = false;
+    VaultKind   kind = VaultKind::kCrystal;
 };
 
 // A crystal that announced itself with a manifest and then failed to load.

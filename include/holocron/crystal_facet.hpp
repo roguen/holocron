@@ -58,16 +58,18 @@
 #include <memory>
 #include <string>
 
+#include <holocron/facet.hpp>
+
 namespace holocron {
 
 struct AudioFrame;
 struct Crystal;
 struct TrackContext;
 
-class CrystalFacet {
+class CrystalFacet final : public Facet {
 public:
     CrystalFacet();
-    ~CrystalFacet();
+    ~CrystalFacet() override;
 
     CrystalFacet(const CrystalFacet&)            = delete;
     CrystalFacet& operator=(const CrystalFacet&) = delete;
@@ -80,10 +82,14 @@ public:
     bool init(const Crystal& crystal, std::string& out_log);
 
     void shutdown();
-    bool ready() const;
+    bool ready() const override;
 
     // Manifest uniforms that resolved to no location, because the compiler
     // removed them as unused. Zero on a crystal whose GLSL and manifest agree.
+    //
+    // NOT ON `Facet`, deliberately. It is a shader compiler's diagnostic, and the
+    // only caller is the code that just built this crystal and knows what it
+    // built. See facet.hpp.
     std::size_t unused_uniforms() const;
 
     // The value u_time would be given right now, and a way to set it.
@@ -93,10 +99,10 @@ public:
     // restart u_time at zero -- so anything with slow motion in it would jump
     // back to the beginning at precisely the moment the author is trying to
     // judge that motion.
-    float elapsed() const;
-    void  set_elapsed(float seconds);
+    float elapsed() const override;
+    void  set_elapsed(float seconds) override;
 
-    void draw(const AudioFrame& frame, const TrackContext& track, int width, int height);
+    void draw(const AudioFrame& frame, const TrackContext& track, int width, int height) override;
 
 private:
     struct Impl;

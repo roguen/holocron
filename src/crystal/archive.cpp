@@ -27,6 +27,8 @@ const char* to_string(ArchiveError e)
     case ArchiveError::kNoLayers:            return "the archive has no layers";
     case ArchiveError::kTooManyLayers:       return "the archive has more layers than the "
                                                     "compositor will draw";
+    case ArchiveError::kAmbiguousSource:     return "a layer names both a crystal and projectm, "
+                                                    "and a layer is drawn by one thing";
     case ArchiveError::kUnknownBlend:        return "the archive names a blend mode that does "
                                                     "not exist";
     case ArchiveError::kUnknownField:        return "a layer's opacity is bound to a name the "
@@ -146,13 +148,35 @@ ArchiveError load_archive(const std::string& stem_path, Archive& out, std::strin
 
         ArchiveLayer layer;
 
-        const auto* crystal = (*entry)["crystal"].as_string();
-        if (crystal == nullptr || crystal->get().empty()) {
+        // -- what draws this layer ---------------------------------------------
+        //
+        // `crystal = "stem"` or `projectm = true`, and EXACTLY ONE of them.
+        //
+        // Both is refused rather than resolved by precedence. An author who wrote
+        // both meant something, and picking one silently gives them the other
+        // half of the time with nothing to say which. Neither is the same missing
+        // -key error it has always been.
+        const auto* crystal  = (*entry)["crystal"].as_string();
+        const bool  has_crystal = crystal != nullptr && !crystal->get().empty();
+
+        const auto* projectm     = (*entry)["projectm"].as_boolean();
+        const bool  has_projectm = projectm != nullptr && projectm->get();
+
+        if (has_crystal && has_projectm) {
             out_detail = manifest_path + ": layer " + std::to_string(i) +
-                         " is missing required key `crystal`";
+                         " names both `crystal` and `projectm`";
+            return ArchiveError::kAmbiguousSource;
+        }
+        if (has_projectm) {
+            layer.source = LayerSource::kProjectM;
+        } else if (has_crystal) {
+            layer.source  = LayerSource::kCrystal;
+            layer.crystal = dir + crystal->get();
+        } else {
+            out_detail = manifest_path + ": layer " + std::to_string(i) +
+                         " is missing required key `crystal` (or `projectm = true`)";
             return ArchiveError::kManifestIncomplete;
         }
-        layer.crystal = dir + crystal->get();
 
         if (const auto* blend = (*entry)["blend"].as_string()) {
             if (!parse_blend(blend->get(), layer.blend)) {
@@ -226,6 +250,13 @@ ArchiveError load_archive(const std::string& stem_path, Archive& out, std::strin
 
     out.watch_paths.push_back(manifest_path);
     for (const ArchiveLayer& l : out.layers) {
+        // A projectM layer has no files to watch. Adding ".toml" and ".frag" to
+        // an empty stem would put two paths named after nothing into the poll --
+        // harmless, and exactly the sort of thing that turns up years later as a
+        // stat() on a file called ".frag" in the working directory.
+        if (l.source != LayerSource::kCrystal) {
+            continue;
+        }
         out.watch_paths.push_back(l.crystal + ".toml");
         out.watch_paths.push_back(l.crystal + ".frag");
     }
@@ -251,6 +282,21 @@ Archive archive_of_crystal(const std::string& stem, const std::string& name)
     // the crystal's own pair, so --crystal keeps exactly the reload it had.
     a.watch_paths.push_back(stem + ".toml");
     a.watch_paths.push_back(stem + ".frag");
+    return a;
+}
+
+Archive archive_of_projectm(const std::string& name)
+{
+    Archive a;
+    a.name = name;
+
+    ArchiveLayer layer;
+    layer.source = LayerSource::kProjectM;
+    a.layers.push_back(std::move(layer));
+
+    // No manifest, no crystal, and so no watch paths. There is no file whose
+    // saving should rebuild this -- the presets are somebody else's and
+    // libprojectM reloads them on its own schedule.
     return a;
 }
 

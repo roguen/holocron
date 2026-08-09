@@ -261,11 +261,13 @@ ProjectMLibrary::~ProjectMLibrary() { unload(); }
 
 ProjectMLibrary::ProjectMLibrary(ProjectMLibrary&& other) noexcept
     : core_(other.core_), playlist_(other.playlist_), api_(other.api_),
-      version_(std::move(other.version_)), core_path_(std::move(other.core_path_))
+      version_(std::move(other.version_)), core_path_(std::move(other.core_path_)),
+      gl_ready_(other.gl_ready_)
 {
     other.core_     = nullptr;
     other.playlist_ = nullptr;
     other.api_      = ProjectMApi{};
+    other.gl_ready_ = false;
 }
 
 ProjectMLibrary& ProjectMLibrary::operator=(ProjectMLibrary&& other) noexcept
@@ -277,12 +279,107 @@ ProjectMLibrary& ProjectMLibrary::operator=(ProjectMLibrary&& other) noexcept
         api_       = other.api_;
         version_   = std::move(other.version_);
         core_path_ = std::move(other.core_path_);
+        gl_ready_  = other.gl_ready_;
 
         other.core_     = nullptr;
         other.playlist_ = nullptr;
         other.api_      = ProjectMApi{};
+        other.gl_ready_ = false;
     }
     return *this;
+}
+
+bool ProjectMLibrary::init_gl(std::string& out_error)
+{
+    out_error.clear();
+
+    if (!loaded()) {
+        out_error = "libprojectM is not loaded";
+        return false;
+    }
+    if (gl_ready_) {
+        return true;
+    }
+
+#if defined(_WIN32)
+    // glew32.dll is already in the process: projectM-4.dll imports it, so the
+    // loader brought it in when the core module opened. GetModuleHandle rather
+    // than a second LoadLibrary, so there is exactly one GLEW in the process and
+    // exactly one function-pointer table to initialise -- two would leave
+    // libprojectM using whichever one it bound at link time, which is precisely
+    // the bug this is fixing.
+    HMODULE glew = GetModuleHandleA("glew32.dll");
+    if (glew == nullptr) {
+        // A libprojectM built against a STATIC GLEW has the symbols inside
+        // itself and does not export them, so there is nothing reachable to
+        // initialise and rendering would crash. Refusing here turns an access
+        // violation with no output into a sentence.
+        out_error = "libprojectM needs GLEW initialised by its host and glew32.dll is not in "
+                    "this process\n  a libprojectM linked against a static GLEW cannot be used "
+                    "this way -- use a build that ships glew32.dll beside it";
+        return false;
+    }
+
+    using PfnGlewInit           = unsigned int (*)();
+    using PfnGlewGetErrorString = const unsigned char* (*)(unsigned int);
+
+    void* raw_init = reinterpret_cast<void*>(GetProcAddress(glew, "glewInit"));
+    // An exported DATA symbol, not a function: GetProcAddress hands back the
+    // address of the variable itself.
+    auto* experimental = reinterpret_cast<unsigned char*>(GetProcAddress(glew, "glewExperimental"));
+
+    if (raw_init == nullptr || experimental == nullptr) {
+        out_error = "glew32.dll does not export glewInit and glewExperimental";
+        return false;
+    }
+
+    // GL_TRUE. Without this, GLEW's ordinary path reads GL_EXTENSIONS as one
+    // string, which a core profile refuses, and every pointer stays null.
+    *experimental = 1;
+
+    PfnGlewInit glew_init = nullptr;
+    std::memcpy(&glew_init, &raw_init, sizeof(glew_init));
+
+    const unsigned int err = glew_init();
+    if (err != 0) {   // GLEW_OK
+        std::string why = "glewInit() failed";
+        if (void* raw_str = reinterpret_cast<void*>(GetProcAddress(glew, "glewGetErrorString"));
+            raw_str != nullptr) {
+            PfnGlewGetErrorString to_string_fn = nullptr;
+            std::memcpy(&to_string_fn, &raw_str, sizeof(to_string_fn));
+            if (const unsigned char* text = to_string_fn(err); text != nullptr) {
+                why += ": ";
+                why += reinterpret_cast<const char*>(text);
+            }
+        }
+        out_error = why + "\n  is a GL context current on this thread?";
+        return false;
+    }
+
+    // glewInit with glewExperimental set generates a GL_INVALID_ENUM as it
+    // probes, which is documented GLEW behaviour and harmless. It is swallowed
+    // here rather than left for the next thing to draw to find, because this
+    // project runs with KHR_debug on and an unexplained error in the log during
+    // startup is exactly the sort of thing that gets chased for an hour.
+    //
+    // Reached through GLEW's own now-initialised glGetError rather than glad's:
+    // they are the same driver entry point, but asking the loader that produced
+    // the error keeps this honest.
+    if (void* raw_get_error = reinterpret_cast<void*>(GetProcAddress(glew, "glGetError"));
+        raw_get_error != nullptr) {
+        using PfnGetError            = unsigned int (*)();
+        PfnGetError get_error        = nullptr;
+        std::memcpy(&get_error, &raw_get_error, sizeof(get_error));
+        for (int i = 0; i < 8 && get_error() != 0; ++i) {
+        }
+    }
+#endif
+
+    // On Linux libprojectM calls GL directly through GL_GLEXT_PROTOTYPES, so the
+    // dynamic linker has already resolved everything and there is nothing here to
+    // do. Reporting ready is the truth rather than a shortcut.
+    gl_ready_ = true;
+    return true;
 }
 
 void ProjectMLibrary::unload()
@@ -295,6 +392,7 @@ void ProjectMLibrary::unload()
     playlist_ = nullptr;
     core_     = nullptr;
     api_      = ProjectMApi{};
+    gl_ready_ = false;
     version_.clear();
     core_path_.clear();
 }
