@@ -30,6 +30,7 @@ add_executable(holocron_tests
     test_companion_server.cpp
     test_plex_link.cpp
     test_plex_playback.cpp
+    test_lyrics.cpp
     test_palette.cpp
     test_image_decode.cpp
 )
