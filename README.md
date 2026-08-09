@@ -137,12 +137,15 @@ no dropouts across a full track:
 That is milestone **M5**, and it is the milestone the project exists for: the
 owner is in Plexamp and casts to the theater. See the use case above.
 
-**What M5 still owes, none of it functional:** an on-disk artwork cache, so the
-same sleeve is not re-fetched for every track ([#118](https://github.com/roguen/holocron/issues/118));
-shuffle is not forwarded to the server, so shuffling in Plexamp still plays an
-album in order ([#120](https://github.com/roguen/holocron/issues/120)); and a
-queue is never re-read, so a track added with "play next" is not picked up
-([#121](https://github.com/roguen/holocron/issues/121)).
+Shuffle, "play next" and staying paused across a skip all work as of `v0.2.1`.
+
+**What M5 still owes, none of it functional:** an artwork cache, so the same
+sleeve is not re-fetched for every track
+([#118](https://github.com/roguen/holocron/issues/118)); genre and year on
+`TrackContext`, which are not on a Plex `Track` element and would cost a second
+request each; and PNG album art, which needs zlib
+([#116](https://github.com/roguen/holocron/issues/116)) and is moot while Plex
+serves JPEG.
 
 M1's spine and M2's plumbing are complete underneath it.
 

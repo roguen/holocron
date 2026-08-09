@@ -411,12 +411,28 @@ bool play_queue_track(PlaybackSession& session, const PlexQueue& queue,
     what.duration_ms = track.duration_ms;
     what.source      = stream_url(queue_request, track.part_key);
 
+    // CAPTURED BEFORE start(), WHICH CLEARS IT.
+    //
+    // Skipping while paused must land on the next track still paused. Observed
+    // on the rack 2026-08-08: Plexamp sent pause, then skipNext, then pause
+    // AGAIN -- it was correcting a player that had started playing on the skip,
+    // which is the controller's model diverging from the player and the thing
+    // that makes it take control back.
+    //
+    // The same rule PlaybackSession::seek already follows, for the same reason.
+    // It does NOT affect the auto-advance: a paused track never reaches its own
+    // end, so that path always arrives here with was_paused false.
+    const bool was_paused = session.paused();
+
     std::string        detail;
     const SessionError serr = session.start(what.source, 0, what, detail);
     if (serr != SessionError::kOk) {
         std::fprintf(stderr, "holocron: skipping \"%s\" -- %s\n", track.title.c_str(),
                      to_string(serr));
         return false;
+    }
+    if (was_paused) {
+        session.set_paused(true);
     }
 
     timeline.time_ms            = 0;
@@ -432,10 +448,11 @@ bool play_queue_track(PlaybackSession& session, const PlexQueue& queue,
     timeline.address            = queue_request.address;
     timeline.port               = queue_request.port;
     timeline.protocol           = queue_request.protocol;
-    timeline.state              = TransportState::kPlaying;
+    timeline.state = was_paused ? TransportState::kPaused : TransportState::kPlaying;
 
-    std::printf("holocron: %s \"%s\" (%zu of %zu)%s\n", verb, track.title.c_str(), index + 1,
-                queue.tracks.size(), session.bit_perfect() ? " [BIT-PERFECT]" : "");
+    std::printf("holocron: %s \"%s\" (%zu of %zu)%s%s\n", verb, track.title.c_str(), index + 1,
+                queue.tracks.size(), was_paused ? " [PAUSED]" : "",
+                session.bit_perfect() ? " [BIT-PERFECT]" : "");
     std::fflush(stdout);
     return true;
 }
@@ -581,6 +598,30 @@ struct CastCommand {
         }
         out_position = seek_to_ms;
         seek         = false;
+        return true;
+    }
+
+    // The controller has changed the queue on the server and wants it re-read.
+    // Only the newest id survives, for the same reason as a scrub: the answer is
+    // "go and look", and looking twice tells you nothing extra.
+    bool        refresh_queue = false;
+    std::string refresh_queue_id;
+
+    void request_refresh_queue(const std::string& play_queue_id)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        refresh_queue    = true;
+        refresh_queue_id = play_queue_id;
+    }
+
+    bool take_refresh_queue(std::string& out_id)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!refresh_queue) {
+            return false;
+        }
+        out_id        = refresh_queue_id;
+        refresh_queue = false;
         return true;
     }
 
@@ -1192,6 +1233,9 @@ int main(int argc, char** argv)
     companion.set_seek_handler([&cast](std::int64_t position_ms) {
         cast.request_seek(position_ms);
     });
+    companion.set_refresh_queue_handler([&cast](const std::string& play_queue_id) {
+        cast.request_refresh_queue(play_queue_id);
+    });
 
     // Linking comes before discovery: it needs the machine identifier and
     // nothing else, and a run that is signing in has no business also
@@ -1689,6 +1733,68 @@ int main(int argc, char** argv)
                                             "skipped to")) {
                     at_in_queue = target;
                     begin_track(queue_request, queue.tracks[target], session.now_playing());
+                }
+            }
+        }
+
+        // The queue changed on the server and the controller has said so.
+        //
+        // PLAYBACK IS NOT DISTURBED. This replaces the LIST, not what is playing:
+        // adding a track with "play next" must not restart the current one. The
+        // position is re-found by playQueueItemID rather than carried over as an
+        // index, because the queue may have grown above the current track or been
+        // reordered entirely -- the same reason skipTo matches on item id first.
+        if (std::string refresh_id; cast.take_refresh_queue(refresh_id)) {
+            if (queue.empty() || refresh_id != queue.id) {
+                // A refresh naming a queue this player is not on. Ignored rather
+                // than fetched: acting on it would replace what is playing with
+                // somebody else's queue.
+                std::printf("holocron: ignoring a refresh for queue %s -- playing %s\n",
+                            refresh_id.c_str(), queue.empty() ? "nothing" : queue.id.c_str());
+                std::fflush(stdout);
+            } else {
+                const std::string playing_item =
+                    at_in_queue < queue.tracks.size()
+                        ? queue.tracks[at_in_queue].play_queue_item_id
+                        : std::string{};
+
+                PlexQueue   refreshed;
+                std::string detail;
+                const HttpError rerr = fetch_play_queue(queue_request, refresh_id,
+                                                        device_identity, refreshed, detail);
+                if (rerr != HttpError::kOk) {
+                    // Not fatal. The old queue is still playable and still
+                    // correct as far as it goes; the added track simply stays
+                    // invisible until the next refresh.
+                    std::fprintf(stderr, "holocron: could not re-read the play queue -- %s\n"
+                                         "  %s\n",
+                                 to_string(rerr), detail.c_str());
+                } else {
+                    const std::size_t was = queue.tracks.size();
+                    queue                 = refreshed;
+
+                    // Re-find where we are. Falling back to `selected` rather
+                    // than to 0: if the playing track has been removed from the
+                    // queue, the server's own idea of the current item is a far
+                    // better guess than the top of the album.
+                    at_in_queue = queue.selected < queue.tracks.size() ? queue.selected : 0;
+                    if (!playing_item.empty()) {
+                        for (std::size_t i = 0; i < queue.tracks.size(); ++i) {
+                            if (queue.tracks[i].play_queue_item_id == playing_item) {
+                                at_in_queue = i;
+                                break;
+                            }
+                        }
+                    }
+
+                    // The version moved, so the timeline has to say so or the
+                    // controller keeps believing the player is on the old one.
+                    timeline.play_queue_version = queue.version;
+
+                    std::printf("holocron: play queue %s re-read -- %zu track(s) (was %zu), "
+                                "now on %zu\n",
+                                queue.id.c_str(), queue.tracks.size(), was, at_in_queue + 1);
+                    std::fflush(stdout);
                 }
             }
         }

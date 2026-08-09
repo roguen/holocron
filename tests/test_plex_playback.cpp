@@ -700,3 +700,105 @@ TEST_CASE("the artwork token is encoded too", "[plex][playback][art]")
     REQUIRE(path.find("a b&c") == std::string::npos);
     REQUIRE(path.find("X-Plex-Token=a%20b%26c") != std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Ordering the queue
+//
+// The SERVER orders it. These parameters are the player's to forward and not the
+// player's to decide -- hardcoding them made shuffle a no-op (issue 120).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("shuffle is read off the command rather than assumed",
+          "[plex][playback][queue]")
+{
+    PlayRequest request;
+    std::string detail;
+
+    REQUIRE(parse_create_play_queue({{"address", "host"},
+                                     {"uri", "server://x/library/metadata/1/children"},
+                                     {"shuffle", "1"}},
+                                    request, detail));
+    CHECK(request.shuffle);
+
+    REQUIRE(parse_create_play_queue({{"address", "host"},
+                                     {"uri", "server://x/library/metadata/1/children"},
+                                     {"shuffle", "0"}},
+                                    request, detail));
+    CHECK_FALSE(request.shuffle);
+}
+
+TEST_CASE("ordering parameters default to off when absent", "[plex][playback][queue]")
+{
+    // Absent means 0, which is what these were hardcoded to before they were read
+    // at all -- so a controller that sends none of them gets the previous
+    // behaviour exactly.
+    PlayRequest request;
+    std::string detail;
+
+    REQUIRE(parse_create_play_queue(
+        {{"address", "host"}, {"uri", "server://x/library/metadata/1/children"}}, request, detail));
+
+    CHECK_FALSE(request.shuffle);
+    CHECK(request.repeat == 0);
+    CHECK_FALSE(request.continuous);
+}
+
+TEST_CASE("repeat is a mode, not a flag", "[plex][playback][queue]")
+{
+    // 0 off, 1 repeat all, 2 repeat one. A bool could not express repeat-one, and
+    // mapping it to true would repeat the whole album instead of the track.
+    PlayRequest request;
+    std::string detail;
+
+    for (int mode = 0; mode <= 2; ++mode) {
+        REQUIRE(parse_create_play_queue({{"address", "host"},
+                                         {"uri", "server://x/library/metadata/1/children"},
+                                         {"repeat", std::to_string(mode)}},
+                                        request, detail));
+        CHECK(request.repeat == mode);
+    }
+}
+
+TEST_CASE("an out-of-range repeat mode is clamped, not forwarded",
+          "[plex][playback][queue]")
+{
+    // Forwarded verbatim it is a 400 from the server, which presents as the cast
+    // doing nothing at all rather than as a bad parameter.
+    PlayRequest request;
+    std::string detail;
+
+    REQUIRE(parse_create_play_queue({{"address", "host"},
+                                     {"uri", "server://x/library/metadata/1/children"},
+                                     {"repeat", "9"}},
+                                    request, detail));
+    CHECK(request.repeat == 0);
+}
+
+TEST_CASE("garbage in an ordering parameter does not refuse the album",
+          "[plex][playback][queue]")
+{
+    // An unparseable `shuffle` is not a reason to decline to play. Treated as
+    // absent, which is the conservative reading.
+    PlayRequest request;
+    std::string detail;
+
+    REQUIRE(parse_create_play_queue({{"address", "host"},
+                                     {"uri", "server://x/library/metadata/1/children"},
+                                     {"shuffle", "yes-please"},
+                                     {"continuous", ""}},
+                                    request, detail));
+    CHECK_FALSE(request.shuffle);
+    CHECK_FALSE(request.continuous);
+}
+
+TEST_CASE("continuous is read off the command", "[plex][playback][queue]")
+{
+    PlayRequest request;
+    std::string detail;
+
+    REQUIRE(parse_create_play_queue({{"address", "host"},
+                                     {"uri", "server://x/library/metadata/1/children"},
+                                     {"continuous", "1"}},
+                                    request, detail));
+    CHECK(request.continuous);
+}
