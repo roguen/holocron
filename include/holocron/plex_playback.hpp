@@ -296,6 +296,26 @@ bool parse_create_play_queue(const std::vector<std::pair<std::string, std::strin
 HttpError create_play_queue(const PlayRequest& request, const std::string& client_identifier,
                             PlexQueue& out, std::string& out_detail);
 
+// Re-read a queue that already exists.
+//
+// THIS IS HOW "PLAY NEXT" WORKS, and it is not a poll.
+//
+// Adding a track from the phone changes the queue ON THE SERVER; the player's
+// copy is then stale and every track added is invisible to it. Observed on the
+// rack 2026-08-08: a song added with "play next" appeared in Plexamp's queue,
+// never played, and could not be skipped to.
+//
+// The controller says so explicitly rather than expecting anyone to notice --
+// it sends `/player/playback/refreshPlayQueue?playQueueID=N`. That command is
+// the trigger; this is what answers it.
+//
+// GET, NOT POST. The queue exists. Posting again creates a SECOND queue with a
+// new id that the controller is not watching, leaving the player playing
+// something nothing else knows about.
+HttpError fetch_play_queue(const PlayRequest& request, const std::string& queue_id,
+                           const std::string& client_identifier, PlexQueue& out,
+                           std::string& out_detail);
+
 // Read a `/playQueues` response.
 //
 // Exposed because it is the part most likely to be wrong and the only part

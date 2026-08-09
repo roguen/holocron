@@ -128,6 +128,17 @@ public:
     // of the track, matching every other position in this protocol.
     using SeekHandler = std::function<void(std::int64_t position_ms)>;
 
+    // Called when a controller says its play queue has changed and the player
+    // should re-read it. `play_queue_id` is the queue the controller means.
+    //
+    // THIS IS THE "PLAY NEXT" MECHANISM. Adding a track from the phone changes
+    // the queue on the SERVER, and the controller then sends
+    // `refreshPlayQueue?playQueueID=N` rather than expecting the player to poll
+    // for a version bump. Ignoring it means every track added after the cast is
+    // invisible: it shows in Plexamp's queue, never plays, and cannot be skipped
+    // to. Observed on the rack 2026-08-08.
+    using RefreshQueueHandler = std::function<void(const std::string& play_queue_id)>;
+
     // Set before start(). Unset handlers mean the command is logged and
     // acknowledged, which is what happened before anything could play.
     void set_play_handler(PlayHandler handler);
@@ -136,6 +147,7 @@ public:
     void set_queue_handler(QueueHandler handler);
     void set_skip_handler(SkipHandler handler);
     void set_seek_handler(SeekHandler handler);
+    void set_refresh_queue_handler(RefreshQueueHandler handler);
 
     // What to report to a controller that asks.
     //

@@ -606,6 +606,54 @@ HttpError create_play_queue(const PlayRequest& request, const std::string& clien
     return HttpError::kOk;
 }
 
+HttpError fetch_play_queue(const PlayRequest& request, const std::string& queue_id,
+                           const std::string& client_identifier, PlexQueue& out,
+                           std::string& out_detail)
+{
+    out_detail.clear();
+    if (queue_id.empty()) {
+        out_detail = "no play queue id to refresh";
+        return HttpError::kBadUrl;
+    }
+
+    // GET, not POST. The queue already exists -- this reads it back after the
+    // controller has changed it. Posting again would create a SECOND queue with
+    // a new id, which the controller is not watching and which would leave the
+    // player playing something nothing else knows about.
+    //
+    // The same options are sent as on creation. The server treats them as the
+    // window it returns the queue through, and omitting them has been observed
+    // elsewhere to return a truncated container.
+    const std::string path = "/playQueues/" + url_encode(queue_id) +
+                             "?own=1&includeExternalMedia=1";
+
+    // Token as a HEADER, for the same undocumented reason create_play_queue needs
+    // it: as a query parameter this endpoint answers a bare 400 with an HTML body
+    // and no explanation.
+    HttpsResponse   response;
+    const HttpError err =
+        https_request("GET", request.address, request.port, path,
+                      {{"X-Plex-Token", request.token},
+                       {"X-Plex-Client-Identifier", client_identifier},
+                       {"X-Plex-Product", "Holocron"},
+                       {"Accept", "application/xml"}},
+                      response, out_detail);
+    if (err != HttpError::kOk) {
+        return err;
+    }
+    if (response.status != 200) {
+        out_detail = "the server answered HTTP " + std::to_string(response.status) +
+                     " reading play queue " + queue_id;
+        return HttpError::kRequestFailed;
+    }
+
+    if (!parse_play_queue(response.body, out)) {
+        out_detail = "play queue " + queue_id + " came back with nothing playable in it";
+        return HttpError::kRequestFailed;
+    }
+    return HttpError::kOk;
+}
+
 HttpError report_timeline_to_server(const PlayRequest& server, const PlexTrack& track,
                                     const std::string& client_identifier,
                                     const std::string& session_identifier,
