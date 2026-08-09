@@ -60,12 +60,68 @@ where vcpkg produces static archives, suggested static linking on both platforms
 It is static on Linux and shared on Windows, and Windows is the distribution
 target (D-022).
 
-## libprojectM is not here yet, and will need care when it is
+## libprojectM: not linked, not shipped, and not in `vcpkg.json`
 
-D-012 requires libprojectM to stay **dynamically linked through its C API** to
-keep the LGPL-2.1 §6(b) boundary intact. It is an M4 dependency and is
-deliberately absent from `vcpkg.json`; it may not simply be added. When it lands,
-this file and that boundary both need revisiting.
+**Holocron does not distribute libprojectM and does not link against it.** The
+user installs it themselves and Holocron opens it at runtime.
+
+| | |
+|---|---|
+| Library | libprojectM 4 (`projectM-4`, `projectM-4-playlist`) |
+| Licence | **LGPL-2.1-or-later** — see the note below, it is not what the vcpkg port says |
+| Linkage | **none.** `LoadLibrary` / `dlopen` at runtime, C API only |
+| In `vcpkg.json`? | **no**, deliberately |
+| Verified against | 4.1.7 |
+
+This is the strongest available form of D-012's "dynamically linked through its
+C API", and it is what issue 11 asked for. There is no `#include` of a projectM
+header anywhere in this repository, no import entry in the executable, and no
+build-time switch. `include/holocron/projectm_api.hpp` declares the ~39 entry
+points the facet calls as function-pointer types and resolves them by name; a
+machine with no libprojectM runs the player one facet type short.
+
+Three consequences worth stating plainly:
+
+- **A Holocron build carries no LGPL obligation from libprojectM**, because it
+  contains none of it. The obligation would attach to somebody who shipped the
+  two together, and this project does not.
+- **LGPL-2.1 §6(b) is satisfied by construction.** The clause asks that a user be
+  able to replace the library with a modified version; here replacing the file
+  *is* the loading mechanism. Nothing further has to be arranged, and there is no
+  relinking step to document.
+- **The licence text is not in `licenses/`**, unlike every other entry in this
+  file. That is not an omission: those texts are copied from packages the pinned
+  vcpkg baseline actually installs, and this one is not installed by anything
+  here. A user who obtains libprojectM receives its `LICENSE.txt` with it.
+
+### The SPDX identifier is `LGPL-2.1-or-later`, and the vcpkg port disagrees
+
+The wiki's Preset-Packs checklist asks for this to be recorded exactly when the
+dependency lands, because "only" and "or later" behave differently against a
+GPL-3.0 work. **Checked, and the two available sources do not agree:**
+
+- **vcpkg's `ports/projectm/vcpkg.json` says `LGPL-2.1-only`.**
+- **Every C API header in the 4.1.7 release says otherwise**, in the same words
+  in each file: *"either version 2.1 of the License, or (at your option) any
+  later version."* Checked across `core.h`, `audio.h`, `render_opengl.h` and
+  `playlist.h`.
+
+The grant in the work itself is what governs, so it is **LGPL-2.1-or-later**.
+vcpkg's port metadata is a downstream packager's summary and is wrong here.
+
+It happens not to matter for Holocron, since nothing is linked or shipped. It
+would matter to anyone distributing the two together: "or later" upgrades cleanly
+into the GPL-3 family, and LGPL-2.1-only would have to route through §3's
+conversion to GPL-2-or-later first.
+
+### MilkDrop presets are never vendored, and that is a separate rule
+
+libprojectM renders `.milk` presets. Those are tens of thousands of files by
+hundreds of authors, almost all with no licence statement — which means all
+rights reserved, not public domain. **No preset ships with Holocron and none may
+be committed.** `.gitignore` blocks the extensions and the obvious directory
+names; users point `gatekeeper.toml` at a copy they obtained themselves. The full
+reasoning is on the wiki's Preset-Packs page.
 
 ## What this file does not do
 
