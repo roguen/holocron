@@ -2510,15 +2510,16 @@ int main(int argc, char** argv)
 
             // Tinted from the record. The text was rasterized white with the
             // coverage in alpha precisely so this costs nothing.
-            const glm::vec3 ink =
-                track_context.has_art
-                    ? glm::vec3(std::pow(std::clamp(track_context.palette_accent.r, 0.0f, 1.0f),
-                                         1.0f / 2.2f),
-                                std::pow(std::clamp(track_context.palette_accent.g, 0.0f, 1.0f),
-                                         1.0f / 2.2f),
-                                std::pow(std::clamp(track_context.palette_accent.b, 0.0f, 1.0f),
-                                         1.0f / 2.2f))
-                    : glm::vec3(0.95f);
+            // linear_to_srgb rather than a hand-rolled pow(x, 1/2.2). It is the
+            // real piecewise sRGB curve, it is tested, and it is the exact inverse
+            // of what extract_palette used on the way in -- three reasons to reuse
+            // it, and it also avoided needing <cmath> here, which GCC noticed and
+            // MSVC did not.
+            const glm::vec3 ink = track_context.has_art
+                                      ? glm::vec3(linear_to_srgb(track_context.palette_accent.r),
+                                                  linear_to_srgb(track_context.palette_accent.g),
+                                                  linear_to_srgb(track_context.palette_accent.b))
+                                      : glm::vec3(0.95f);
 
             overlay.draw(title_texture, left, base - block_h, title_w, title_h, ink, 1.0f, sw,
                          sh);
