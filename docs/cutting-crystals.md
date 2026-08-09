@@ -145,7 +145,7 @@ install, or the same crystal quietly looks wrong on someone else's machine.
 
 | Field | Range | Notes |
 |---|---|---|
-| `beat_phase` | 0..1 | **free-running, always safe to read** |
+| `beat_phase` | 0..1 | **free-running, always safe to read**; the wrap lands within ~10–35 ms after the beat |
 | `bar_phase` | 0..1 | same, across four beats |
 | `onset_strength` | 0..1 | enveloped, decays |
 | `onset` | 0 or 1 | true for **one ~10 ms frame** |
@@ -157,6 +157,25 @@ install, or the same crystal quietly looks wrong on someone else's machine.
 is low, so it is stale rather than wrong — but stale in a way nothing in the
 shader can detect. `beat_phase` free-runs from the estimate and is always
 readable.
+
+**How accurate the wrap is, and when to prefer `onset` instead.** The wrap sits
+roughly 10–35 ms *after* the beat, and that lag is largely constant rather than
+varying by track. The residual is inherent to the analysis: spectral flux over a
+2048-sample FFT with a ~512-sample hop spreads a transient across about four
+hops, and the flux peaks one to three hops after the attack begins.
+
+That is good enough to drive motion, a pulse, or a colour change from
+`beat_phase`. It is *not* good enough for something hard-edged where a few tens of
+milliseconds would be visible — an impact, a cut, two shapes meeting. Use `onset`
+for those: it has no grid to be offset from.
+
+> This was much worse before the fix for
+> [#94](https://github.com/roguen/holocron/issues/94). The phase used to be nudged
+> toward the nearest beat on every detected onset, which ordinary off-beat content
+> dragged — giving a **per-track** error of up to 100 ms that depended on the
+> rhythmic figure, with nothing in the shader able to tell which tracks were
+> affected. If you find an old crystal that compensates for a phase offset by
+> hand, that is why, and it should be deleted.
 
 **Do not drive a flash from `onset`.** It is true for a single analysis frame, so
 at 60 fps you will miss it about a third of the time and it reads as a glitch

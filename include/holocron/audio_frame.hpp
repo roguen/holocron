@@ -301,6 +301,28 @@ struct AudioFrame {
     // is smooth and monotonic within a beat rather than stepping. When tempo
     // tracking loses confidence it free-runs at the last known bpm rather than
     // stalling -- so it is always safe to read, it may just drift.
+    //
+    // HOW ACCURATE THE ZERO CROSSING IS, which is a different question from
+    // whether it is safe to read.
+    //
+    // The wrap sits within roughly 10 to 35 ms AFTER the beat, and that lag is
+    // largely CONSTANT rather than varying by material. The residual is inherent:
+    // the onset function is spectral flux over a 2048-sample FFT with a ~512
+    // sample hop, so a transient's energy spreads over about four hops and the
+    // flux peaks one to three hops after the attack begins.
+    //
+    // It was not always so. Until the fix for issue 94 the phase was steered by
+    // nudging it toward the nearest beat on every detected onset, which ordinary
+    // off-beat content dragged -- giving a per-track constant error of up to
+    // 100 ms that depended on the rhythmic figure. Two real tracks measured
+    // 107 ms apart. It is now estimated by correlating several seconds of onset
+    // history against a pulse train, so off-beat energy cancels instead of
+    // accumulating.
+    //
+    // The practical consequence for a crystal: driving a visible event from the
+    // wrap is now reasonable, and was not before. For a HARD-EDGED event where a
+    // few tens of milliseconds would show -- an impact, a cut -- prefer `onset`,
+    // which has no grid to be offset from.
     float beat_phase;
 
     // Phase within the current bar, 0..1, assuming 4/4. Same continuity
