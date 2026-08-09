@@ -144,6 +144,8 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     read_bool(tbl, "render", "vsync", out.vsync, bad);
     read_bool(tbl, "render", "gl_debug", out.gl_debug, bad);
     read_double(tbl, "render", "scale", out.render_scale, bad);
+    read_double(tbl, "render", "bloom", out.bloom, bad);
+    read_double(tbl, "render", "bloom_threshold", out.bloom_threshold, bad);
     read_double(tbl, "render", "grain", out.grain, bad);
     read_double(tbl, "render", "vignette", out.vignette, bad);
     read_double(tbl, "render", "safe_area", out.safe_area, bad);
@@ -167,6 +169,14 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
         // the cost. Below 0.25 the picture is unwatchable and the setting is far
         // more likely to be a typo than an intention.
         bad = "[render] scale must be between 0.25 and 1.0";
+    }
+    if (bad.empty() && (out.bloom < 0.0 || out.bloom > 4.0)) {
+        bad = "[render] bloom must be between 0 and 4";
+    }
+    if (bad.empty() && out.bloom_threshold < 0.0) {
+        // Zero is legal and means "bloom everything", which is a look. Negative
+        // is not a look, it is a sign error.
+        bad = "[render] bloom_threshold must not be negative";
     }
     if (bad.empty() && (out.grain < 0.0 || out.grain > 8.0)) {
         // Eight 8-bit steps is well past dither and into visible texture, which

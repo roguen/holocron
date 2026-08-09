@@ -5,6 +5,8 @@
 
 #include <holocron/final_pass.hpp>
 
+#include <holocron/render_target.hpp>
+
 #include <glad/glad.h>
 
 #include <string>
@@ -23,12 +25,58 @@ void main()
 }
 )glsl";
 
+// THE BRIGHT PASS AND THE BLUR, IN ONE SHADER WITH A MODE.
+//
+// Three passes share a full-screen triangle and differ in three lines, so three
+// programs would be three places to keep a sampler binding in step. `u_step` is
+// the blur direction in texels, zero for the extract.
+//
+// SEPARABLE, because a 2D Gaussian of radius r costs r^2 taps and two 1D passes
+// cost 2r for the same result. At quarter resolution with a 9-tap kernel that is
+// 18 taps a pixel instead of 81.
+const char* kBloomShader = R"glsl(
+#version 450 core
+in  vec2 v_uv;
+out vec4 frag_colour;
+
+uniform sampler2D u_source;
+uniform vec2      u_step;        // texel offset per tap; (0,0) means extract
+uniform float     u_threshold;
+
+void main()
+{
+    if (u_step == vec2(0.0)) {
+        // EXTRACT. Subtracting the threshold rather than testing against it: a
+        // hard cutoff makes a visible edge wherever the picture crosses it, and
+        // that edge crawls as the picture moves. Subtracting fades the bloom in
+        // from nothing, which is what a lens does.
+        vec3 c = texture(u_source, v_uv).rgb;
+        frag_colour = vec4(max(c - u_threshold, 0.0), 1.0);
+        return;
+    }
+
+    // A 9-tap Gaussian, weights from Pascal's triangle at row 8, normalised.
+    const float w[5] = float[](0.2270270270, 0.1945945946, 0.1216216216,
+                               0.0540540541, 0.0162162162);
+
+    vec3 sum = texture(u_source, v_uv).rgb * w[0];
+    for (int i = 1; i < 5; ++i) {
+        vec2 o = u_step * float(i);
+        sum += texture(u_source, v_uv + o).rgb * w[i];
+        sum += texture(u_source, v_uv - o).rgb * w[i];
+    }
+    frag_colour = vec4(sum, 1.0);
+}
+)glsl";
+
 const char* kFragmentShader = R"glsl(
 #version 450 core
 in  vec2 v_uv;
 out vec4 frag_colour;
 
 uniform sampler2D u_picture;
+uniform sampler2D u_bloom;
+uniform float     u_bloom_amount;
 uniform vec2      u_resolution;
 uniform float     u_time;
 uniform float     u_grain;
@@ -47,6 +95,20 @@ float hash(vec2 p)
 void main()
 {
     vec3 c = texture(u_picture, v_uv).rgb;
+
+    // -- bloom ------------------------------------------------------------
+    //
+    // ADDED, NOT MIXED. The bloom texture holds only the OVERSHOOT above the
+    // threshold, so adding it back is putting light where light already was;
+    // mixing towards it would dim everything that was not bright, which is the
+    // opposite of what a lens does.
+    //
+    // Upsampled by the sampler, which is bilinear at quarter resolution and
+    // therefore already most of a blur. That is why 9 taps is enough here and
+    // would not be at full resolution.
+    if (u_bloom_amount > 0.0) {
+        c += texture(u_bloom, v_uv).rgb * u_bloom_amount;
+    }
 
     // -- vignette ---------------------------------------------------------
     //
@@ -114,6 +176,22 @@ struct FinalPass::Impl {
     GLuint program = 0;
     GLuint vao     = 0;
 
+    // The bloom chain. `bright` holds the extract, `blur` is the other half of a
+    // ping-pong: horizontal into blur, vertical back into bright, so the result
+    // always ends up in `bright` and the combine pass has one texture to name.
+    GLuint bloom_program = 0;
+    GLint  b_source      = -1;
+    GLint  b_step        = -1;
+    GLint  b_threshold   = -1;
+
+    RenderTarget bright;
+    RenderTarget blur;
+    int          bloom_w = 0;
+    int          bloom_h = 0;
+
+    GLint u_bloom        = -1;
+    GLint u_bloom_amount = -1;
+
     GLint u_picture    = -1;
     GLint u_resolution = -1;
     GLint u_time       = -1;
@@ -127,7 +205,28 @@ FinalPass::~FinalPass() { shutdown(); }
 
 bool FinalPass::any(const FinalPassSettings& s)
 {
-    return s.grain > 0.0f || s.vignette > 0.0f || s.safe_area > 0.0f;
+    return s.grain > 0.0f || s.vignette > 0.0f || s.safe_area > 0.0f || s.bloom > 0.0f;
+}
+
+bool FinalPass::resize(int width, int height)
+{
+    // QUARTER RESOLUTION EACH WAY, so a sixteenth of the pixels. Bloom is a wide
+    // soft thing and the detail is thrown away by the blur anyway; doing it at
+    // full resolution costs sixteen times as much to produce a result nobody can
+    // tell apart. It is also what makes a 9-tap kernel reach far enough to look
+    // like a glow rather than a smudge.
+    const int w = width / 4 > 0 ? width / 4 : 1;
+    const int h = height / 4 > 0 ? height / 4 : 1;
+
+    if (impl_->bloom_w == w && impl_->bloom_h == h && impl_->bright.ready()) {
+        return true;
+    }
+    if (!impl_->bright.resize(w, h) || !impl_->blur.resize(w, h)) {
+        return false;
+    }
+    impl_->bloom_w = w;
+    impl_->bloom_h = h;
+    return true;
 }
 
 bool FinalPass::init(std::string& out_log)
@@ -167,6 +266,37 @@ bool FinalPass::init(std::string& out_log)
         return false;
     }
 
+    // The bloom chain's own program. Built here rather than lazily: a shader
+    // that only compiles the first time somebody turns bloom on is a shader
+    // whose compile error arrives mid-track.
+    {
+        std::string log;
+        const GLuint bvs = compile(GL_VERTEX_SHADER, kVertexShader, log);
+        const GLuint bfs = compile(GL_FRAGMENT_SHADER, kBloomShader, log);
+        if (bvs == 0 || bfs == 0) {
+            out_log = "bloom shader:\n" + log;
+            return false;
+        }
+        impl_->bloom_program = glCreateProgram();
+        glAttachShader(impl_->bloom_program, bvs);
+        glAttachShader(impl_->bloom_program, bfs);
+        glLinkProgram(impl_->bloom_program);
+        glDeleteShader(bvs);
+        glDeleteShader(bfs);
+
+        GLint blinked = 0;
+        glGetProgramiv(impl_->bloom_program, GL_LINK_STATUS, &blinked);
+        if (blinked == 0) {
+            out_log = "bloom shader failed to link";
+            return false;
+        }
+        impl_->b_source    = glGetUniformLocation(impl_->bloom_program, "u_source");
+        impl_->b_step      = glGetUniformLocation(impl_->bloom_program, "u_step");
+        impl_->b_threshold = glGetUniformLocation(impl_->bloom_program, "u_threshold");
+    }
+
+    impl_->u_bloom        = glGetUniformLocation(impl_->program, "u_bloom");
+    impl_->u_bloom_amount = glGetUniformLocation(impl_->program, "u_bloom_amount");
     impl_->u_picture    = glGetUniformLocation(impl_->program, "u_picture");
     impl_->u_resolution = glGetUniformLocation(impl_->program, "u_resolution");
     impl_->u_time       = glGetUniformLocation(impl_->program, "u_time");
@@ -180,6 +310,14 @@ bool FinalPass::init(std::string& out_log)
 
 void FinalPass::shutdown()
 {
+    impl_->bright.shutdown();
+    impl_->blur.shutdown();
+    impl_->bloom_w = 0;
+    impl_->bloom_h = 0;
+    if (impl_->bloom_program != 0) {
+        glDeleteProgram(impl_->bloom_program);
+        impl_->bloom_program = 0;
+    }
     if (impl_->vao != 0) {
         glDeleteVertexArrays(1, &impl_->vao);
         impl_->vao = 0;
@@ -200,8 +338,47 @@ void FinalPass::draw(TextureHandle picture, const FinalPassSettings& settings, f
     }
 
     glDisable(GL_BLEND);
-    glUseProgram(impl_->program);
     glBindVertexArray(impl_->vao);
+
+    // -- the bloom chain ------------------------------------------------------
+    //
+    // extract at quarter res -> blur horizontally -> blur vertically back into
+    // the extract target, so the result is always in `bright` and the combine
+    // pass below has one texture to name whatever happened here.
+    float bloom_amount = 0.0f;
+    if (settings.bloom > 0.0f && impl_->bright.ready() && impl_->blur.ready()) {
+        bloom_amount = settings.bloom;
+
+        glUseProgram(impl_->bloom_program);
+        glUniform1i(impl_->b_source, 0);
+        glUniform1f(impl_->b_threshold, settings.bloom_threshold);
+
+        const float tx = 1.0f / static_cast<float>(impl_->bloom_w);
+        const float ty = 1.0f / static_cast<float>(impl_->bloom_h);
+
+        impl_->bright.bind();
+        glUniform2f(impl_->b_step, 0.0f, 0.0f);
+        glBindTextureUnit(0, static_cast<GLuint>(picture));
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        impl_->blur.bind();
+        glUniform2f(impl_->b_step, tx, 0.0f);
+        glBindTextureUnit(0, static_cast<GLuint>(impl_->bright.texture()));
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        impl_->bright.bind();
+        glUniform2f(impl_->b_step, 0.0f, ty);
+        glBindTextureUnit(0, static_cast<GLuint>(impl_->blur.texture()));
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        // Back to the window, which the caller left bound before all of this.
+        RenderTarget::bind_default(screen_width, screen_height);
+    }
+
+    glUseProgram(impl_->program);
+    glUniform1f(impl_->u_bloom_amount, bloom_amount);
+    glBindTextureUnit(1, static_cast<GLuint>(impl_->bright.texture()));
+    glUniform1i(impl_->u_bloom, 1);
 
     glBindTextureUnit(0, static_cast<GLuint>(picture));
     glUniform1i(impl_->u_picture, 0);

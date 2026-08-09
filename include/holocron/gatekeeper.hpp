@@ -92,6 +92,8 @@ struct Gatekeeper {
     // shipped ones roll their own -- so it is a key rather than an opinion. A
     // safe-area mask is measured against a specific projector or it is just a
     // black border.
+    double bloom           = 0.0;
+    double bloom_threshold = 1.0;
     double grain     = 1.0;
     double vignette  = 0.0;
     double safe_area = 0.0;
