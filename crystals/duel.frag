@@ -128,7 +128,24 @@ float attacker_for(float beat)
 // full extension, and `move` is the three numbers above.
 // ---------------------------------------------------------------------------
 
-float figure(vec2 p, float side, vec3 move, float commit, float bob, out vec2 out_hand)
+// Where the striking hand is, on its own.
+//
+// SPLIT OUT BECAUSE THE POSE IS A PURE FUNCTION, which is the payoff of the
+// hash-based choreography. Knowing the hand's position at any `commit` means the
+// crystal can evaluate it at a slightly EARLIER moment and draw the arc between
+// -- a motion trail with no history, no buffer and no state. An animation that
+// accumulated pose could not do this without storing the last frame.
+vec2 hand_of(vec3 move, float commit, float bob, float lean_extra)
+{
+    float hip_y     = 0.42 + bob;
+    float lean      = move.z * 0.10 + commit * 0.12 + lean_extra;
+    float shoulder_y = hip_y + 0.30;
+    float reach     = mix(0.10, 0.30, move.y) * commit;
+    return vec2(0.06 + reach + lean * 0.0, shoulder_y + mix(-0.10, 0.10, move.x));
+}
+
+float figure(vec2 p, float side, vec3 move, float commit, float bob, float recoil,
+             out vec2 out_hand)
 {
     // Mirror into a local frame where the fighter always faces +x.
     //
@@ -152,10 +169,16 @@ float figure(vec2 p, float side, vec3 move, float commit, float bob, out vec2 ou
     vec2 knee_f = mix(hip, front, 0.5) + vec2(0.045, 0.02);
     vec2 knee_b = mix(hip, back, 0.5) + vec2(-0.03, 0.03);
 
-    // Torso leans into the strike.
-    float lean     = move.z * 0.10 + commit * 0.12;
-    vec2  shoulder = hip + vec2(lean, 0.30);
-    vec2  head     = shoulder + vec2(lean * 0.5 + 0.01, 0.10);
+    // Torso leans into the strike -- and AWAY from one that lands on it.
+    //
+    // `recoil` is what makes this a fight rather than one figure hitting a post.
+    // The defender's head snaps back and its weight goes onto the rear foot at
+    // exactly the moment of contact. Without it the struck figure stands calmly
+    // through a blow to the head, which is the single thing that most makes an
+    // animation look unfinished.
+    float lean     = move.z * 0.10 + commit * 0.12 - recoil * 0.09;
+    vec2  shoulder = hip + vec2(lean, 0.30 - recoil * 0.02);
+    vec2  head     = shoulder + vec2(lean * 0.4 + 0.01 - recoil * 0.03, 0.10 - recoil * 0.012);
 
     // THE STRIKING ARM. Its reach and height are the move; `commit` is how far
     // through the strike we are. At full commitment the hand is out past the
@@ -180,6 +203,13 @@ float figure(vec2 p, float side, vec3 move, float commit, float bob, out vec2 ou
     const float kJoint = 0.012;
 
     float d = sd_circle(p, head, 0.040);
+
+    // A NECK, DRAWN EXPLICITLY. The head used to be held on only by the smooth
+    // union overlapping the top of the torso, which works right up until the
+    // recoil moves it -- and then the head detaches and floats beside the body.
+    // That is what the first version with knockback did, and it is the kind of
+    // fault that only a rendered frame shows: the arithmetic is all valid.
+    d = smin(d, sd_segment(p, shoulder, head, kLimb * 0.9), kJoint);
     d = smin(d, sd_segment(p, hip, shoulder, kLimb * 1.25), kJoint);
 
     d = smin(d, sd_segment(p, hip, knee_f, kLimb), kJoint);
@@ -220,12 +250,25 @@ void main()
     float striker = attacker_for(beat);
     float next    = attacker_for(beat + 1.0);
 
+    // HIT STOP, and it is the most characteristic device in this whole genre.
+    //
+    // On contact everything HOLDS for a moment before the recovery starts. Two
+    // figures moving smoothly through the point of impact reads as them passing
+    // through each other; a brief freeze reads as force. It costs one line and it
+    // is the difference between motion and a hit.
+    //
+    // Implemented by warping time rather than by branching on the pose, so
+    // everything downstream -- limbs, trail, knockback -- freezes together. A
+    // freeze applied to some of those and not others looks like a glitch.
+    const float kHold = 0.07;   // fraction of a beat, about 20 ms at 200 BPM
+    float t = phase < kHold ? 0.0 : (phase - kHold) / (1.0 - kHold);
+
     // Commitment over the beat: snap out to full extension at the impact, ease
     // back to guard by the middle, then draw back up for the next one. The
     // asymmetry is what makes it read as a strike rather than a pendulum --
     // fast out, slower back.
-    float recover = 1.0 - smoothstep(0.0, 0.42, phase);
-    float windup  = smoothstep(0.55, 1.0, phase);
+    float recover = 1.0 - smoothstep(0.0, 0.42, t);
+    float windup  = smoothstep(0.55, 1.0, t);
 
     // Held to a jab when the tempo is not trusted. bpm_confidence low means the
     // grid is free-running, and a full-blooded lunge landing on nothing looks
@@ -252,13 +295,61 @@ void main()
     // about 0.36 from the root, so at 0.26 apart the hands meet just past centre.
     const float kApart = 0.26;
 
-    float d_l = figure(p - vec2(-kApart, 0.0), 1.0, pose_l, commit_l * trust, bob, hand_left);
-    float d_r = figure(p - vec2(kApart, 0.0), -1.0, pose_r, commit_r * trust, bob, hand_right);
+    // KNOCKBACK. The struck figure is driven back, and it is driven back at the
+    // moment of contact rather than gradually -- so it shares the hit-stop.
+    float recoil_l = striker > 0.0 ? recover : 0.0;   // right strikes, left recoils
+    float recoil_r = striker < 0.0 ? recover : 0.0;
 
-    hand_left  += vec2(-kApart, 0.0);
-    hand_right += vec2(kApart, 0.0);
+    // CAMERA SHAKE on the transient, not on the phase. A shake tied to the grid
+    // fires even on a beat where nothing was actually played; tied to the onset it
+    // fires when something hit. Deterministic from u_time so it does not need a
+    // random source, and small enough not to become the effect.
+    vec2 shake = vec2(sin(u_time * 137.0), cos(u_time * 101.0)) * 0.012 * u_onset;
+    p += shake;
+
+    float knock = 0.035;
+    float d_l = figure(p - vec2(-kApart - recoil_l * knock, 0.0), 1.0, pose_l,
+                       commit_l * trust, bob, recoil_l, hand_left);
+    float d_r = figure(p - vec2(kApart + recoil_r * knock, 0.0), -1.0, pose_r,
+                       commit_r * trust, bob, recoil_r, hand_right);
+
+    hand_left  += vec2(-kApart - recoil_l * knock, 0.0);
+    hand_right += vec2(kApart + recoil_r * knock, 0.0);
 
     float d = min(d_l, d_r);
+
+    // -- the trail ---------------------------------------------------------
+    //
+    // The arc the striking hand just swept, drawn by evaluating the pose at an
+    // EARLIER commitment and joining the two positions. Possible only because the
+    // pose is a pure function -- there is no stored previous frame to read.
+    //
+    // Only while actually striking. A trail on a hand returning to guard reads as
+    // the figure waving.
+    float lead   = max(recover, 0.0);
+    float trail_a = clamp(lead * trust, 0.0, 1.0);
+    float trail_b = clamp((lead - 0.35) * trust, 0.0, 1.0);
+
+    if (trail_a > 0.02) {
+        vec2 from_l = hand_of(pose_l, trail_b, bob, 0.0);
+        vec2 to_l   = hand_of(pose_l, trail_a, bob, 0.0);
+        vec2 from_r = hand_of(pose_r, trail_b, bob, 0.0);
+        vec2 to_r   = hand_of(pose_r, trail_a, bob, 0.0);
+
+        // Back into world space, mirroring the same way the figures were.
+        from_l.x += -kApart - recoil_l * knock;
+        to_l.x   += -kApart - recoil_l * knock;
+        from_r.x  = kApart + recoil_r * knock - from_r.x;
+        to_r.x    = kApart + recoil_r * knock - to_r.x;
+
+        float smear = 1e9;
+        if (striker < 0.0) {
+            smear = sd_segment(p, from_l, to_l, 0.006);
+        } else {
+            smear = sd_segment(p, from_r, to_r, 0.006);
+        }
+        d = min(d, smear + 0.004);   // slightly inset so it reads as thinner
+    }
 
     // -- colour ------------------------------------------------------------
 

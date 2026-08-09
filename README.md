@@ -254,6 +254,30 @@ of crystals that all quietly look wrong.
 
 ---
 
+## The vault
+
+Three crystals ship, and they are deliberately different kinds of thing:
+
+| | |
+|---|---|
+| **`pulse`** | The reference. Honest rather than pretty: a ring that breathes with the bass, a rotation on the beat, a spectrum ring, a flash on onsets. If the pipeline is broken, this is what you test against. |
+| **`drift`** | Weather. Every binding drives a *quality* rather than a quantity — nothing on screen has a length you could read a value off. The picture as a place rather than a readout. |
+| **`duel`** | Two stick figures fighting, and the clashes land on the beat. |
+
+`duel` is worth reading even if you never run it, because of what it does *not*
+need. A fight looks like it requires animation state — poses carried frame to
+frame, a choreographer deciding what comes next. It requires neither. The figures
+are signed distance fields, and the **choreography is a hash of the beat number**:
+beat 41 always produces the same move, computed from 41. So it stays a pure
+function of the audio frame, which is what lets it survive a hot reload mid-track
+without the figures teleporting, and what makes the motion trail possible with no
+stored previous frame — the pose can simply be evaluated at an earlier moment.
+
+It also could not have existed before
+[#94](https://github.com/roguen/holocron/issues/94) was fixed. The beat grid used
+to carry a per-track phase error of up to a fifth of a beat. A pulse tolerates
+that; two figures meeting do not.
+
 ## Writing a crystal
 
 [`docs/cutting-crystals.md`](docs/cutting-crystals.md) is the practical guide,
