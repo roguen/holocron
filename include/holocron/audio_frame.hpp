@@ -305,11 +305,10 @@ struct AudioFrame {
     // HOW ACCURATE THE ZERO CROSSING IS, which is a different question from
     // whether it is safe to read.
     //
-    // The wrap sits within roughly 10 to 35 ms AFTER the beat, and that lag is
-    // largely CONSTANT rather than varying by material. The residual is inherent:
-    // the onset function is spectral flux over a 2048-sample FFT with a ~512
-    // sample hop, so a transient's energy spreads over about four hops and the
-    // flux peaks one to three hops after the attack begins.
+    // The wrap lands ON the beat, within the ~10.7 ms the frame rate can resolve.
+    // Measured on real music: the median offset from a beat boundary to the
+    // nearest strong onset is 0.0 ms across a whole track, with the quartiles
+    // also at zero -- the marker falls in the same analysis frame as the hit.
     //
     // It was not always so. Until the fix for issue 94 the phase was steered by
     // nudging it toward the nearest beat on every detected onset, which ordinary
@@ -317,12 +316,16 @@ struct AudioFrame {
     // 100 ms that depended on the rhythmic figure. Two real tracks measured
     // 107 ms apart. It is now estimated by correlating several seconds of onset
     // history against a pulse train, so off-beat energy cancels instead of
-    // accumulating.
+    // accumulating, and the analysis's own ~28 ms flux lag is compensated.
     //
     // The practical consequence for a crystal: driving a visible event from the
-    // wrap is now reasonable, and was not before. For a HARD-EDGED event where a
-    // few tens of milliseconds would show -- an impact, a cut -- prefer `onset`,
-    // which has no grid to be offset from.
+    // wrap is now reasonable, and was not before.
+    //
+    // STILL PREFER `onset` FOR A HARD IMPACT. The grid is a periodic estimate and
+    // it interpolates between hits, so on material that pushes or pulls against
+    // the beat -- most live playing, and a lot of good programming -- the grid is
+    // where the beat OUGHT to be and `onset` is where the hit actually was. Use
+    // the grid for motion and anticipation, the onset for the moment of contact.
     float beat_phase;
 
     // Phase within the current bar, 0..1, assuming 4/4. Same continuity

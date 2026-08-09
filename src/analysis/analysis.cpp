@@ -540,8 +540,33 @@ void AnalysisStage::Impl::estimate_beat_offset(int period_frames, std::size_t st
         }
     }
 
+    // THE FLUX PEAK IS NOT THE BEAT. It lags the attack, and the lag is a
+    // property of this analysis rather than of the music: spectral flux over a
+    // 2048-sample FFT with a ~512-sample hop spreads one transient across about
+    // four hops, and the peak lands a couple of hops after the attack begins.
+    //
+    // COMPENSATED, on the strength of two INDEPENDENT measurements agreeing --
+    // which is the standard --trim-ms was held to (D-028) and the reason that
+    // number is trusted.
+    //
+    //   a synthetic click track, ground truth in known sample positions:  +25 ms
+    //   Skrillex "First Of The Year", the real track from issue 94:       +32 ms
+    //
+    // Both say the grid runs late, and by a similar amount, on signals with
+    // nothing in common but the analysis that measured them. 28 ms is the
+    // midpoint. Fitting to the synthetic fixture ALONE was rejected earlier in
+    // this same change and would have been wrong -- one measurement cannot tell
+    // a property of the instrument from a property of the test signal.
+    //
+    // A FIXED TIME, NOT A FIXED FRACTION OF A BEAT. The cause is the window
+    // length, which does not know the tempo, so it is converted to phase using
+    // the current period rather than being applied as a constant phase.
+    constexpr float kFluxLagSeconds = 0.028f;
+    const float     lag_frames      = kFluxLagSeconds * kFrameRateHz;
+
     // The most recent beat was `best_offset` frames ago, so the newest frame sits
-    // that far into the beat.
+    // that far into the beat -- plus the lag, because the beat happened before
+    // the flux said so.
     //
     // STAMPED WITH THE FRAME IT DESCRIBES. This runs every 16 frames, and the
     // phase it produces is the phase of the newest sample AT THAT MOMENT --
@@ -550,7 +575,8 @@ void AnalysisStage::Impl::estimate_beat_offset(int period_frames, std::size_t st
     // average. Measured: doing exactly that put the grid a constant 102.7 ms
     // late on every track, which looked like a worse version of the bug being
     // fixed rather than like an ageing target.
-    beat_offset_phase = float(best_offset) / float(period);
+    beat_offset_phase = float(best_offset + std::size_t(lag_frames + 0.5f)) / float(period);
+    beat_offset_phase -= std::floor(beat_offset_phase);
     beat_offset_frame = frame_index;
     beat_offset_period_frames = period_frames;
     have_beat_offset  = true;

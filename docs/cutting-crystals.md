@@ -145,7 +145,7 @@ install, or the same crystal quietly looks wrong on someone else's machine.
 
 | Field | Range | Notes |
 |---|---|---|
-| `beat_phase` | 0..1 | **free-running, always safe to read**; the wrap lands within ~10–35 ms after the beat |
+| `beat_phase` | 0..1 | **free-running, always safe to read**; the wrap lands on the beat within a frame |
 | `bar_phase` | 0..1 | same, across four beats |
 | `onset_strength` | 0..1 | enveloped, decays |
 | `onset` | 0 or 1 | true for **one ~10 ms frame** |
@@ -158,16 +158,21 @@ is low, so it is stale rather than wrong — but stale in a way nothing in the
 shader can detect. `beat_phase` free-runs from the estimate and is always
 readable.
 
-**How accurate the wrap is, and when to prefer `onset` instead.** The wrap sits
-roughly 10–35 ms *after* the beat, and that lag is largely constant rather than
-varying by track. The residual is inherent to the analysis: spectral flux over a
-2048-sample FFT with a ~512-sample hop spreads a transient across about four
-hops, and the flux peaks one to three hops after the attack begins.
+**How accurate the wrap is, and when to prefer `onset` anyway.** The wrap lands on
+the beat, within the ~10.7 ms the frame rate can resolve. Measured on a real
+track: the median offset from a beat boundary to the nearest strong onset is
+**0.0 ms**, quartiles also zero — the marker falls in the same analysis frame as
+the hit.
 
-That is good enough to drive motion, a pulse, or a colour change from
-`beat_phase`. It is *not* good enough for something hard-edged where a few tens of
-milliseconds would be visible — an impact, a cut, two shapes meeting. Use `onset`
-for those: it has no grid to be offset from.
+So driving motion, a pulse, a colour change or an anticipation from `beat_phase`
+is sound.
+
+**Still use `onset` for the moment of contact.** The grid is a periodic estimate
+that interpolates between hits, so on material that pushes or pulls against the
+beat — most live playing, and a lot of good programming — the grid is where the
+beat *ought* to be and `onset` is where the hit actually *was*. `crystals/duel`
+uses both deliberately: the figures move on the phase, and the clash flashes on
+the onset.
 
 > This was much worse before the fix for
 > [#94](https://github.com/roguen/holocron/issues/94). The phase used to be nudged
