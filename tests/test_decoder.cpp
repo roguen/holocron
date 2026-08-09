@@ -509,3 +509,85 @@ TEST_CASE("seeking past the end leaves nothing to read", "[decoder][seek]")
     std::vector<float> scratch(1024);
     CHECK(d.read(scratch.data(), scratch.size()) == 0);
 }
+
+// ---------------------------------------------------------------------------
+// Tag encoding, issue 133
+//
+// The failure this prevents produces no error, no crash and no wrong-looking
+// data structure: just wrong characters on a screen. Tag bytes are arbitrary --
+// ID3v2.3 defaults to Latin-1 and plenty of rippers write whatever the system
+// codepage was -- while everything downstream assumes UTF-8. A tag that cannot be
+// vouched for is dropped so the caller falls back to the filename.
+//
+// Exactly the class of bug that needs a test rather than a careful reading, and
+// the same class CLAUDE.md already warns about for PowerShell edits.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("plain ASCII is valid UTF-8", "[decoder][tags]")
+{
+    CHECK(is_valid_utf8(""));
+    CHECK(is_valid_utf8("Stinkfist"));
+    CHECK(is_valid_utf8("01. Skrillex - First Of The Year (Equinox)"));
+}
+
+TEST_CASE("real UTF-8 from the rack is accepted", "[decoder][tags]")
+{
+    // Both of these are real values from the owner's library and both appear in
+    // this project's logs. AEnima is two bytes, the curly apostrophe is three.
+    CHECK(is_valid_utf8("\xC3\x86nima"));                      // Ænima
+    CHECK(is_valid_utf8("Rock n\xE2\x80\x99 Roll"));           // Rock n’ Roll
+    CHECK(is_valid_utf8("Forty Six \xE2\x80\x93 2"));          // en dash
+    CHECK(is_valid_utf8("\xF0\x9F\x8E\xB5"));                  // a 4-byte emoji
+}
+
+TEST_CASE("Latin-1 bytes are refused", "[decoder][tags]")
+{
+    // THE CASE THAT MATTERS. 0xC6 is 'AE' in Latin-1 and a 2-byte UTF-8 lead
+    // byte, so "\xC6nima" looks like the start of a sequence and is followed by
+    // 'n' -- not a continuation byte. Passed through, this is mojibake on the
+    // now-playing card.
+    CHECK_FALSE(is_valid_utf8("\xC6nima"));
+
+    // A lone high byte, which is what a Windows-1252 curly apostrophe is.
+    CHECK_FALSE(is_valid_utf8("Rock n\x92 Roll"));
+}
+
+TEST_CASE("malformed UTF-8 is refused", "[decoder][tags]")
+{
+    CHECK_FALSE(is_valid_utf8("\x80"));              // a bare continuation byte
+    CHECK_FALSE(is_valid_utf8("\xE2\x80"));          // truncated 3-byte sequence
+    CHECK_FALSE(is_valid_utf8("\xF0\x9F\x8E"));      // truncated 4-byte sequence
+    CHECK_FALSE(is_valid_utf8("\xFF\xFE"));          // invalid lead bytes
+    CHECK_FALSE(is_valid_utf8("\xC0\x80"));          // overlong encoding of NUL
+}
+
+TEST_CASE("a null tag is refused rather than dereferenced", "[decoder][tags]")
+{
+    // av_dict_get can hand back an entry whose value is null.
+    CHECK_FALSE(is_valid_utf8(nullptr));
+}
+
+TEST_CASE("a file with no tags leaves the fields empty rather than inventing them",
+          "[decoder][tags]")
+{
+    // The hand-rolled WAV writer emits no metadata chunk at all, which is exactly
+    // the case the filename fallback exists for. Empty is the correct answer here;
+    // anything else would be the decoder making something up.
+    ScopedFile f("no_tags");
+    write_wav(f.path, 48000, 2, sine(440.0, 48000, 2, 0.2));
+
+    Decoder d;
+    REQUIRE(d.open(f.path.c_str()) == DecoderError::kOk);
+
+    const SourceInfo info = d.info();
+    CHECK(info.title.empty());
+    CHECK(info.artist.empty());
+    CHECK(info.album.empty());
+    CHECK(info.genre.empty());
+    CHECK(info.year.empty());
+
+    // And the fields that do not come from tags are still populated, so an empty
+    // title is not a symptom of the probe having failed.
+    CHECK(info.sample_rate == 48000u);
+    CHECK(info.channels == 2);
+}

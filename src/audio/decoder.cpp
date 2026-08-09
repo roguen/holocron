@@ -50,6 +50,103 @@ bool codec_is_lossless(AVCodecID id)
 
 }  // namespace
 
+// See decoder.hpp for why this is public and what it prevents.
+//
+// TAG BYTES ARE ARBITRARY AND THIS IS NOT PARANOIA. ID3v2.3 defaults to Latin-1
+// and plenty of rippers write whatever the system codepage happened to be.
+// FFmpeg converts ID3 for the common cases and does not guarantee it for every
+// container.
+//
+// DROPPING A TAG WE CANNOT VOUCH FOR beats guessing at its encoding. Guessing
+// means a heuristic that is wrong sometimes and produces confidently mangled
+// text; dropping means the caller falls back to the filename, which is honest.
+bool is_valid_utf8(const char* text)
+{
+    if (text == nullptr) {
+        return false;
+    }
+
+    const auto* p = reinterpret_cast<const unsigned char*>(text);
+    while (*p != 0) {
+        int len = 0;
+        if (*p < 0x80) {
+            len = 1;
+        } else if ((*p & 0xE0) == 0xC0) {
+            len = 2;
+        } else if ((*p & 0xF0) == 0xE0) {
+            len = 3;
+        } else if ((*p & 0xF8) == 0xF0) {
+            len = 4;
+        } else {
+            return false;   // a continuation byte or an invalid lead
+        }
+
+        // Overlong two-byte forms encode ASCII in two bytes, which some encoders
+        // emit and which is not valid UTF-8.
+        if (len == 2 && (*p & 0xFE) == 0xC0) {
+            return false;
+        }
+
+        for (int i = 1; i < len; ++i) {
+            if ((p[i] & 0xC0) != 0x80) {
+                return false;
+            }
+        }
+        p += len;
+    }
+    return true;
+}
+
+namespace {
+
+// Copy one tag if the container has it and it is not already set.
+//
+// FIRST WRITER WINS, which is why the container dictionary is read before the
+// stream's: the container's is the one a tagger normally writes, and the stream's
+// is the fallback for formats that put them there instead.
+void take_tag(const AVDictionary* tags, const char* key, std::string& out)
+{
+    if (!out.empty()) {
+        return;
+    }
+    const AVDictionaryEntry* e = av_dict_get(tags, key, nullptr, 0);
+    if (e == nullptr || e->value == nullptr || e->value[0] == 0) {
+        return;
+    }
+    if (!is_valid_utf8(e->value)) {
+        return;
+    }
+    out = e->value;
+}
+
+void read_tags(const AVDictionary* tags, SourceInfo& info)
+{
+    if (tags == nullptr) {
+        return;
+    }
+
+    take_tag(tags, "title", info.title);
+    take_tag(tags, "artist", info.artist);
+    take_tag(tags, "album", info.album);
+    take_tag(tags, "genre", info.genre);
+
+    // `date` is what most containers use; Vorbis comments in particular. `year`
+    // is the older ID3 spelling and still turns up, so both are tried.
+    take_tag(tags, "date", info.year);
+    take_tag(tags, "year", info.year);
+
+    // Trimmed to the year. A `date` tag is frequently a full ISO timestamp, and
+    // "2001-05-15T00:00:00Z" on a now-playing card is noise.
+    if (info.year.size() > 4) {
+        const std::string head = info.year.substr(0, 4);
+        if (head.find_first_not_of("0123456789") == std::string::npos) {
+            info.year = head;
+        }
+    }
+}
+
+}  // namespace
+
 // ===========================================================================
 // Decoder
 // ===========================================================================
@@ -267,6 +364,15 @@ DecoderError Decoder::open(const char* path)
         (d.format_ctx->duration > 0)
             ? double(d.format_ctx->duration) / double(AV_TIME_BASE)
             : 0.0;
+
+    // Tags, from the container and then the stream.
+    //
+    // BOTH DICTIONARIES, IN THAT ORDER. Most formats put them on the container;
+    // some -- notably Matroska and a few MP4 variants -- put them on the stream
+    // instead, and a file that reads correctly in every other player would come
+    // back untitled if only one were consulted.
+    read_tags(d.format_ctx->metadata, d.info);
+    read_tags(stream->metadata, d.info);
 
     d.open_ = true;
     return DecoderError::kOk;

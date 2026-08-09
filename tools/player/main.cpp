@@ -1482,7 +1482,9 @@ int main(int argc, char** argv)
     if (opt.path != nullptr) {
         NowPlaying  what;
         what.source = opt.path;
-        what.title  = opt.path;
+        // TITLE DELIBERATELY LEFT EMPTY so the container's tags win. It used to be
+        // set to the path, which is not a title and -- because start() only fills
+        // fields the caller left blank -- would have suppressed the tag that is.
 
         std::string detail;
         const SessionError serr = session.start(opt.path, 0, what, detail);
@@ -2352,26 +2354,36 @@ int main(int argc, char** argv)
 
         track_context.playing = playing;
 
-        // A FILE PLAYED FROM THE COMMAND LINE HAS NO METADATA AT ALL.
+        // A FILE PLAYED FROM THE COMMAND LINE FILLS TrackContext FROM ITS TAGS.
         //
-        // TrackContext is populated by begin_track, which only a cast reaches --
-        // so `holocron track.flac` left the title empty and the card silently drew
-        // nothing while reporting itself switched on. Found by rendering it, not by
-        // reading the code.
+        // TrackContext is otherwise populated by begin_track, which only a cast
+        // reaches -- so `holocron track.flac` used to leave everything empty and
+        // the card drew nothing while reporting itself switched on.
         //
-        // The filename is a poor title and an honest one. Reading tags out of the
-        // container would be better and is issue 133; this is the fallback that
-        // makes the overlay work today rather than a substitute for it.
+        // The session has already read the container's tags by the time it is
+        // active (issue 133), so this is a copy rather than any work. The filename
+        // remains the fallback for a file with no tags at all, which is common
+        // enough to be worth handling and honest enough to show.
         if (track_context.title.empty() && session.active()) {
-            const std::string& source = session.now_playing().title;
-            const std::size_t  slash  = source.find_last_of("/\\");
-            std::string        name =
-                slash == std::string::npos ? source : source.substr(slash + 1);
-            const std::size_t dot = name.find_last_of('.');
-            if (dot != std::string::npos && dot > 0) {
-                name = name.substr(0, dot);
+            const NowPlaying& np = session.now_playing();
+            track_context.artist = np.artist;
+            track_context.album  = np.album;
+            track_context.genre  = np.genre;
+            track_context.year   = np.year;
+
+            if (!np.title.empty()) {
+                track_context.title = np.title;
+            } else {
+                const std::string& source = np.source;
+                const std::size_t  slash  = source.find_last_of("/\\");
+                std::string        name =
+                    slash == std::string::npos ? source : source.substr(slash + 1);
+                const std::size_t dot = name.find_last_of('.');
+                if (dot != std::string::npos && dot > 0) {
+                    name = name.substr(0, dot);
+                }
+                track_context.title = name;
             }
-            track_context.title = name;
         }
 
         // The card's words, rebuilt only when they change. Compared as a string
