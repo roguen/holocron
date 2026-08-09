@@ -68,11 +68,28 @@ tested:
 | Album art | `decode_image` — JPEG via `avcodec`, colour conversion **hand-rolled** because `vcpkg.json` deliberately excludes `swscale`. PNG is refused cleanly: it needs zlib, which the same `default-features: false` line excludes ([#116](https://github.com/roguen/holocron/issues/116)). Plex serves JPEG through its photo transcoder, so nothing is blocked. |
 | Executables | `holocron` — the player. `holocron-analyze` — the offline harness. |
 
-**What M5 still owes: `seekTo`, and nothing else.** Timeline reporting, queue
-advance, transport controls and metadata/album art/palette are all in. Seeking is
-deliberately last and deliberately not advertised in `controllable` — `Decoder`
-has no seek at all ([#108](https://github.com/roguen/holocron/issues/108)), and a
-scrub bar that does nothing is worse than one that is absent.
+**M5's behaviour is complete as of `v0.2.1`** and every part of it has been
+confirmed on the rack from the phone: casting, bit-perfect playback, auto-advance,
+skip both ways, `skipTo`, pause, seeking, shuffle, `refreshPlayQueue` (which is how
+"play next" works), a live progress bar, and the visuals coloured from the album
+art.
+
+**What M5 still owes, none of it behavioural:** an artwork cache
+([#118](https://github.com/roguen/holocron/issues/118)), genre and year on
+`TrackContext`, and PNG art ([#116](https://github.com/roguen/holocron/issues/116)).
+
+**Three things about the Plex protocol that cost a session each and are not
+guessable:**
+
+- **`refreshPlayQueue` is how "play next" works.** The controller *tells* the
+  player its queue changed; there is no version to poll. Ignoring it makes every
+  track added after the cast invisible — it shows on the phone, never plays, and
+  cannot be skipped to.
+- **Shuffle is a queue-construction parameter, not a player-side toggle.** Pressing
+  it builds an entirely new queue starting at position 0, so the phone jumps to a
+  different song *by design*. Do not "fix" that by continuing the current track.
+- **A `playMedia` naming a track arrives BEFORE the `createPlayQueue` for its
+  album, and no `skipTo` follows.** That key is the only record of what was tapped.
 
 **Two bugs from the first real end-to-end cast, both fixed:**
 
@@ -291,7 +308,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.2.0`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.2.1`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
