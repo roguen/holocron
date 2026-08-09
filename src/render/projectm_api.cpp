@@ -158,7 +158,44 @@ void* open_module(const std::string& path, bool absolute)
     const DWORD flags = absolute
                             ? (LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR)
                             : 0;
-    return LoadLibraryExW(wide.c_str(), nullptr, flags);
+
+    // NO MODAL DIALOG, AND THIS IS NOT DEFENSIVE PROGRAMMING -- IT HUNG CI.
+    //
+    // Windows reports some image-load failures as a HARD ERROR: a message box,
+    // put up by the loader, not by us. On an interactive desktop it appears and
+    // is dismissible, which is why this never showed up locally. On a GitHub
+    // Windows runner there is nobody to dismiss it, so LoadLibraryExW never
+    // returns and the job runs until the six-hour timeout.
+    //
+    // That is exactly what happened: a test that deliberately loads a file that
+    // is not a shared library took a Windows job from 2m34s to over an hour,
+    // twice, while Linux passed in 99 seconds. Two red herrings were chased
+    // first -- an Actions cache at 10.02 GB against a 10 GB limit, which was a
+    // real and separate problem (issue 169), and then a probe branch that
+    // isolated it: the same tree with an exact cache hit still stalled.
+    //
+    // SEM_FAILCRITICALERRORS turns the box into a return code. The THREAD
+    // variant rather than SetErrorMode, because the process-wide one is a global
+    // this library has no business changing on a host that may want the default,
+    // and it is restored immediately either way.
+    //
+    // This is also right outside CI: a user pointing `library_dir` at a
+    // truncated download should get a message, not a dialog on a machine in a
+    // theater with no keyboard attached.
+    DWORD      previous = 0;
+    const BOOL saved    = SetThreadErrorMode(SEM_FAILCRITICALERRORS, &previous);
+
+    HMODULE module = LoadLibraryExW(wide.c_str(), nullptr, flags);
+
+    // Restored BEFORE anything reads GetLastError, because SetThreadErrorMode
+    // succeeds and would otherwise clear the error the caller is about to
+    // report. The load's error code is captured first for that reason.
+    if (saved != 0) {
+        const DWORD load_error = GetLastError();
+        SetThreadErrorMode(previous, nullptr);
+        SetLastError(load_error);
+    }
+    return module;
 }
 
 void close_module(void* module)
