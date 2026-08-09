@@ -433,3 +433,181 @@ TEST_CASE("a seekTo with a nonsense offset is ignored rather than obeyed",
     }
     REQUIRE_FALSE(called);
 }
+
+// ---------------------------------------------------------------------------
+// The control surface
+//
+// NOT a Plex endpoint. No controller will ever ask for these -- they exist for a
+// browser on the owner's phone, because the keyboard is at the machine and he is
+// on a couch. See issue 130.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+CompanionServer::ControlState two_crystals()
+{
+    CompanionServer::ControlState state;
+    state.crystals = {"drift", "pulse"};
+    state.current  = 1;
+    return state;
+}
+
+}  // namespace
+
+TEST_CASE("the control page lists the vault and marks what is running",
+          "[plex][companion][control]")
+{
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_state(two_crystals());
+
+    auto res = s.client().Get("/control");
+    REQUIRE(res);
+    REQUIRE(res->status == 200);
+
+    // Both crystals offered...
+    REQUIRE(res->body.find(">drift<") != std::string::npos);
+    REQUIRE(res->body.find(">pulse<") != std::string::npos);
+
+    // ...and exactly one marked current. A page that marks none, or marks two,
+    // is a control surface lying about the state -- worse than no page at all.
+    REQUIRE(res->body.find("class=\"on\" type=\"submit\">pulse<") != std::string::npos);
+    REQUIRE(res->body.find("class=\"on\" type=\"submit\">drift<") == std::string::npos);
+}
+
+TEST_CASE("the control page is served as HTML, not XML", "[plex][companion][control]")
+{
+    // Every other route on this server answers XML. A browser handed
+    // `text/xml` renders a parse error rather than the page.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto res = s.client().Get("/control");
+    REQUIRE(res);
+    REQUIRE(res->get_header_value("Content-Type").find("text/html") != std::string::npos);
+}
+
+TEST_CASE("choosing a crystal reaches the handler and redirects back",
+          "[plex][companion][control]")
+{
+    std::size_t chosen = 999;
+    int         calls  = 0;
+
+    RunningServer s(fixture(), [&](CompanionServer& srv) {
+        srv.set_select_crystal_handler([&](std::size_t index) {
+            chosen = index;
+            ++calls;
+        });
+    });
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto client = s.client();
+    client.set_follow_location(false);
+    auto res = client.Post("/control/crystal", "index=1",
+                           "application/x-www-form-urlencoded");
+
+    REQUIRE(res);
+    REQUIRE(calls == 1);
+    REQUIRE(chosen == 1);
+
+    // POST-REDIRECT-GET. Without the 303 a pull-to-refresh on a phone re-submits
+    // the form and switches the crystal again, which reads as the page having a
+    // mind of its own.
+    REQUIRE(res->status == 303);
+    REQUIRE(res->get_header_value("Location") == "/control");
+}
+
+TEST_CASE("a crystal index that is not a number is ignored",
+          "[plex][companion][control]")
+{
+    // The page only ever renders valid indices, but this arrives over HTTP and
+    // anyone on the LAN can post to it.
+    bool called = false;
+
+    RunningServer s(fixture(), [&](CompanionServer& srv) {
+        srv.set_select_crystal_handler([&](std::size_t) { called = true; });
+    });
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto client = s.client();
+    client.set_follow_location(false);
+    for (const char* bad : {"1abc", "", "-1", "words"}) {
+        auto res = client.Post("/control/crystal", std::string("index=") + bad,
+                               "application/x-www-form-urlencoded");
+        REQUIRE(res);
+        REQUIRE(res->status == 303);
+    }
+    REQUIRE_FALSE(called);
+}
+
+TEST_CASE("the lyrics toggle reaches the handler both ways",
+          "[plex][companion][control]")
+{
+    std::vector<bool> asked;
+
+    RunningServer s(fixture(), [&](CompanionServer& srv) {
+        srv.set_lyrics_handler([&](bool visible) { asked.push_back(visible); });
+    });
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto client = s.client();
+    client.set_follow_location(false);
+    client.Post("/control/lyrics", "visible=1", "application/x-www-form-urlencoded");
+    client.Post("/control/lyrics", "visible=0", "application/x-www-form-urlencoded");
+
+    REQUIRE(asked.size() == 2);
+    REQUIRE(asked[0]);
+    REQUIRE_FALSE(asked[1]);
+}
+
+TEST_CASE("a track title is escaped into the page", "[plex][companion][control]")
+{
+    // "Forty Six &amp; 2" is a real title on this rack, and the whole reason
+    // xml_unescape exists on the parsing side. Unescaped here it breaks the
+    // markup; a title containing a tag would inject it.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+
+    CompanionServer::ControlState state = two_crystals();
+    state.title  = "Forty Six & 2";
+    state.artist = "<script>alert(1)</script>";
+    s.server.set_control_state(state);
+
+    auto res = s.client().Get("/control");
+    REQUIRE(res);
+    REQUIRE(res->body.find("Forty Six &amp; 2") != std::string::npos);
+    REQUIRE(res->body.find("<script>") == std::string::npos);
+    REQUIRE(res->body.find("&lt;script&gt;") != std::string::npos);
+}
+
+TEST_CASE("the control page does not disturb the Plex routes",
+          "[plex][companion][control]")
+{
+    // Registered before the catch-all like everything else, and on paths no
+    // controller uses -- but a route added carelessly could still shadow one.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto client = s.client();
+
+    auto resources = client.Get("/resources");
+    REQUIRE(resources);
+    REQUIRE(resources->body.find("<MediaContainer") != std::string::npos);
+
+    auto timeline = client.Get("/player/timeline/poll?commandID=1");
+    REQUIRE(timeline);
+    REQUIRE(timeline->body.find("<Timeline") != std::string::npos);
+}
+
+TEST_CASE("the control page copes with no vault at all", "[plex][companion][control]")
+{
+    // `--crystal` is a vault of one and the debug facet is a vault of none. The
+    // page must render either way rather than producing an empty document.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto res = s.client().Get("/control");
+    REQUIRE(res);
+    REQUIRE(res->status == 200);
+    REQUIRE(res->body.find("Holocron") != std::string::npos);
+}

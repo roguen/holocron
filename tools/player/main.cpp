@@ -601,6 +601,51 @@ struct CastCommand {
         return true;
     }
 
+    // What the control page asked for.
+    //
+    // SWITCHING A CRYSTAL COMPILES A GL PROGRAM, so it cannot happen on the HTTP
+    // worker that received the request -- GL belongs to the render thread, the
+    // same rule that made this whole struct a request-and-perform queue rather
+    // than a set of direct calls. Replacing a live program while the render
+    // thread is drawing with it is the failure this avoids.
+    bool        want_crystal = false;
+    std::size_t crystal_index = 0;
+
+    void request_crystal(std::size_t index)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        want_crystal  = true;
+        crystal_index = index;
+    }
+
+    bool take_crystal(std::size_t& out_index)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!want_crystal) {
+            return false;
+        }
+        out_index    = crystal_index;
+        want_crystal = false;
+        return true;
+    }
+
+    // Tri-state for the same reason `pause` is: 0 nothing asked, 1 show, 2 hide.
+    int lyrics = 0;
+
+    void request_lyrics(bool visible)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        lyrics = visible ? 1 : 2;
+    }
+
+    int take_lyrics()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const int asked = lyrics;
+        lyrics          = 0;
+        return asked;
+    }
+
     // The controller has changed the queue on the server and wants it re-read.
     // Only the newest id survives, for the same reason as a scrub: the answer is
     // "go and look", and looking twice tells you nothing extra.
@@ -1320,6 +1365,10 @@ int main(int argc, char** argv)
     companion.set_refresh_queue_handler([&cast](const std::string& play_queue_id) {
         cast.request_refresh_queue(play_queue_id);
     });
+    companion.set_select_crystal_handler([&cast](std::size_t index) {
+        cast.request_crystal(index);
+    });
+    companion.set_lyrics_handler([&cast](bool visible) { cast.request_lyrics(visible); });
 
     // Linking comes before discovery: it needs the machine identifier and
     // nothing else, and a run that is signing in has no business also
@@ -1331,8 +1380,9 @@ int main(int argc, char** argv)
     // --discover always wins here: it cannot be combined with --no-discover
     // (rejected above), so reaching this with opt.discover set means discovery
     // is wanted regardless of what the config says.
+    const PlexDevice device = device_from(cfg);
+
     if ((cfg.plex_discovery || opt.discover) && !opt.no_discover) {
-        const PlexDevice device = device_from(cfg);
         if (!start_discovery(device, gdm, companion) && opt.discover) {
             // Only fatal when discovery is the whole point of the run.
             return 1;
@@ -1340,6 +1390,38 @@ int main(int argc, char** argv)
         // After the HTTP port is listening, so the address being published is
         // one that already answers.
         register_with_account(cfg, device);
+    } else {
+        // NOT ANNOUNCING IS NOT THE SAME AS NOT LISTENING.
+        //
+        // `--no-discover` means "do not announce during this run", and serving a
+        // page to the owner's own browser is not announcing. The control surface
+        // is not a Plex feature -- it controls the picture, which Plexamp knows
+        // nothing about -- so tying it to Plex discovery would mean that turning
+        // discovery off silently removes the only way to change the visuals from
+        // anywhere but the keyboard.
+        //
+        // Failure is not fatal here. A run with no control page still plays and
+        // still draws, and the arrow keys still work.
+        std::string          detail;
+        const CompanionError cerr = companion.start(device, detail);
+        if (cerr != CompanionError::kOk) {
+            std::fprintf(stderr, "holocron: no control page -- %s\n  %s\n", to_string(cerr),
+                         detail.c_str());
+        }
+    }
+
+    if (companion.bound_port() != 0) {
+        // Printed with the address rather than just the port, because the whole
+        // point is to type it into a phone in another room.
+        // The LAN address rather than the port alone, because the whole point is
+        // to type it into a phone in another room. Falls back to localhost when
+        // the routing table will not say -- still correct, just only useful from
+        // this machine.
+        const std::string host = local_address_towards("192.168.1.1");
+        std::printf("holocron: control page at http://%s:%u/control\n",
+                    host.empty() ? "127.0.0.1" : host.c_str(),
+                    static_cast<unsigned>(companion.bound_port()));
+        std::fflush(stdout);
     }
 
     if (opt.discover) {
@@ -1559,6 +1641,14 @@ int main(int argc, char** argv)
     // Edge detector for the end of a track, so the log says once that it
     // happened rather than every frame afterwards.
     bool was_ended = false;
+
+    // Whether the lyric overlay is wanted. WIRED BUT WITH NOTHING BEHIND IT --
+    // lyrics are issue 122 and need text rendering the project does not have.
+    // The toggle exists so the control surface is complete and the plumbing is
+    // proven; the page says plainly that it shows nothing yet, because a control
+    // that silently does nothing is the failure `controllable` avoids on the
+    // Plex side.
+    bool lyrics_visible = false;
 
     // -- what is playing, for the crystals ------------------------------------
     //
@@ -2165,18 +2255,74 @@ int main(int argc, char** argv)
 
         track_context.playing = playing;
 
+        // -- the control page -------------------------------------------------
+        //
+        // Published every frame for the same reason the timeline is: it is a
+        // cheap guarded copy, and there is no event worth hanging it on. The
+        // page is only rendered when a browser asks, so this costs a copy of a
+        // handful of short strings and nothing else.
+        if (const int asked = cast.take_lyrics(); asked != 0) {
+            lyrics_visible = asked == 1;
+            std::printf("holocron: lyrics %s (nothing to show yet -- issue 122)\n",
+                        lyrics_visible ? "on" : "off");
+            std::fflush(stdout);
+        }
+        {
+            CompanionServer::ControlState control_state;
+            control_state.crystals.reserve(vault.size());
+            for (const VaultEntry& entry : vault) {
+                control_state.crystals.push_back(entry.name);
+            }
+            control_state.current        = current;
+            control_state.title          = track_context.title;
+            control_state.artist         = track_context.artist;
+            control_state.lyrics_visible = lyrics_visible;
+            control_state.has_art        = track_context.has_art;
+            companion.set_control_state(control_state);
+        }
+
         if (drawing_crystal) {
             // Switching, then reloading, both here rather than on their own
             // thread: building a program needs the GL context, which belongs to
             // this thread.
             const bool back = window.pressed(Key::kLeft);
             const bool fwd  = window.pressed(Key::kRight);
+
+            // Which crystal to move to, from either input. The arrow keys are
+            // relative and the control page is absolute; both land here, on the
+            // thread that owns the GL context.
+            std::size_t wanted    = current;
+            bool        switching = false;
+
             if (vault.size() > 1 && (back || fwd)) {
                 // Wraps in both directions. Modular arithmetic on the way down
                 // uses + size() rather than - 1 so index 0 does not underflow to
                 // a very large number indeed.
-                current = fwd ? (current + 1) % vault.size()
-                              : (current + vault.size() - 1) % vault.size();
+                wanted = fwd ? (current + 1) % vault.size()
+                             : (current + vault.size() - 1) % vault.size();
+                switching = true;
+            }
+
+            if (std::size_t asked = 0; cast.take_crystal(asked)) {
+                // OUT OF RANGE IS IGNORED, NOT CLAMPED. The page is rendered from
+                // the vault so its indices are always valid, but the request
+                // arrives over HTTP and anyone on the LAN can send one. Clamping
+                // would silently switch to a crystal nobody asked for.
+                if (asked < vault.size()) {
+                    wanted    = asked;
+                    switching = wanted != current;
+                    if (!switching) {
+                        std::printf("holocron: already on \"%s\"\n", vault[current].name.c_str());
+                        std::fflush(stdout);
+                    }
+                } else {
+                    std::fprintf(stderr, "holocron: no crystal %zu in a vault of %zu\n", asked,
+                                 vault.size());
+                }
+            }
+
+            if (switching) {
+                current = wanted;
 
                 Crystal crystal;
                 if (build_crystal(vault[current].stem.c_str(), crystal_facet, false, "switched to",

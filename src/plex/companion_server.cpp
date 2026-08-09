@@ -68,6 +68,107 @@ std::int64_t parse_int64(const std::string& text, std::int64_t fallback)
     return static_cast<std::int64_t>(value);
 }
 
+// Escape text going into HTML.
+//
+// A track title is arbitrary text from someone else's library, and `Forty Six
+// &amp; 2` is a real title on this rack. Unescaped it breaks the markup; a title
+// containing a tag would inject it. This page is served on a LAN to one person,
+// which lowers the stakes and does not change the correctness.
+std::string html_escape(const std::string& text)
+{
+    std::string out;
+    out.reserve(text.size());
+    for (const char c : text) {
+        switch (c) {
+            case '&':  out += "&amp;";  break;
+            case '<':  out += "&lt;";   break;
+            case '>':  out += "&gt;";   break;
+            case '"':  out += "&quot;"; break;
+            case '\'': out += "&#39;";  break;
+            default:   out += c;        break;
+        }
+    }
+    return out;
+}
+
+// The control page.
+//
+// ONE SELF-CONTAINED DOCUMENT, no external CSS, no framework, no fetch. Every
+// button is a plain form POST that redirects back here, so the page works with
+// no JavaScript at all and cannot get out of step with the player -- a reload
+// always shows what is actually running. That matters more than it sounds: a
+// control surface that lies about the current state is worse than none.
+//
+// Styled for a phone held in the dark of a theater: large targets, high
+// contrast, dark background.
+std::string control_page(const CompanionServer::ControlState& state)
+{
+    std::string out;
+    out.reserve(4096);
+
+    out += "<!doctype html><html><head><meta charset=\"utf-8\">"
+           "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+           "<title>Holocron</title><style>"
+           "body{background:#0b0b0d;color:#e8e8ea;font:16px/1.5 system-ui,sans-serif;"
+           "margin:0;padding:20px;-webkit-text-size-adjust:100%}"
+           "h1{font-size:15px;letter-spacing:.14em;text-transform:uppercase;"
+           "color:#8a8a92;font-weight:600;margin:0 0 18px}"
+           "h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;"
+           "color:#8a8a92;font-weight:600;margin:26px 0 10px}"
+           ".np{background:#16161a;border-radius:10px;padding:14px 16px;margin-bottom:6px}"
+           ".np .t{font-size:18px;font-weight:600}"
+           ".np .a{color:#a0a0a8}"
+           "form{margin:0}"
+           "button{display:block;width:100%;text-align:left;background:#16161a;"
+           "color:#e8e8ea;border:1px solid #26262c;border-radius:10px;"
+           "padding:15px 16px;font:inherit;margin-bottom:8px;cursor:pointer}"
+           "button.on{background:#2a2a34;border-color:#4a4a58;font-weight:600}"
+           "button.on::after{content:'  \\2022';color:#7ab8ff}"
+           "</style></head><body>";
+
+    out += "<h1>Holocron</h1>";
+
+    if (!state.title.empty()) {
+        out += "<div class=\"np\"><div class=\"t\">" + html_escape(state.title) + "</div>";
+        if (!state.artist.empty()) {
+            out += "<div class=\"a\">" + html_escape(state.artist) + "</div>";
+        }
+        out += "</div>";
+    }
+
+    out += "<h2>Crystal</h2>";
+    if (state.crystals.empty()) {
+        out += "<div class=\"np\">No vault loaded.</div>";
+    } else {
+        for (std::size_t i = 0; i < state.crystals.size(); ++i) {
+            const bool on = i == state.current;
+            out += "<form method=\"post\" action=\"/control/crystal\">";
+            out += "<input type=\"hidden\" name=\"index\" value=\"" + std::to_string(i) + "\">";
+            out += "<button class=\"";
+            out += on ? "on" : "";
+            out += "\" type=\"submit\">" + html_escape(state.crystals[i]) + "</button></form>";
+        }
+    }
+
+    out += "<h2>Overlays</h2>";
+    out += "<form method=\"post\" action=\"/control/lyrics\">";
+    out += "<input type=\"hidden\" name=\"visible\" value=\"";
+    out += state.lyrics_visible ? "0" : "1";
+    out += "\"><button class=\"";
+    out += state.lyrics_visible ? "on" : "";
+    out += "\" type=\"submit\">Lyrics</button></form>";
+
+    // SAID PLAINLY RATHER THAN LEFT AS A DEAD BUTTON. Lyrics are not implemented
+    // (issue 122) and a control that silently does nothing is the exact failure
+    // `controllable` is careful to avoid on the Plex side.
+    out += "<div style=\"color:#8a8a92;font-size:13px;margin-top:4px\">"
+           "Lyrics are not implemented yet -- this toggle is wired but has "
+           "nothing to show.</div>";
+
+    out += "</body></html>";
+    return out;
+}
+
 }  // namespace
 
 struct CompanionServer::Impl {
@@ -118,9 +219,18 @@ struct CompanionServer::Impl {
     CompanionServer::StopHandler  stop_handler;
     CompanionServer::PauseHandler pause_handler;
     CompanionServer::QueueHandler queue_handler;
-    CompanionServer::SkipHandler         skip_handler;
-    CompanionServer::SeekHandler         seek_handler;
-    CompanionServer::RefreshQueueHandler refresh_queue_handler;
+    CompanionServer::SkipHandler          skip_handler;
+    CompanionServer::SeekHandler          seek_handler;
+    CompanionServer::RefreshQueueHandler  refresh_queue_handler;
+    CompanionServer::SelectCrystalHandler select_crystal_handler;
+    CompanionServer::LyricsHandler        lyrics_handler;
+
+    // Guarded separately from the timeline. The control page is read by an HTTP
+    // worker and written by the render thread, and it changes on a crystal
+    // switch rather than every frame -- there is no reason for it to contend
+    // with a timeline poll.
+    mutable std::mutex               control_mutex;
+    CompanionServer::ControlState    control;
 
     bool last_reported_playing()
     {
@@ -475,6 +585,68 @@ void CompanionServer::Impl::install_routes()
     self->server.Get("/player/playback/skipPrevious", skip_route);
     self->server.Get("/player/playback/skipTo", skip_route);
 
+    // -- the control surface ------------------------------------------------
+    //
+    // Registered before the catch-all like everything else. These are NOT Plex
+    // endpoints and no controller will ever ask for them; they exist for a
+    // browser on the owner's phone. See issue 130.
+
+    self->server.Get("/control", [self](const httplib::Request&, httplib::Response& res) {
+        // Deliberately NOT counted as a Plex request and NOT logged per hit. A
+        // browser re-requests this on every button press and on every reload,
+        // and burying the protocol transcript under it would undo the work that
+        // made the log readable.
+        self->decorate(res);
+
+        CompanionServer::ControlState state;
+        {
+            const std::lock_guard<std::mutex> lock(self->control_mutex);
+            state = self->control;
+        }
+        res.set_content(control_page(state), "text/html; charset=utf-8");
+    });
+
+    // POST, and then a redirect back to the page.
+    //
+    // POST-REDIRECT-GET, so a reload does not re-fire the last button. Without
+    // the redirect, pulling to refresh on a phone re-submits the form and
+    // switches the crystal again, which reads as the page having a mind of its
+    // own.
+    const auto redirect_to_control = [](httplib::Response& res) {
+        res.status = 303;
+        res.set_header("Location", "/control");
+        res.set_content("", "text/plain");
+    };
+
+    self->server.Post("/control/crystal", [self, redirect_to_control](
+                                              const httplib::Request& req,
+                                              httplib::Response&      res) {
+        self->decorate(res);
+        const auto index = req.get_param_value("index");
+        if (!index.empty() && self->select_crystal_handler) {
+            const std::int64_t chosen = parse_int64(index, -1);
+            if (chosen >= 0) {
+                std::printf("control: crystal %lld\n", static_cast<long long>(chosen));
+                std::fflush(stdout);
+                self->select_crystal_handler(static_cast<std::size_t>(chosen));
+            }
+        }
+        redirect_to_control(res);
+    });
+
+    self->server.Post("/control/lyrics", [self, redirect_to_control](
+                                             const httplib::Request& req,
+                                             httplib::Response&      res) {
+        self->decorate(res);
+        if (self->lyrics_handler) {
+            const bool visible = req.get_param_value("visible") == "1";
+            std::printf("control: lyrics %s\n", visible ? "on" : "off");
+            std::fflush(stdout);
+            self->lyrics_handler(visible);
+        }
+        redirect_to_control(res);
+    });
+
     // refreshPlayQueue -- the controller has changed the queue on the server.
     //
     // THE "PLAY NEXT" MECHANISM, and it is a command rather than something to
@@ -702,6 +874,22 @@ void CompanionServer::set_seek_handler(SeekHandler handler)
 void CompanionServer::set_refresh_queue_handler(RefreshQueueHandler handler)
 {
     impl_->refresh_queue_handler = std::move(handler);
+}
+
+void CompanionServer::set_select_crystal_handler(SelectCrystalHandler handler)
+{
+    impl_->select_crystal_handler = std::move(handler);
+}
+
+void CompanionServer::set_lyrics_handler(LyricsHandler handler)
+{
+    impl_->lyrics_handler = std::move(handler);
+}
+
+void CompanionServer::set_control_state(const ControlState& state)
+{
+    const std::lock_guard<std::mutex> lock(impl_->control_mutex);
+    impl_->control = state;
 }
 
 void CompanionServer::set_timeline(const TimelineState& state)
