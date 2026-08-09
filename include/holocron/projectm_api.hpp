@@ -254,6 +254,44 @@ public:
 
     const ProjectMApi& api() const { return api_; }
 
+    // Initialise the GL loader libprojectM's own calls go through.
+    //
+    // REQUIRES A CURRENT GL CONTEXT, and must be called before any facet is
+    // created. It is separate from load_projectm because load_projectm is
+    // deliberately context-free -- that is what lets the binding be tested with
+    // no window, no GPU and no driver, which is every CI runner.
+    //
+    // WHY THIS EXISTS AT ALL, WHICH IS THE SURPRISE OF M4
+    //
+    // On Windows libprojectM includes <GL/glew.h> and every GL call it makes goes
+    // through GLEW's function-pointer table -- and it NEVER CALLS glewInit. The
+    // only glewInit in the whole 4.1.7 source tree is in its own SDL test UI.
+    // The host is expected to have initialised GLEW, which every projectM host
+    // does by linking GLEW itself.
+    //
+    // Holocron uses glad. Two loaders, and only one of them was initialised: all
+    // of GLEW's pointers are null, so projectm_create() dereferences a null
+    // function pointer and the process dies at 0xC0000005 with nothing printed.
+    //
+    // The fix is to do what the host is supposed to do, without linking GLEW:
+    // glew32.dll is already in the process as projectM-4.dll's own dependency, so
+    // `glewExperimental` and `glewInit` are resolved from it by name and called
+    // here. glewExperimental must be set first -- in a core profile GLEW's
+    // non-experimental path asks for GL_EXTENSIONS as a single string, which is
+    // invalid there, and initialisation fails.
+    //
+    // On Linux libprojectM includes <GL/gl.h> with GL_GLEXT_PROTOTYPES and calls
+    // GL directly, so the dynamic linker has already done this and there is
+    // nothing to do. It returns true.
+    //
+    // Idempotent, and false with a reason if the loader could not be brought up.
+    bool init_gl(std::string& out_error);
+
+    // True once init_gl has succeeded -- or immediately, where nothing is needed.
+    // A facet refuses to build against a library that is not ready, because the
+    // alternative is the access violation described above.
+    bool gl_ready() const { return gl_ready_; }
+
     // "4.1.7", or empty when nothing is loaded. Reported so a bug report says
     // which libprojectM produced the picture -- the presets that compile differ
     // between point releases.
@@ -273,6 +311,7 @@ private:
     ProjectMApi api_{};
     std::string version_;
     std::string core_path_;
+    bool        gl_ready_ = false;
 
     friend bool load_projectm(const std::string&, ProjectMLibrary&, std::string&);
 };
