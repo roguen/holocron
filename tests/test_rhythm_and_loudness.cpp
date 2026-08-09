@@ -597,3 +597,183 @@ TEST_CASE("every AudioFrame field is now populated", "[contract][analysis]")
         REQUIRE(std::isfinite(f.fft_magnitude[std::size_t(k)]));
     }
 }
+
+// ---------------------------------------------------------------------------
+// WHERE the beat grid sits, not just how far apart the beats are -- issue 94
+//
+// The tempo estimate was never the problem. What varied by over 100 ms between
+// tracks was the PHASE: on one record the beat marker sat on the drums and on
+// another it was 96 ms early, stable within each track and different between
+// them. That makes beat_phase unusable as a timing reference and makes anything
+// driving a visible event from it correct on some material and visibly wrong on
+// other material, with nothing to say which.
+//
+// These tests measure against GROUND TRUTH, which is the whole point: the click
+// positions are known exactly, so "the grid is 40 ms early" is a measurement
+// rather than an impression. The original report could only compare the grid to
+// the detector's own onsets, which cannot distinguish a phase error from an
+// onset-detection bias.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// One percussive burst at `at_sample`, `gain` loud.
+void add_click(std::vector<float>& out, std::size_t at_sample, float gain)
+{
+    const std::size_t total = out.size() / 2;
+    const std::size_t burst = std::size_t(0.03f * float(kAnalysisRate));
+    for (std::size_t i = 0; i < burst && at_sample + i < total; ++i) {
+        const float decay = std::exp(-float(i) / (float(burst) * 0.25f));
+        const float v     = decay * gain *
+                        std::sin(2.0f * kPi * 220.0f * float(i) / float(kAnalysisRate)) *
+                        std::sin(2.0f * kPi * 3000.0f * float(i) / float(kAnalysisRate));
+        out[(at_sample + i) * 2 + 0] += v;
+        out[(at_sample + i) * 2 + 1] += v;
+    }
+}
+
+// THE CASE THAT BREAKS A PER-ONSET PHASE-LOCKED LOOP: strong hits on the beat
+// and weaker ones on the eighths between them. That is ordinary music -- a kick
+// on the beat and hats between -- and every one of those off-beat hits pulls a
+// per-onset PLL toward whichever beat boundary happens to be nearer, so the
+// equilibrium ends up somewhere that depends on the material rather than on the
+// beat.
+std::vector<float> syncopated_track(float bpm, float seconds, float offbeat_gain = 0.45f)
+{
+    const std::size_t  total  = std::size_t(seconds * float(kAnalysisRate));
+    const std::size_t  period = std::size_t(60.0f / bpm * float(kAnalysisRate));
+    std::vector<float> out(total * 2, 0.0f);
+
+    for (std::size_t beat = 0; beat * period < total; ++beat) {
+        add_click(out, beat * period, 0.8f);
+        add_click(out, beat * period + period / 2, offbeat_gain);
+    }
+    return out;
+}
+
+// Median signed offset, in milliseconds, from each beat boundary the analysis
+// produced to the nearest TRUE beat. Positive means the grid ran late.
+double beat_grid_offset_ms(const std::vector<AudioFrame>& frames, float bpm,
+                           double ignore_before_seconds = 3.0)
+{
+    const double beat_seconds = 60.0 / double(bpm);
+
+    std::vector<double> offsets;
+    std::uint32_t       last_count = 0;
+    bool                first      = true;
+
+    for (const AudioFrame& f : frames) {
+        if (first) {
+            last_count = f.beat_count;
+            first      = false;
+            continue;
+        }
+        if (f.beat_count == last_count) {
+            continue;
+        }
+        last_count = f.beat_count;
+
+        // The warmup is excluded on purpose. The tempo estimate does not exist
+        // for the first second or so, and judging the grid before it does would
+        // measure the warmup rather than the steady state.
+        if (f.time_seconds < ignore_before_seconds) {
+            continue;
+        }
+
+        const double nearest = std::round(f.time_seconds / beat_seconds) * beat_seconds;
+        offsets.push_back((f.time_seconds - nearest) * 1000.0);
+    }
+
+    if (offsets.empty()) {
+        return 1e9;   // no beats at all is a failure, not an offset of zero
+    }
+    std::sort(offsets.begin(), offsets.end());
+    return offsets[offsets.size() / 2];
+}
+
+}  // namespace
+
+TEST_CASE("the beat grid lands on a plain click track", "[rhythm][phase]")
+{
+    // The easy case. Measures about +25 ms, and that residual is INHERENT rather
+    // than a defect worth chasing.
+    //
+    // The onset function is spectral flux over a 2048-sample FFT with a ~512
+    // sample hop, so a transient's energy is spread across roughly four hops and
+    // the flux peaks one to three hops after the attack begins. The grid
+    // therefore sits a couple of hops late, which at 93.75 Hz is 10 to 32 ms.
+    //
+    // NOT COMPENSATED WITH A FIXED BIAS, deliberately. Subtracting a constant
+    // tuned against synthetic clicks would be fitting the instrument to the test
+    // signal, and real transients have different shapes. What issue 94 is about
+    // is the error VARYING by material -- a small constant lag is a different and
+    // far more tolerable thing, and the rack-level `--trim-ms` already exists to
+    // absorb constant offsets.
+    AnalysisStage stage;
+    const auto    frames = run(stage, click_track(120.0f, 12.0f));
+
+    const double offset = beat_grid_offset_ms(frames, 120.0f);
+    INFO("median beat grid offset: " << offset << " ms");
+    REQUIRE(std::fabs(offset) < 35.0);
+}
+
+TEST_CASE("the beat grid lands on the BEAT, not between the eighths",
+          "[rhythm][phase]")
+{
+    // ISSUE 94, REPRODUCED WITH GROUND TRUTH. Strong hits on the beat, weaker
+    // ones on the eighths. A per-onset PLL is dragged by the off-beat hits; a
+    // phase estimated by correlating the onset history against a pulse train is
+    // not, because off-beat energy contributes equally to every candidate phase
+    // while on-beat energy peaks at the right one.
+    AnalysisStage stage;
+    const auto    frames = run(stage, syncopated_track(120.0f, 14.0f));
+
+    const double offset = beat_grid_offset_ms(frames, 120.0f);
+    INFO("median beat grid offset: " << offset << " ms");
+
+    // Was 125 ms before the comb-filter phase estimate replaced the per-onset
+    // PLL -- measured, not estimated. The threshold is the same as the plain
+    // click track's, which is the point: the off-beat content no longer matters.
+    REQUIRE(std::fabs(offset) < 35.0);
+}
+
+TEST_CASE("the beat grid holds across tempos", "[rhythm][phase]")
+{
+    // The report measured two tracks 107 ms apart. The failure was not one bad
+    // track: it was that the answer depended on the material. Several tempos
+    // with the same rhythmic figure should all land, and should land
+    // CONSISTENTLY -- the spread between them is the number issue 94 is about.
+    std::vector<double> offsets;
+
+    for (const float bpm : {96.0f, 120.0f, 140.0f}) {
+        AnalysisStage stage;
+        const auto    frames = run(stage, syncopated_track(bpm, 14.0f));
+        const double  offset = beat_grid_offset_ms(frames, bpm);
+        INFO("bpm " << bpm << " offset " << offset << " ms");
+        REQUIRE(std::fabs(offset) < 35.0);
+        offsets.push_back(offset);
+    }
+
+    const auto [lo, hi] = std::minmax_element(offsets.begin(), offsets.end());
+    INFO("spread across tempos: " << (*hi - *lo) << " ms");
+    REQUIRE((*hi - *lo) < 40.0);
+}
+
+TEST_CASE("a heavier off-beat does not flip the grid onto it", "[rhythm][phase]")
+{
+    // The pathological case: off-beat hits nearly as loud as the beat. The grid
+    // may sit on either -- musically it is ambiguous -- but it must not sit
+    // BETWEEN them, which is what a dragged PLL produces and what looks worst.
+    AnalysisStage stage;
+    const auto    frames = run(stage, syncopated_track(120.0f, 14.0f, 0.7f));
+
+    const double beat_seconds = 60.0 / 120.0;
+    const double offset       = beat_grid_offset_ms(frames, 120.0f);
+
+    // Either on the beat, or a clean half-beat off it. Not a quarter of a beat
+    // adrift.
+    const double half_ms = beat_seconds * 500.0;
+    const double from_half = std::fabs(std::fabs(offset) - half_ms);
+    INFO("offset " << offset << " ms, half-beat is " << half_ms << " ms");
+    REQUIRE((std::fabs(offset) < 40.0 || from_half < 40.0));
+}

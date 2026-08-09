@@ -1,0 +1,35 @@
+# duel -- two stick figures fighting, clashes on the beat.
+#
+# The requested feature from issue 127, and the crystal that proves the beat grid
+# is now trustworthy. A pulse tolerates a phase error of a fifth of a beat; two
+# figures meeting do not, which is why this could not have been written before
+# issue 94 was fixed.
+#
+# See the note at the top of duel.frag for why a fight needs no animation state:
+# figures as distance fields, choreography as a hash of the beat number.
+
+name = "duel"
+
+author  = "Roguen Keller"
+license = "GPL-3.0-or-later"
+
+# `beat_count` is the interesting one and is unusual as a binding.
+#
+# It is a COUNTER, not a quantity -- nothing on screen is proportional to it. It
+# is the seed the choreography is hashed from, which is what makes the fight a
+# pure function of the audio frame instead of accumulated pose state. Beat 41
+# always produces the same move, so a hot reload mid-track does not teleport the
+# figures.
+#
+# `onset_strength` and `beat_phase` are deliberately used for DIFFERENT jobs here.
+# Motion comes off the phase, which is smooth and accurate to a few tens of
+# milliseconds. The impact flash comes off the transient, which has no grid to be
+# offset from. Driving both from the phase would put the flash a fixed distance
+# from the hit; driving both from the onset would make the motion stutter.
+[uniforms]
+u_beat       = "beat_phase"
+u_beats      = "beat_count"
+u_bar        = "bar_phase"
+u_onset      = "onset_strength"
+u_bass       = "bass_norm"
+u_confidence = "bpm_confidence"
