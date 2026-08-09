@@ -44,6 +44,21 @@
 namespace holocron {
 
 struct FinalPassSettings {
+    // How much of the bright-pass is added back. 0 is off.
+    //
+    // BLOOM IS WHAT MAKES THE FLOAT LAYERS PAY FOR THEMSELVES. The layers are
+    // GL_RGBA16F specifically so values above 1.0 survive compositing -- `duel`
+    // accumulates a body, a halo, a trail, an impact flash and a ring and exceeds
+    // 1.0 routinely. Without bloom every one of those is clipped at the end and
+    // a pixel that was 3.0 looks exactly like the one beside it at 1.0. The
+    // bright-pass is the only thing in the project that reads that headroom.
+    float bloom = 0.0f;
+
+    // Where "bright" starts. At 1.0 only the overshoot blooms, which is the
+    // principled place for it: a crystal that never exceeds 1.0 gets no bloom at
+    // all, and that is correct rather than a fault.
+    float bloom_threshold = 1.0f;
+
     // Film grain, as a fraction of an 8-bit step. 1.0 is one step of noise,
     // which is enough to dither a band and too little to see as texture.
     float grain = 1.0f;
@@ -71,6 +86,12 @@ public:
     bool init(std::string& out_log);
     void shutdown();
     bool ready() const;
+
+    // Size the bloom chain against the window. A no-op when the size has not
+    // changed, and it allocates nothing until bloom is actually asked for --
+    // three quarter-resolution targets is 12 MB at 4K, which is small, but a
+    // setting nobody turned on should still cost zero.
+    bool resize(int width, int height);
 
     // Is any of this actually doing something?
     //

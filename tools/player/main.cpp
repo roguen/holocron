@@ -2057,6 +2057,8 @@ int main(int argc, char** argv)
     // full-screen copy.
     FinalPass         final_pass;
     FinalPassSettings final_settings;
+    final_settings.bloom           = static_cast<float>(cfg.bloom);
+    final_settings.bloom_threshold = static_cast<float>(cfg.bloom_threshold);
     final_settings.grain     = static_cast<float>(cfg.grain);
     final_settings.vignette  = static_cast<float>(cfg.vignette);
     final_settings.safe_area = static_cast<float>(cfg.safe_area);
@@ -2070,7 +2072,10 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "holocron: no final pass -- %s\n", log.c_str());
             run_final_pass = false;
         } else {
-            std::printf("holocron: final pass -- grain %.1f, vignette %.2f, safe area %.3f\n",
+            std::printf("holocron: final pass -- bloom %.2f over %.2f, grain %.1f, "
+                        "vignette %.2f, safe area %.3f\n",
+                        static_cast<double>(final_settings.bloom),
+                        static_cast<double>(final_settings.bloom_threshold),
                         static_cast<double>(final_settings.grain),
                         static_cast<double>(final_settings.vignette),
                         static_cast<double>(final_settings.safe_area));
@@ -3336,6 +3341,12 @@ int main(int argc, char** argv)
                                      window.height(), run_final_pass);
 
             if (run_final_pass && picture != 0) {
+                // Sized against the WINDOW rather than the layer: the bloom is
+                // added after the upscale, so its resolution follows what is on
+                // screen and not what the crystals drew into.
+                if (final_settings.bloom > 0.0f) {
+                    final_pass.resize(window.width(), window.height());
+                }
                 final_pass.draw(picture, final_settings,
                                 std::chrono::duration<float>(
                                     std::chrono::steady_clock::now().time_since_epoch())
