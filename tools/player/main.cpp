@@ -48,6 +48,7 @@
 #include <holocron/companion_server.hpp>
 #include <holocron/compositor.hpp>
 #include <holocron/crystal.hpp>
+#include <holocron/final_pass.hpp>
 #include <holocron/image_decode.hpp>
 #include <holocron/lyrics.hpp>
 #include <holocron/overlay_facet.hpp>
@@ -2043,6 +2044,39 @@ int main(int argc, char** argv)
         }
     }
 
+    // -- the final pass -------------------------------------------------------
+    //
+    // Grain, vignette and the safe-area mask, all of which belong to the DISPLAY
+    // rather than to any crystal. Grain is on by default because it is a fix
+    // rather than a look: the layers are float and the window is eight bits, and
+    // a slow dark gradient bands visibly on a projector in a dark room.
+    //
+    // COSTS NOTHING WHEN IT DOES NOTHING. A settings block with everything at
+    // zero skips the pass entirely -- and, more to the point, tells the
+    // compositor it does not need a canvas, which at 4K is 66 MB and a
+    // full-screen copy.
+    FinalPass         final_pass;
+    FinalPassSettings final_settings;
+    final_settings.grain     = static_cast<float>(cfg.grain);
+    final_settings.vignette  = static_cast<float>(cfg.vignette);
+    final_settings.safe_area = static_cast<float>(cfg.safe_area);
+
+    bool run_final_pass = layered && FinalPass::any(final_settings);
+    if (run_final_pass) {
+        std::string log;
+        if (!final_pass.init(log)) {
+            // Not fatal, exactly like the compositor: losing grain is cosmetic
+            // and the picture is the point.
+            std::fprintf(stderr, "holocron: no final pass -- %s\n", log.c_str());
+            run_final_pass = false;
+        } else {
+            std::printf("holocron: final pass -- grain %.1f, vignette %.2f, safe area %.3f\n",
+                        static_cast<double>(final_settings.grain),
+                        static_cast<double>(final_settings.vignette),
+                        static_cast<double>(final_settings.safe_area));
+        }
+    }
+
     // -- crossfading between crystals -----------------------------------------
     //
     // Switching used to be a hard cut: the facet was replaced and the picture
@@ -3294,8 +3328,20 @@ int main(int argc, char** argv)
                 }
             }
 
-            compositor.composite(std::span<const LayerState>(states, n), window.width(),
-                                 window.height());
+            // Handed back as a texture when there is a final pass to run over it,
+            // and put straight on the window when there is not -- which is the
+            // ordinary case and costs exactly what it did before.
+            const TextureHandle picture =
+                compositor.composite(std::span<const LayerState>(states, n), window.width(),
+                                     window.height(), run_final_pass);
+
+            if (run_final_pass && picture != 0) {
+                final_pass.draw(picture, final_settings,
+                                std::chrono::duration<float>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count(),
+                                window.width(), window.height());
+            }
         }
 
         // -- the now-playing card ---------------------------------------------

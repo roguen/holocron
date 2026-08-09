@@ -64,6 +64,7 @@
 // LayerBlend moved out to its own header when archives arrived: the enum is
 // needed by a library that must never touch GL. See layer.hpp.
 #include <holocron/layer.hpp>
+#include <holocron/track_context.hpp>   // TextureHandle
 
 namespace holocron {
 
@@ -124,7 +125,14 @@ public:
     // composites fewer of them. The window's framebuffer is bound and cleared
     // first, so a frame in which every layer is dead is black rather than
     // whatever was on screen last.
-    void composite(std::span<const LayerState> states, int screen_width, int screen_height);
+    //
+    // `leave_in_canvas` stops before the last step and hands the assembled
+    // picture back as a texture instead of putting it on the window, which is
+    // what a final pass needs -- it has to READ the finished picture, and a
+    // framebuffer cannot be sampled while it is the draw target. Zero if there
+    // was nothing to assemble.
+    TextureHandle composite(std::span<const LayerState> states, int screen_width,
+                            int screen_height, bool leave_in_canvas = false);
 
 private:
     struct Impl;

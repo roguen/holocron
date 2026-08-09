@@ -80,6 +80,22 @@ struct Gatekeeper {
     bool vsync    = true;
     bool gl_debug = true;
 
+    // The final pass, which belongs to the DISPLAY rather than to any crystal.
+    //
+    // `grain` is on by default and the others are not, and the difference is that
+    // grain is a FIX rather than a look: the layers are 16-bit float and the
+    // window is 8-bit, so a slow dark gradient quantises into visible bands on a
+    // projector in a dark room. A pixel of noise dithers them away. One 8-bit
+    // step is enough to break a band and too little to read as texture.
+    //
+    // A vignette changes the look of every crystal ever authored -- and all three
+    // shipped ones roll their own -- so it is a key rather than an opinion. A
+    // safe-area mask is measured against a specific projector or it is just a
+    // black border.
+    double grain     = 1.0;
+    double vignette  = 0.0;
+    double safe_area = 0.0;
+
     // How big the layers are, as a fraction of the window.
     //
     // WHAT THIS BUYS AND WHAT IT COSTS. The crystals are the expensive part and

@@ -329,6 +329,7 @@ add_library(holocron_render STATIC
     src/render/overlay_facet.cpp
     src/render/render_target.cpp
     src/render/compositor.cpp
+    src/render/final_pass.cpp
 )
 add_library(holocron::render ALIAS holocron_render)
 
