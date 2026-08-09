@@ -55,8 +55,29 @@ uniform float u_beat;        // beat_phase   -- 0 at the impact
 uniform float u_beats;       // beat_count   -- which beat, for the choreography
 uniform float u_bar;         // bar_phase    -- for the camera drift
 uniform float u_onset;       // onset_strength
-uniform float u_bass;        // bass_norm
 uniform float u_confidence;  // bpm_confidence
+
+// THE THREE BANDS DRIVE DIFFERENT PARTS OF THE BODY, and that is the idea this
+// crystal is actually built around.
+//
+// The commercial analogue in this space -- Stick Tuber: Punch Fight Dance --
+// authors its choreography per track by hand, and its reviews complain that some
+// fights do not sync to the song. Deriving from analysis is what fixes that, but
+// timing alone only gets you a metronome with arms: the fight lands on the beat
+// and looks the same whatever is playing.
+//
+// Splitting the spectrum and routing each band to a different limb is what makes
+// it respond to the CHARACTER of the music rather than only its clock. The idea
+// is borrowed from stem-separating visualizers, which map each stem to independent
+// visual parameters; three bands is a cruder split than real stems and costs
+// nothing, because the analysis already publishes them.
+//
+//   bass    the legs and the lunge -- weight, drive, how far it commits
+//   mid     the striking arm -- where it lands
+//   treble  the guard hand and the head -- fast, small, nervous movement
+uniform float u_bass;        // bass_norm
+uniform float u_mid;         // mid_norm
+uniform float u_treble;      // treble_norm
 
 const float kPi = 3.14159265359;
 
@@ -112,6 +133,36 @@ vec3 move_for(float beat)
     return vec3(a, 0.35 + 0.65 * b, (a - 0.5) * 1.4);
 }
 
+// The move the MUSIC implies, as opposed to the one the beat number picks.
+//
+// Blended with the hash rather than replacing it. Pure hash gives variety with no
+// relationship to what is playing; pure band-following gives a fight that does
+// the same thing through a whole section, because the band balance of one record
+// barely moves. Half and half keeps both.
+//
+// The band fields are the ENVELOPED, auto-gained ones, so they are smooth. That
+// matters: a move derived from a jittery signal would morph mid-swing, which
+// reads as the figure changing its mind rather than as a strike.
+vec3 move_from_bands(float bass, float mid, float treble)
+{
+    float total = bass + mid + treble + 1e-4;
+
+    // Treble-led material strikes HIGH and fast, bass-led material strikes low
+    // and heavy at the body. That is the same instinct a fight choreographer has
+    // about a hi-hat versus a kick.
+    float height = clamp(0.5 + 0.9 * (treble - bass) / total, 0.0, 1.0);
+
+    // Bass is weight, so it decides how far the strike commits. A track with no
+    // low end gets jabs; a heavy one gets full lunges.
+    float commit = clamp(0.30 + 1.10 * bass / total, 0.0, 1.0);
+
+    // Mid decides the lean, which is what makes a strike look thrown rather than
+    // extended.
+    float lean = (mid / total - 0.33) * 2.2;
+
+    return vec3(height, commit, lean);
+}
+
 // Who is striking on this beat. Alternating rather than random: two fighters
 // both attacking on the same beat reads as neither reacting to the other, and
 // trading blows is what makes it look like a fight.
@@ -145,7 +196,7 @@ vec2 hand_of(vec3 move, float commit, float bob, float lean_extra)
 }
 
 float figure(vec2 p, float side, vec3 move, float commit, float bob, float recoil,
-             out vec2 out_hand)
+             float flick, out vec2 out_hand)
 {
     // Mirror into a local frame where the fighter always faces +x.
     //
@@ -195,7 +246,13 @@ float figure(vec2 p, float side, vec3 move, float commit, float bob, float recoi
 
     // The guard arm comes up as the other extends, which reads as a fighter
     // rather than as a figure waving.
-    vec2 guard_hand  = shoulder + vec2(0.10 - 0.04 * commit, 0.06 + 0.05 * commit);
+    //
+    // `flick` is the TREBLE, and this is the limb it drives. Hats and cymbals are
+    // small and fast, so they belong on a small fast part of the body -- putting
+    // them on the striking arm would fight the beat for control of it, and putting
+    // them nowhere wastes the most active band in most music.
+    vec2 guard_hand  = shoulder + vec2(0.10 - 0.04 * commit + 0.030 * flick,
+                                       0.06 + 0.05 * commit + 0.045 * flick);
     vec2 guard_elbow = mix(shoulder, guard_hand, 0.5) + vec2(-0.02, -0.04);
 
     // The smoothing radius has to stay well under the limb spacing, or joints
@@ -245,8 +302,9 @@ void main()
     float beat  = floor(u_beats);
     float phase = clamp(u_beat, 0.0, 1.0);
 
-    vec3  landed  = move_for(beat);
-    vec3  coming  = move_for(beat + 1.0);
+    vec3  flavour = move_from_bands(u_bass, u_mid, u_treble);
+    vec3  landed  = mix(move_for(beat), flavour, 0.5);
+    vec3  coming  = mix(move_for(beat + 1.0), flavour, 0.5);
     float striker = attacker_for(beat);
     float next    = attacker_for(beat + 1.0);
 
@@ -308,10 +366,16 @@ void main()
     p += shake;
 
     float knock = 0.035;
+    // The treble drives both guard hands, offset in time from each other so they
+    // do not move as one puppet. A shared signal applied identically to two
+    // figures is the tell that they are the same object drawn twice.
+    float flick_l = u_treble * (0.6 + 0.4 * sin(u_time * 11.0));
+    float flick_r = u_treble * (0.6 + 0.4 * sin(u_time * 11.0 + 2.1));
+
     float d_l = figure(p - vec2(-kApart - recoil_l * knock, 0.0), 1.0, pose_l,
-                       commit_l * trust, bob, recoil_l, hand_left);
+                       commit_l * trust, bob, recoil_l, flick_l, hand_left);
     float d_r = figure(p - vec2(kApart + recoil_r * knock, 0.0), -1.0, pose_r,
-                       commit_r * trust, bob, recoil_r, hand_right);
+                       commit_r * trust, bob, recoil_r, flick_r, hand_right);
 
     hand_left  += vec2(-kApart - recoil_l * knock, 0.0);
     hand_right += vec2(kApart + recoil_r * knock, 0.0);

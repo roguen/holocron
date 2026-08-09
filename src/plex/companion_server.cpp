@@ -151,6 +151,13 @@ std::string control_page(const CompanionServer::ControlState& state)
     }
 
     out += "<h2>Overlays</h2>";
+    out += "<form method=\"post\" action=\"/control/nowplaying\">";
+    out += "<input type=\"hidden\" name=\"visible\" value=\"";
+    out += state.now_playing_visible ? "0" : "1";
+    out += "\"><button class=\"";
+    out += state.now_playing_visible ? "on" : "";
+    out += "\" type=\"submit\">Now playing</button></form>";
+
     out += "<form method=\"post\" action=\"/control/lyrics\">";
     out += "<input type=\"hidden\" name=\"visible\" value=\"";
     out += state.lyrics_visible ? "0" : "1";
@@ -160,7 +167,8 @@ std::string control_page(const CompanionServer::ControlState& state)
 
     // SAID PLAINLY RATHER THAN LEFT AS A DEAD BUTTON. Lyrics are not implemented
     // (issue 122) and a control that silently does nothing is the exact failure
-    // `controllable` is careful to avoid on the Plex side.
+    // `controllable` is careful to avoid on the Plex side. The now-playing card
+    // above it IS implemented, which is why only this one carries the caveat.
     out += "<div style=\"color:#8a8a92;font-size:13px;margin-top:4px\">"
            "Lyrics are not implemented yet -- this toggle is wired but has "
            "nothing to show.</div>";
@@ -224,6 +232,7 @@ struct CompanionServer::Impl {
     CompanionServer::RefreshQueueHandler  refresh_queue_handler;
     CompanionServer::SelectCrystalHandler select_crystal_handler;
     CompanionServer::LyricsHandler        lyrics_handler;
+    CompanionServer::NowPlayingHandler    now_playing_handler;
 
     // Guarded separately from the timeline. The control page is read by an HTTP
     // worker and written by the render thread, and it changes on a crystal
@@ -647,6 +656,19 @@ void CompanionServer::Impl::install_routes()
         redirect_to_control(res);
     });
 
+    self->server.Post("/control/nowplaying", [self, redirect_to_control](
+                                                 const httplib::Request& req,
+                                                 httplib::Response&      res) {
+        self->decorate(res);
+        if (self->now_playing_handler) {
+            const bool visible = req.get_param_value("visible") == "1";
+            std::printf("control: now playing %s\n", visible ? "on" : "off");
+            std::fflush(stdout);
+            self->now_playing_handler(visible);
+        }
+        redirect_to_control(res);
+    });
+
     // refreshPlayQueue -- the controller has changed the queue on the server.
     //
     // THE "PLAY NEXT" MECHANISM, and it is a command rather than something to
@@ -884,6 +906,11 @@ void CompanionServer::set_select_crystal_handler(SelectCrystalHandler handler)
 void CompanionServer::set_lyrics_handler(LyricsHandler handler)
 {
     impl_->lyrics_handler = std::move(handler);
+}
+
+void CompanionServer::set_now_playing_handler(NowPlayingHandler handler)
+{
+    impl_->now_playing_handler = std::move(handler);
 }
 
 void CompanionServer::set_control_state(const ControlState& state)
