@@ -24,6 +24,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 
 namespace holocron {
 
@@ -72,7 +73,50 @@ struct SourceInfo {
     double        duration_seconds = 0.0;  // 0 if the container does not say
     const char*   codec_name       = "";
     bool          is_lossless      = false;
+
+    // -- what the container says it IS ---------------------------------------
+    //
+    // Tags, and they are the only metadata a locally-played file has. TrackContext
+    // is otherwise filled from the Plex path, which `holocron track.flac` never
+    // reaches -- so before these existed the overlay had nothing but the filename
+    // (issue 133).
+    //
+    // Empty when the container carries no such tag, which is common and is not an
+    // error. A caller should fall back rather than report a problem.
+    //
+    // ALSO FILLS THE TWO FIELDS THE PLEX PATH CANNOT. `genre` and `year` are not
+    // on a Plex Track element and would cost a second request per track, so a cast
+    // leaves them empty -- a locally-played file gets them for free.
+    //
+    // UTF-8, AND THAT IS NOT FREE. Tag bytes are arbitrary: ID3v2.3 defaults to
+    // Latin-1 and plenty of rippers write whatever the system codepage was.
+    // Everything downstream assumes UTF-8 -- the text rasterizer calls
+    // MultiByteToWideChar(CP_UTF8) and the control page declares it -- so
+    // decoder.cpp validates and drops a tag it cannot vouch for rather than
+    // passing mojibake along. See the note there.
+    std::string title;
+    std::string artist;
+    std::string album;
+    std::string genre;
+    std::string year;
 };
+
+// Whether `text` is well-formed UTF-8.
+//
+// EXPOSED PURELY SO IT CAN BE TESTED, and that is worth the slightly odd shape of
+// a decoder header exporting a string predicate.
+//
+// Tag bytes are arbitrary. ID3v2.3 defaults to Latin-1 and plenty of rippers write
+// whatever the system codepage was; FFmpeg converts ID3 for the common cases and
+// guarantees nothing for every container. Everything downstream assumes UTF-8 --
+// the text rasterizer calls MultiByteToWideChar(CP_UTF8, ...) and the control page
+// declares charset=utf-8 -- so a tag that fails this is DROPPED rather than passed
+// on, and the caller falls back.
+//
+// The failure it prevents is mojibake, which produces no error, no crash and no
+// wrong-looking data structure: just wrong characters on a screen. That is exactly
+// the class of bug that needs a test rather than a careful reading.
+bool is_valid_utf8(const char* text);
 
 // ---------------------------------------------------------------------------
 // Decoder: file in, interleaved float at the file's NATIVE rate out.

@@ -314,7 +314,31 @@ SessionError PlaybackSession::start(const std::string& source, std::int64_t offs
         probe.close();
     }
 
-    impl.what            = what;
+    impl.what = what;
+
+    // Anything the caller did not supply comes from the container's tags. The
+    // probe above already read them, so this costs nothing. See NowPlaying: a cast
+    // supplies everything and nothing is overwritten; a file on the command line
+    // supplies nothing and gets what the file says about itself.
+    if (impl.what.title.empty()) {
+        impl.what.title = info.title;
+    }
+    if (impl.what.artist.empty()) {
+        impl.what.artist = info.artist;
+    }
+    if (impl.what.album.empty()) {
+        impl.what.album = info.album;
+    }
+    if (impl.what.genre.empty()) {
+        impl.what.genre = info.genre;
+    }
+    if (impl.what.year.empty()) {
+        impl.what.year = info.year;
+    }
+    if (impl.what.duration_ms <= 0 && info.duration_seconds > 0.0) {
+        impl.what.duration_ms = std::int64_t(info.duration_seconds * 1000.0);
+    }
+
     impl.rate            = info.sample_rate;
     impl.start_offset_ms = offset_ms;
 
