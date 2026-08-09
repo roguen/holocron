@@ -172,7 +172,32 @@ public:
         bool has_art        = false;
     };
 
-    void set_control_state(const ControlState& state);
+    // WHO OWNS WHAT, AND WHY IT IS SPLIT IN TWO.
+    //
+    // The first version had the render loop publish the WHOLE control state every
+    // frame, including which crystal was current and whether the overlays were on.
+    // That raced, visibly: a POST queues the change for the render thread and
+    // redirects immediately, so the browser's follow-up GET usually arrived before
+    // the render loop had run. The page therefore rendered the OLD state.
+    //
+    // For the crystal list that looked like "it switched but the menu did not
+    // follow, and I had to tap again". For a toggle it was worse than cosmetic --
+    // the button carries the state it wants to move TO, so a stale page sent the
+    // wrong target and the thing flip-flopped on alternate taps.
+    //
+    // So intent is owned HERE, set synchronously inside the POST handler before
+    // the redirect, and the render loop only performs it. Only the descriptive
+    // fields are pushed from the render loop.
+
+    // Descriptive only: the vault contents and what is playing. Safe to call every
+    // frame; deliberately does NOT touch `current` or the toggles.
+    void set_control_info(const std::vector<std::string>& crystals, const std::string& title,
+                          const std::string& artist, bool has_art);
+
+    // Which crystal is current. Called by the render loop ONLY when it changes it
+    // itself -- the arrow keys, or refusing an out-of-range index -- so it corrects
+    // the page rather than fighting it.
+    void set_current_crystal(std::size_t index);
 
     // Called when the page asks for a different crystal, BY INDEX into the list
     // the page was given.

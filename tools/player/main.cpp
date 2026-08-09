@@ -2401,18 +2401,17 @@ int main(int argc, char** argv)
             std::fflush(stdout);
         }
         {
-            CompanionServer::ControlState control_state;
-            control_state.crystals.reserve(vault.size());
+            // DESCRIPTIVE FIELDS ONLY. `current` and the toggles are owned by the
+            // control page's POST handlers -- pushing them from here every frame is
+            // what made the page race against itself and flip-flop on alternate
+            // taps. See CompanionServer::set_control_info.
+            std::vector<std::string> names;
+            names.reserve(vault.size());
             for (const VaultEntry& entry : vault) {
-                control_state.crystals.push_back(entry.name);
+                names.push_back(entry.name);
             }
-            control_state.current        = current;
-            control_state.title          = track_context.title;
-            control_state.artist         = track_context.artist;
-            control_state.lyrics_visible      = lyrics_visible;
-            control_state.now_playing_visible = show_now_playing;
-            control_state.has_art        = track_context.has_art;
-            companion.set_control_state(control_state);
+            companion.set_control_info(names, track_context.title, track_context.artist,
+                                       track_context.has_art);
         }
 
         if (drawing_crystal) {
@@ -2452,11 +2451,18 @@ int main(int argc, char** argv)
                 } else {
                     std::fprintf(stderr, "holocron: no crystal %zu in a vault of %zu\n", asked,
                                  vault.size());
+                    // The page set itself optimistically to an index this vault does
+                    // not have. Put it back, or it keeps showing a selection that
+                    // was refused.
+                    companion.set_current_crystal(current);
                 }
             }
 
             if (switching) {
                 current = wanted;
+                // Pushed so the control page follows the ARROW KEYS too. The page
+                // already knows about its own POSTs; this is the other direction.
+                companion.set_current_crystal(current);
 
                 Crystal crystal;
                 if (build_crystal(vault[current].stem.c_str(), crystal_facet, false, "switched to",

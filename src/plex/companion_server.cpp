@@ -632,12 +632,25 @@ void CompanionServer::Impl::install_routes()
                                               httplib::Response&      res) {
         self->decorate(res);
         const auto index = req.get_param_value("index");
-        if (!index.empty() && self->select_crystal_handler) {
+        if (!index.empty()) {
             const std::int64_t chosen = parse_int64(index, -1);
             if (chosen >= 0) {
                 std::printf("control: crystal %lld\n", static_cast<long long>(chosen));
                 std::fflush(stdout);
-                self->select_crystal_handler(static_cast<std::size_t>(chosen));
+
+                // OPTIMISTIC, AND BEFORE THE REDIRECT. The browser's follow-up GET
+                // usually beats the render loop, so the page has to be told now or
+                // it renders the previous selection. If the render loop refuses the
+                // index it calls set_current_crystal to put this right.
+                {
+                    const std::lock_guard<std::mutex> lock(self->control_mutex);
+                    if (std::size_t(chosen) < self->control.crystals.size()) {
+                        self->control.current = std::size_t(chosen);
+                    }
+                }
+                if (self->select_crystal_handler) {
+                    self->select_crystal_handler(static_cast<std::size_t>(chosen));
+                }
             }
         }
         redirect_to_control(res);
@@ -647,10 +660,17 @@ void CompanionServer::Impl::install_routes()
                                              const httplib::Request& req,
                                              httplib::Response&      res) {
         self->decorate(res);
+        const bool visible = req.get_param_value("visible") == "1";
+        std::printf("control: lyrics %s\n", visible ? "on" : "off");
+        std::fflush(stdout);
+        {
+            // Set here, not after the render loop acts. A toggle button carries the
+            // state it wants to move TO, so a page rendered from stale state sends
+            // the wrong target and the thing flips on alternate taps.
+            const std::lock_guard<std::mutex> lock(self->control_mutex);
+            self->control.lyrics_visible = visible;
+        }
         if (self->lyrics_handler) {
-            const bool visible = req.get_param_value("visible") == "1";
-            std::printf("control: lyrics %s\n", visible ? "on" : "off");
-            std::fflush(stdout);
             self->lyrics_handler(visible);
         }
         redirect_to_control(res);
@@ -660,10 +680,14 @@ void CompanionServer::Impl::install_routes()
                                                  const httplib::Request& req,
                                                  httplib::Response&      res) {
         self->decorate(res);
+        const bool visible = req.get_param_value("visible") == "1";
+        std::printf("control: now playing %s\n", visible ? "on" : "off");
+        std::fflush(stdout);
+        {
+            const std::lock_guard<std::mutex> lock(self->control_mutex);
+            self->control.now_playing_visible = visible;
+        }
         if (self->now_playing_handler) {
-            const bool visible = req.get_param_value("visible") == "1";
-            std::printf("control: now playing %s\n", visible ? "on" : "off");
-            std::fflush(stdout);
             self->now_playing_handler(visible);
         }
         redirect_to_control(res);
@@ -913,10 +937,25 @@ void CompanionServer::set_now_playing_handler(NowPlayingHandler handler)
     impl_->now_playing_handler = std::move(handler);
 }
 
-void CompanionServer::set_control_state(const ControlState& state)
+void CompanionServer::set_control_info(const std::vector<std::string>& crystals,
+                                       const std::string& title, const std::string& artist,
+                                       bool has_art)
 {
     const std::lock_guard<std::mutex> lock(impl_->control_mutex);
-    impl_->control = state;
+    impl_->control.crystals = crystals;
+    impl_->control.title    = title;
+    impl_->control.artist   = artist;
+    impl_->control.has_art  = has_art;
+
+    // `current` and the toggles are deliberately NOT touched. See the header: they
+    // are intent, owned by the POST handlers, and overwriting them from here every
+    // frame is what made the page race against itself.
+}
+
+void CompanionServer::set_current_crystal(std::size_t index)
+{
+    const std::lock_guard<std::mutex> lock(impl_->control_mutex);
+    impl_->control.current = index;
 }
 
 void CompanionServer::set_timeline(const TimelineState& state)
