@@ -374,14 +374,16 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.2.2`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.2.3`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
-**A patch can contain new subsystems, and `v0.2.2` does.** The rule is minor per
-milestone *completed*, and M2 is not — its visual language is still open. So the
-control surface, text rendering and the `duel` crystal all landed as a patch.
-That is the rule working as written, not a mistake.
+**A patch can contain new subsystems, and `v0.2.2` and `v0.2.3` both do.** The
+rule is minor per milestone *completed*, and neither M2 nor M3 is — M2's visual
+language is still open and M3 has one of seven exit criteria met. So the control
+surface, text rendering, the `duel` crystal, **the whole compositor, the
+crossfade, the tuning page and lyrics** have all landed as patches. That is the
+rule working as written, not a mistake.
 
 **The minor number tracks how many milestones are DONE, not which one.** `v0.2.0`
 is the first completed milestone and that milestone is **M5**, because D-029 made
