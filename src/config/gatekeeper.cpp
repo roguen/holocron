@@ -143,6 +143,23 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     read_int(tbl, "render", "height", out.height, bad);
     read_bool(tbl, "render", "vsync", out.vsync, bad);
     read_bool(tbl, "render", "gl_debug", out.gl_debug, bad);
+    read_string(tbl, "render", "advance", out.advance, bad);
+    read_int(tbl, "render", "advance_seconds", out.advance_seconds, bad);
+
+    // VALIDATED HERE RATHER THAN AT THE USE SITE, because a live key holding a
+    // value the player cannot act on is fatal by this file's own rule -- and
+    // "advance = trak" silently meaning "off" is exactly the silent fallback that
+    // rule exists to prevent. The trim was the case that established it.
+    if (bad.empty() && out.advance != "off" && out.advance != "track" &&
+        out.advance != "timer") {
+        bad = "[render] advance must be \"off\", \"track\" or \"timer\", not \"" + out.advance +
+              "\"";
+    }
+    if (bad.empty() && out.advance_seconds < 5) {
+        // Below this the transition is most of what is on screen. Refused rather
+        // than clamped: someone typing 1 meant something, and it was not this.
+        bad = "[render] advance_seconds must be at least 5";
+    }
 
     read_string(tbl, "paths", "vault", out.vault, bad);
     read_string(tbl, "paths", "crystal", out.crystal, bad);
