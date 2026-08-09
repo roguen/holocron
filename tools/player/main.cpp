@@ -1512,6 +1512,16 @@ int main(int argc, char** argv)
     wc.width  = opt.width;
     wc.height = opt.height;
 
+    // FROM THE CONFIG, WHICH IS WHERE THEY ALWAYS CLAIMED TO COME FROM.
+    //
+    // Both keys were parsed, validated and then dropped on the floor -- Window
+    // does the right thing with them and nothing handed them over, so setting
+    // `vsync = false` had no effect and never had (issue 141). When no config
+    // was found, `cfg` holds the same defaults WindowConfig does, so this is a
+    // no-op in that case rather than a second source of truth.
+    wc.vsync    = cfg.vsync;
+    wc.gl_debug = cfg.gl_debug;
+
     Window window;
     const WindowError werr = window.open(wc);
     if (werr != WindowError::kOk) {
