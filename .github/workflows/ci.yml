@@ -157,37 +157,47 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ninja-build nasm
 
-      # The run id in the key is deliberate and is the whole point -- see #49.
+      # RESTORE AND SAVE ARE SPLIT, AND THE SAVE IS CONDITIONAL. See #169, and
+      # #49 before it -- this supersedes #49's fix rather than reverting it.
       #
-      # A cancelled run still executes its post-steps, so it saves whatever is
-      # in the archives directory AT THAT MOMENT, which is a partial set. And
+      # THE PROBLEM #49 SOLVED, which still has to stay solved: a cancelled run
+      # still executes its post-steps, so a combined actions/cache saves whatever
+      # is in the archives directory AT THAT MOMENT -- a partial set. And
       # actions/cache never overwrites an existing key, so the run that then
       # completes properly logs "Cache hit occurred on the primary key, not
-      # saving cache" and its complete archives are thrown away. The partial
-      # cache is pinned to that key forever, and every later run on that ref
-      # restores it and rebuilds the difference.
+      # saving cache" and throws its complete archives away. The partial cache is
+      # pinned to that key forever and every later run rebuilds the difference.
       #
-      # This was not theoretical: the Windows job restored 6 of 12 packages and
-      # rebuilt the other six on every run, costing ~23 min against 61 s for
-      # the whole Linux job. The same key held 100 MB on refs/heads/main and
-      # 75 MB on refs/pull/47/merge -- the partial one is directly visible in
-      # the cache listing.
+      # Not theoretical: the Windows job restored 6 of 12 packages and rebuilt
+      # the other six every run, ~23 min against 61 s for the whole Linux job.
       #
-      # Making the key unique per run means every run saves, so a partial cache
-      # is superseded by the next complete one instead of pinned. Restores fall
-      # back through the prefixes: exact manifest first, then any cache for the
-      # platform.
+      # #49 fixed it by putting github.run_id in the key, so every run saves and
+      # a partial cache is superseded rather than pinned. That worked, and it
+      # accepted a cost in as many words: every run writes a new blob.
       #
-      # The cost is that every run now writes a cache, so the 10 GB limit
-      # arrives sooner and GitHub evicts least-recently-used. That is the
-      # accepted trade, not an oversight.
-      - name: Cache vcpkg binaries
-        uses: actions/cache@v4
+      # THE COST CAME DUE ON 2026-08-09. 55 entries, 10.02 GB against a 10 GB
+      # limit -- 26 Windows entries at 258 MB each. Over the limit GitHub evicts
+      # least-recently-used, so a Windows restore can miss because a concurrent
+      # Linux save just pushed it out, and the job rebuilds FFmpeg and the rest
+      # from source. One Windows job ran for over an hour against the 2m37s every
+      # run before it took.
+      #
+      # SO: KEY WITHOUT THE RUN ID, AND ONLY SAVE ON SUCCESS. `success()` is false
+      # for a cancelled or failed run, so a partial archive set is never written
+      # at all -- which is strictly better than writing it and superseding it
+      # later. Only a run that finished has a complete set, and only that gets
+      # saved. Growth becomes one blob per (OS, manifest content) instead of one
+      # per run.
+      #
+      # `cache-hit != 'true'` skips the save when the exact key already matched,
+      # because there would be nothing new in it.
+      - name: Restore vcpkg binaries
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.os == 'Windows' && '~\AppData\Local\vcpkg\archives' || '~/.cache/vcpkg/archives' }}
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
-            vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}-
             vcpkg-${{ runner.os }}-
 
       # Windows needs the MSVC environment before Ninja can find cl.exe, and
@@ -228,6 +238,19 @@ jobs:
           cmake --preset linux
           cmake --build --preset linux
           ctest --preset linux
+
+      # AFTER the build, and only when it worked. See the long note above the
+      # restore: this is what stops a cancelled or failed run pinning a partial
+      # archive set, without needing a unique key per run to paper over it.
+      #
+      # One step for both platforms -- only one of the two build steps above ran,
+      # and by the time control reaches here it succeeded.
+      - name: Save vcpkg binaries
+        if: success() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.os == 'Windows' && '~\AppData\Local\vcpkg\archives' || '~/.cache/vcpkg/archives' }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
 
   hygiene:
     name: Repo hygiene (case + line endings)
