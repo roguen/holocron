@@ -147,6 +147,61 @@ struct Gatekeeper {
     // between them at runtime; this only chooses where a run begins.
     std::string crystal;
 
+    // [projectm]
+    //
+    // MilkDrop presets, through libprojectM. Prefixed for the same reason [plex]
+    // is: `preset_path` and `shuffle` are words another section will want.
+    //
+    // NOTHING HERE SHIPS. Holocron does not distribute libprojectM and does not
+    // distribute presets -- see the wiki's Preset-Packs page for why the second
+    // one is a licence rule rather than a preference. Both point at things the
+    // user installed, which is why the two paths default to empty and why an
+    // empty `preset_path` simply means "no projectM in the vault" rather than an
+    // error.
+
+    // A DIRECTORY OF .milk FILES, SCANNED RECURSIVELY, outside the repository.
+    // Empty means projectM is not offered at all.
+    std::string projectm_preset_path;
+
+    // Where projectM-4 and its playlist module live. Empty lets the OS loader
+    // search, which is what a system-installed libprojectM wants.
+    //
+    // A DIRECTORY, not a file: the two modules always ship together and, on
+    // Windows, so does the GLEW that projectM-4.dll imports. Naming one file
+    // would leave the other two to luck.
+    std::string projectm_library_dir;
+
+    // Where presets look for the images some of them sample. Optional.
+    std::string projectm_texture_path;
+
+    // How long a preset stays up, and how long the blend between two takes.
+    //
+    // These are projectM's OWN transition, between two presets, and they are a
+    // different thing from `[render] advance`, which moves between vault
+    // entries. A projectM vault entry that sat on one preset for three minutes
+    // because `advance_seconds` said so would be a MilkDrop visualizer with the
+    // interesting part switched off.
+    double projectm_preset_duration   = 30.0;
+    double projectm_soft_cut_duration = 3.0;
+
+    // A hard cut is an instant change on a loud transient rather than a timed
+    // blend. Off by default: whether it reads as responsive or as flickering is
+    // a judgement to make on the projector, not one to impose from a default.
+    bool   projectm_hard_cut          = false;
+    double projectm_hard_cut_duration = 60.0;
+
+    float projectm_beat_sensitivity = 1.0f;
+
+    // Playlist order. Shuffle on, because a pack is thousands of files in
+    // whatever order the filesystem gave them, and alphabetical order through one
+    // means a whole evening in the a's.
+    bool projectm_shuffle = true;
+
+    // The per-preset warp and composite grid. projectM's own default is 48x32.
+    // Larger is smoother and costs real time on a 4K layer.
+    int projectm_mesh_x = 48;
+    int projectm_mesh_y = 32;
+
     // [plex]
     //
     // Prefixed, unlike the sections above, because `name` and `port` on their

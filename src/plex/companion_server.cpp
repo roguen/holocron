@@ -118,12 +118,24 @@ std::string control_page(const CompanionServer::ControlState& state)
            ".np{background:#16161a;border-radius:10px;padding:14px 16px;margin-bottom:6px}"
            ".np .t{font-size:18px;font-weight:600}"
            ".np .a{color:#a0a0a8}"
+           ".sub{color:#8a8a92;font-size:13px}"
+           // Two buttons on one line, for the preset pair. The tuning page
+           // already has this rule; it is repeated rather than shared because the
+           // two pages have separate style blocks on purpose -- they are served
+           // to a phone with no cache guarantees and neither should be able to
+           // break the other's layout.
+           ".row{display:flex;gap:8px;margin-bottom:8px}"
+           ".row form{flex:1}"
+           ".row button{text-align:center}"
            "form{margin:0}"
            "button{display:block;width:100%;text-align:left;background:#16161a;"
            "color:#e8e8ea;border:1px solid #26262c;border-radius:10px;"
            "padding:15px 16px;font:inherit;margin-bottom:8px;cursor:pointer}"
            "button.on{background:#2a2a34;border-color:#4a4a58;font-weight:600}"
            "button.on::after{content:'  \\2022';color:#7ab8ff}"
+           // The dot marks a toggle that is ON, and on a centred row button it
+           // would shove the label off centre. The pair are actions, not states.
+           ".row button.on::after{content:''}"
            "</style></head><body>";
 
     out += "<h1>Holocron</h1>";
@@ -148,6 +160,54 @@ std::string control_page(const CompanionServer::ControlState& state)
             out += on ? "on" : "";
             out += "\" type=\"submit\">" + html_escape(state.crystals[i]) + "</button></form>";
         }
+    }
+
+    // -- projectM, only when one is actually drawing --------------------------
+    //
+    // Hidden otherwise, rather than shown greyed out. A "next preset" button that
+    // does nothing on four vault entries out of five is a control whose silence
+    // has to be interpreted, and this page already has one thing it has to
+    // apologise for in words (lyrics). One is enough.
+    if (state.projectm_showing) {
+        out += "<h2>projectM</h2>";
+
+        out += "<div class=\"np\">";
+        if (state.projectm_preset.empty()) {
+            out += "<div class=\"sub\">loading a preset&hellip;</div>";
+        } else {
+            out += "<div>" + html_escape(state.projectm_preset) + "</div>";
+        }
+        if (state.projectm_presets > 0) {
+            out += "<div class=\"sub\">" + std::to_string(state.projectm_index + 1) + " of " +
+                   std::to_string(state.projectm_presets) + "</div>";
+        }
+        out += "</div>";
+
+        // Side by side, because they are one control with two directions and
+        // stacking them puts a full-width tap target for "back" under the thumb
+        // that wanted "on".
+        out += "<div class=\"row\">";
+        out += "<form method=\"post\" action=\"/control/preset\">"
+               "<input type=\"hidden\" name=\"step\" value=\"-1\">"
+               "<button type=\"submit\">&lsaquo; Back</button></form>";
+        out += "<form method=\"post\" action=\"/control/preset\">"
+               "<input type=\"hidden\" name=\"step\" value=\"1\">"
+               "<button type=\"submit\">Next &rsaquo;</button></form>";
+        out += "</div>";
+
+        out += "<form method=\"post\" action=\"/control/pmlock\">";
+        out += "<input type=\"hidden\" name=\"on\" value=\"";
+        out += state.projectm_locked ? "0" : "1";
+        out += "\"><button class=\"";
+        out += state.projectm_locked ? "on" : "";
+        out += "\" type=\"submit\">Hold this preset</button></form>";
+
+        out += "<form method=\"post\" action=\"/control/pmshuffle\">";
+        out += "<input type=\"hidden\" name=\"on\" value=\"";
+        out += state.projectm_shuffle ? "0" : "1";
+        out += "\"><button class=\"";
+        out += state.projectm_shuffle ? "on" : "";
+        out += "\" type=\"submit\">Shuffle</button></form>";
     }
 
     out += "<h2>Overlays</h2>";
@@ -394,6 +454,9 @@ struct CompanionServer::Impl {
     CompanionServer::TrimHandler          trim_handler;
     CompanionServer::SyncHandler          sync_handler;
     CompanionServer::AdvanceHandler       advance_handler;
+    CompanionServer::ProjectMStepHandler   projectm_step_handler;
+    CompanionServer::ProjectMToggleHandler projectm_shuffle_handler;
+    CompanionServer::ProjectMToggleHandler projectm_lock_handler;
 
     // Guarded separately from the timeline. The control page is read by an HTTP
     // worker and written by the render thread, and it changes on a crystal
@@ -902,6 +965,70 @@ void CompanionServer::Impl::install_routes()
         redirect_to_control(res);
     });
 
+    // -- projectM ------------------------------------------------------------
+    //
+    // A STEP, NOT AN INDEX. There is no list to render indices from -- a pack is
+    // thousands of files -- and a relative control is correct however stale the
+    // page that sent it, which is the same argument the trim buttons make.
+    self->server.Post("/control/preset", [self, redirect_to_control](
+                                             const httplib::Request& req,
+                                             httplib::Response&      res) {
+        self->decorate(res);
+        const std::string raw = req.get_param_value("step");
+
+        // Only the two values the page offers. It arrives over HTTP and anyone on
+        // the LAN can send one; "step=100000" walking a playlist is not a control
+        // anybody asked for.
+        const int step = raw == "-1" ? -1 : (raw == "1" ? 1 : 0);
+        if (step != 0) {
+            std::printf("control: preset %s\n", step > 0 ? "next" : "previous");
+            std::fflush(stdout);
+            if (self->projectm_step_handler) {
+                self->projectm_step_handler(step);
+            }
+        } else if (!raw.empty()) {
+            std::fprintf(stderr, "control: refusing preset step `%s`\n", raw.c_str());
+        }
+        redirect_to_control(res);
+    });
+
+    self->server.Post("/control/pmshuffle", [self, redirect_to_control](
+                                                const httplib::Request& req,
+                                                httplib::Response&      res) {
+        self->decorate(res);
+        const bool on = req.get_param_value("on") == "1";
+        std::printf("control: projectM shuffle %s\n", on ? "on" : "off");
+        std::fflush(stdout);
+        {
+            // Set here and before the redirect. A toggle carries the state it
+            // wants to move TO, so a page rendered from stale state sends the
+            // wrong target and the control flips on alternate taps.
+            const std::lock_guard<std::mutex> lock(self->control_mutex);
+            self->control.projectm_shuffle = on;
+        }
+        if (self->projectm_shuffle_handler) {
+            self->projectm_shuffle_handler(on);
+        }
+        redirect_to_control(res);
+    });
+
+    self->server.Post("/control/pmlock", [self, redirect_to_control](
+                                             const httplib::Request& req,
+                                             httplib::Response&      res) {
+        self->decorate(res);
+        const bool on = req.get_param_value("on") == "1";
+        std::printf("control: projectM lock %s\n", on ? "on" : "off");
+        std::fflush(stdout);
+        {
+            const std::lock_guard<std::mutex> lock(self->control_mutex);
+            self->control.projectm_locked = on;
+        }
+        if (self->projectm_lock_handler) {
+            self->projectm_lock_handler(on);
+        }
+        redirect_to_control(res);
+    });
+
     self->server.Post("/control/lyrics", [self, redirect_to_control](
                                              const httplib::Request& req,
                                              httplib::Response&      res) {
@@ -1198,6 +1325,21 @@ void CompanionServer::set_advance_handler(AdvanceHandler handler)
     impl_->advance_handler = std::move(handler);
 }
 
+void CompanionServer::set_projectm_step_handler(ProjectMStepHandler handler)
+{
+    impl_->projectm_step_handler = std::move(handler);
+}
+
+void CompanionServer::set_projectm_shuffle_handler(ProjectMToggleHandler handler)
+{
+    impl_->projectm_shuffle_handler = std::move(handler);
+}
+
+void CompanionServer::set_projectm_lock_handler(ProjectMToggleHandler handler)
+{
+    impl_->projectm_lock_handler = std::move(handler);
+}
+
 void CompanionServer::set_advance(const std::string& mode, int seconds)
 {
     const std::lock_guard<std::mutex> lock(impl_->control_mutex);
@@ -1238,6 +1380,27 @@ void CompanionServer::set_current_crystal(std::size_t index)
 {
     const std::lock_guard<std::mutex> lock(impl_->control_mutex);
     impl_->control.current = index;
+}
+
+void CompanionServer::set_control_projectm(bool showing, const std::string& preset,
+                                           std::size_t count, std::size_t index)
+{
+    const std::lock_guard<std::mutex> lock(impl_->control_mutex);
+    impl_->control.projectm_showing = showing;
+    impl_->control.projectm_preset  = preset;
+    impl_->control.projectm_presets = count;
+    impl_->control.projectm_index   = index;
+
+    // Shuffle and lock are deliberately NOT touched. Same rule as set_control_info:
+    // they are intent, owned by the POST handlers, and pushing them from the render
+    // loop every frame is what made the page race against itself.
+}
+
+void CompanionServer::set_projectm_modes(bool shuffle, bool locked)
+{
+    const std::lock_guard<std::mutex> lock(impl_->control_mutex);
+    impl_->control.projectm_shuffle = shuffle;
+    impl_->control.projectm_locked  = locked;
 }
 
 void CompanionServer::set_timeline(const TimelineState& state)

@@ -242,15 +242,121 @@ vault = "crystals"
 # LIVE.
 crystal = ""
 
-# MilkDrop presets for the projectM facet (M4). User-supplied; none ship with
-# Holocron, and none can -- see THIRD-PARTY-NOTICES.md.
-preset_packs = ""
+# MilkDrop presets USED TO BE SPELLED `preset_packs` HERE, before M4 existed to
+# read them. They now have their own section -- see [projectm] below -- because
+# the path is only one of ten things that describe how projectM runs, and one
+# key sitting among the crystal paths implied it was the same kind of thing.
+# A `preset_packs` key here is now simply ignored.
 
 # Album art, palettes and Plex metadata (M5).
 cache = "cache"
 
 # Empty logs to stderr only.
 log = ""
+
+
+# ---------------------------------------------------------------------------
+# [projectm] -- M4. MilkDrop presets, through libprojectM. ALL LIVE.
+# ---------------------------------------------------------------------------
+#
+# TWO THINGS HERE POINT AT SOFTWARE HOLOCRON DOES NOT SHIP, and that is by
+# design rather than by omission.
+#
+# libprojectM is LGPL and is reached by opening it at RUNTIME through its C API
+# -- there is no vcpkg dependency, no import entry in the executable, and no
+# projectM header anywhere in the source tree. A machine without it runs
+# Holocron with one fewer thing in the vault. See THIRD-PARTY-NOTICES.md.
+#
+# THE PRESETS ARE SOMEBODY ELSE'S WORK AND CANNOT SHIP EITHER. A pack is tens of
+# thousands of `.milk` files by hundreds of authors, almost none carrying a
+# licence statement -- which means all rights reserved, not public domain.
+# Nothing stops you running a pack you obtained yourself; that is the intended
+# and only workflow. See the wiki's Preset-Packs page.
+#
+# There is deliberately NO `enabled` key. What turns projectM on is having
+# somewhere to read presets from. A key saying yes beside an empty path is a
+# setting that cannot work and an error message waiting to be written.
+[projectm]
+
+# A directory of `.milk` files, SCANNED RECURSIVELY. Empty means projectM is not
+# offered at all, which is the default.
+#
+# Recursive because real packs are nested several directories deep, so a
+# non-recursive scan of the top of one finds nothing and looks exactly like a
+# wrong path. Point it OUTSIDE this repository -- `.gitignore` blocks `.milk`
+# and the obvious directory names precisely so a careless `git add -A` cannot
+# sweep somebody else's work into a public repo.
+#
+# LIVE. Today also: --projectm DIR, which additionally opens the run on it.
+preset_path = ""
+
+# Where `projectM-4` and its playlist module live.
+#
+# EMPTY LETS THE OS LOADER SEARCH, which is what a system-installed libprojectM
+# wants and is the right answer on Linux. Set it to a directory when you have
+# unpacked a build somewhere of your own.
+#
+# A DIRECTORY, NOT A FILE. The two modules always ship together and, on Windows,
+# so does the GLEW that projectM-4.dll imports -- naming one file would leave
+# the other two to luck. All three have to be in the same directory, and the
+# error when they are not is Windows error 126 naming the file that is present.
+#
+# LIVE. Today also: --projectm-lib DIR.
+library_dir = ""
+
+# Where presets look for the images some of them sample. Optional: a preset
+# asking for a texture that is not there falls back to a built-in.
+#
+# LIVE.
+texture_path = ""
+
+# How long a preset stays up, and how long the blend between two takes.
+#
+# THIS IS NOT `[render] advance`. These are projectM's OWN transitions between
+# presets; `advance` moves between VAULT ENTRIES, which is a different and
+# larger change. A projectM entry that sat on one preset for three minutes
+# because advance_seconds said so would be a MilkDrop visualizer with the
+# interesting part switched off.
+#
+# LIVE.
+preset_duration   = 30.0
+soft_cut_duration = 3.0
+
+# A hard cut is an instant change on a loud transient rather than a timed blend,
+# and `hard_cut_duration` is the shortest time it will let pass between two.
+#
+# OFF BY DEFAULT because it fires on the music rather than on the clock, and
+# whether that reads as responsive or as flickering is a judgement to make on
+# your own projector rather than one to impose from a default.
+#
+# LIVE.
+hard_cut          = false
+hard_cut_duration = 60.0
+
+# How readily projectM's own beat detector fires. Higher is more sensitive.
+#
+# projectM does its OWN analysis of the PCM it is fed and does not read
+# AudioFrame -- a MilkDrop preset has no idea this project has a beat grid. So
+# this knob is unrelated to `[audio] trim_ms` and to anything under [analysis].
+#
+# LIVE.
+beat_sensitivity = 1.0
+
+# Playlist order.
+#
+# ON BY DEFAULT, because a pack is thousands of files in whatever order the
+# filesystem gave them, and alphabetical order through one means a whole evening
+# in the a's. Togglable from the control page while it runs.
+#
+# LIVE.
+shuffle = true
+
+# The per-preset warp and composite grid. projectM's own default is 48x32.
+# Larger is smoother and costs real time on a 4K layer.
+#
+# LIVE.
+mesh_x = 48
+mesh_y = 32
 
 
 # ---------------------------------------------------------------------------
