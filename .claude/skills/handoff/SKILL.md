@@ -109,6 +109,49 @@ rather than reading the diff.
 
 ## Finish
 
-Tell the user the file path and **that they should paste it into the new
-session**. Summarise in a few lines what it carries that the repo does not —
-that is what makes it worth pasting rather than skipping.
+Three things, in this order.
+
+**1. The file path**, and that they should paste it into the new session.
+
+**2. A few lines on what it carries that the repo does not** — that is what makes
+it worth pasting rather than skipping.
+
+**3. THE OPENING PHRASE, verbatim and in its own fenced block**, for the owner to
+paste as the first message of the new session.
+
+### The opening phrase
+
+The handoff document is context. The phrase is the *instruction* — what to do with
+that context. Without it, a fresh instance reads a status report and waits, or
+worse, starts summarising it back.
+
+Write it **fresh every time**, from the state you just verified. A generic phrase
+is worse than none, because it wastes the one message that sets the session's
+direction.
+
+Put it in a fenced block with no language tag so the owner can copy it in one
+gesture, and keep it to a short paragraph — it is a prompt, not a second handoff.
+
+It must do four things:
+
+- **Point at the document.** Name the full path; the new instance cannot see this
+  conversation.
+- **Give the standing instruction**, not a summary of it. If the owner has asked
+  for autonomous operation, say so in the phrase, or the new session will check in
+  after every step.
+- **Name the first task concretely**, with its issue number. "Continue the project"
+  produces a session that asks what to do. "Start on issue 139" does not.
+- **Name what is unverified**, so the new instance does not build on top of work
+  the owner has not confirmed, or re-report it as done.
+
+Two things it must NOT do:
+
+- **Do not restate the state.** Branch positions and test counts are in the
+  document and will be stale in the phrase within an hour.
+- **Do not include anything the owner would have to edit before sending.** If it
+  contains a placeholder, it is not finished.
+
+Adjust it to the situation rather than following a template. A session ending
+mid-task needs a different first instruction from one ending at a clean release,
+and a session with a decision waiting on the owner should have that decision in the
+phrase so he can answer it in his first reply rather than being asked for it later.
