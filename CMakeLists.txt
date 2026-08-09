@@ -251,6 +251,7 @@ find_package(glm CONFIG REQUIRED)
 add_library(holocron_visual STATIC
     src/visual/palette.cpp
     src/visual/image_decode.cpp
+    src/visual/text_render.cpp
 )
 add_library(holocron::visual ALIAS holocron_visual)
 
@@ -268,6 +269,14 @@ target_link_libraries(holocron_visual
 # taking a dependency for it. See image_decode.hpp.
 target_include_directories(holocron_visual SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_directories(holocron_visual PRIVATE ${FFMPEG_LIBRARY_DIRS})
+
+if(WIN32)
+    # gdi32 and user32 for the text rasterizer. System libraries, no vcpkg
+    # dependency -- which is the whole reason text_render.cpp exists in this form
+    # rather than pulling in FreeType. Same trade as avrt/ole32 for WASAPI and
+    # winhttp for the plex.tv link flow. See text_render.hpp.
+    target_link_libraries(holocron_visual PRIVATE gdi32 user32)
+endif()
 
 # ---------------------------------------------------------------------------
 # WASAPI sink
@@ -316,6 +325,7 @@ add_library(holocron_render STATIC
     src/render/debug_facet.cpp
     src/render/crystal_facet.cpp
     src/render/art_texture.cpp
+    src/render/overlay_facet.cpp
 )
 add_library(holocron::render ALIAS holocron_render)
 

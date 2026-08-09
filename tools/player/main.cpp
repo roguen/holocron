@@ -47,7 +47,9 @@
 #include <holocron/companion_server.hpp>
 #include <holocron/crystal.hpp>
 #include <holocron/image_decode.hpp>
+#include <holocron/overlay_facet.hpp>
 #include <holocron/palette.hpp>
+#include <holocron/text_render.hpp>
 #include <holocron/track_context.hpp>
 #include <holocron/gdm_responder.hpp>
 #include <holocron/plex_device.hpp>
@@ -67,6 +69,17 @@
 #ifdef _WIN32
 // For SetConsoleOutputCP only. Included after every project header so it cannot
 // impose its macros on them.
+//
+// NOMINMAX because windows.h otherwise defines `max` and `min` as MACROS, which
+// makes every later `std::max(a, b)` a syntax error -- and the error it produces
+// ("illegal token on right side of '::'") says nothing about where it came from.
+// WIN32_LEAN_AND_MEAN keeps the rest of the surface down while here.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #endif
 
@@ -643,6 +656,23 @@ struct CastCommand {
         const std::lock_guard<std::mutex> lock(mutex);
         const int asked = lyrics;
         lyrics          = 0;
+        return asked;
+    }
+
+    // The now-playing card. Tri-state for the same reason.
+    int now_playing = 0;
+
+    void request_now_playing(bool visible)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        now_playing = visible ? 1 : 2;
+    }
+
+    int take_now_playing()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const int asked = now_playing;
+        now_playing     = 0;
         return asked;
     }
 
@@ -1369,6 +1399,8 @@ int main(int argc, char** argv)
         cast.request_crystal(index);
     });
     companion.set_lyrics_handler([&cast](bool visible) { cast.request_lyrics(visible); });
+    companion.set_now_playing_handler(
+        [&cast](bool visible) { cast.request_now_playing(visible); });
 
     // Linking comes before discovery: it needs the machine identifier and
     // nothing else, and a run that is signing in has no business also
@@ -1641,6 +1673,71 @@ int main(int argc, char** argv)
     // Edge detector for the end of a track, so the log says once that it
     // happened rather than every frame afterwards.
     bool was_ended = false;
+
+    // -- the now-playing card -------------------------------------------------
+    //
+    // M6's first real surface, and the first text this project has ever drawn.
+    //
+    // Rasterized ONCE PER TRACK, not per frame. The strings change a few times an
+    // hour; rasterizing them every frame would be a GDI call and a texture upload
+    // inside a 7 ms budget for a picture that has not changed.
+    OverlayFacet overlay;
+    bool         overlay_ready = false;
+    {
+        std::string log;
+        overlay_ready = overlay.init(log);
+        if (!overlay_ready) {
+            // Not fatal. The visuals are the point; losing the card is a
+            // cosmetic loss and the crystal is unaffected.
+            std::fprintf(stderr, "holocron: no overlay -- %s\n", log.c_str());
+        }
+    }
+
+    bool          show_now_playing = false;
+    TextureHandle title_texture    = 0;
+    TextureHandle artist_texture   = 0;
+    int           title_w = 0, title_h = 0;
+    int           artist_w = 0, artist_h = 0;
+    std::string   drawn_for_title;   // what the textures currently say
+
+    // Rebuild the card's textures. Called when the track changes, and only then.
+    const auto build_card = [&](const std::string& title, const std::string& artist) {
+        release_art(title_texture);
+        release_art(artist_texture);
+        title_w = title_h = artist_w = artist_h = 0;
+
+        if (title.empty()) {
+            return;
+        }
+
+        // Sized for a projector seen from a couch, which is the M6 constraint and
+        // the reason these are absolute pixel heights rather than fractions.
+        TextRequest req;
+        req.text         = title;
+        req.pixel_height = 52;
+        req.bold         = true;
+
+        ImageRgba8  bitmap;
+        std::string detail;
+        if (render_text(req, bitmap, detail) == TextError::kOk) {
+            title_texture = upload_art(bitmap);
+            title_w       = bitmap.width;
+            title_h       = bitmap.height;
+        } else if (!detail.empty()) {
+            std::fprintf(stderr, "holocron: no title text -- %s\n", detail.c_str());
+        }
+
+        if (!artist.empty()) {
+            req.text         = artist;
+            req.pixel_height = 32;
+            req.bold         = false;
+            if (render_text(req, bitmap, detail) == TextError::kOk) {
+                artist_texture = upload_art(bitmap);
+                artist_w       = bitmap.width;
+                artist_h       = bitmap.height;
+            }
+        }
+    };
 
     // Whether the lyric overlay is wanted. WIRED BUT WITH NOTHING BEHIND IT --
     // lyrics are issue 122 and need text rendering the project does not have.
@@ -2255,6 +2352,37 @@ int main(int argc, char** argv)
 
         track_context.playing = playing;
 
+        // A FILE PLAYED FROM THE COMMAND LINE HAS NO METADATA AT ALL.
+        //
+        // TrackContext is populated by begin_track, which only a cast reaches --
+        // so `holocron track.flac` left the title empty and the card silently drew
+        // nothing while reporting itself switched on. Found by rendering it, not by
+        // reading the code.
+        //
+        // The filename is a poor title and an honest one. Reading tags out of the
+        // container would be better and is issue 133; this is the fallback that
+        // makes the overlay work today rather than a substitute for it.
+        if (track_context.title.empty() && session.active()) {
+            const std::string& source = session.now_playing().title;
+            const std::size_t  slash  = source.find_last_of("/\\");
+            std::string        name =
+                slash == std::string::npos ? source : source.substr(slash + 1);
+            const std::size_t dot = name.find_last_of('.');
+            if (dot != std::string::npos && dot > 0) {
+                name = name.substr(0, dot);
+            }
+            track_context.title = name;
+        }
+
+        // The card's words, rebuilt only when they change. Compared as a string
+        // rather than driven off track_changed_this_frame, because a seek or a
+        // crystal reload must not re-rasterize and metadata arriving late must.
+        if (const std::string want = track_context.title + "\n" + track_context.artist;
+            want != drawn_for_title) {
+            drawn_for_title = want;
+            build_card(track_context.title, track_context.artist);
+        }
+
         // -- the control page -------------------------------------------------
         //
         // Published every frame for the same reason the timeline is: it is a
@@ -2267,6 +2395,11 @@ int main(int argc, char** argv)
                         lyrics_visible ? "on" : "off");
             std::fflush(stdout);
         }
+        if (const int asked = cast.take_now_playing(); asked != 0) {
+            show_now_playing = asked == 1;
+            std::printf("holocron: now-playing card %s\n", show_now_playing ? "on" : "off");
+            std::fflush(stdout);
+        }
         {
             CompanionServer::ControlState control_state;
             control_state.crystals.reserve(vault.size());
@@ -2276,7 +2409,8 @@ int main(int argc, char** argv)
             control_state.current        = current;
             control_state.title          = track_context.title;
             control_state.artist         = track_context.artist;
-            control_state.lyrics_visible = lyrics_visible;
+            control_state.lyrics_visible      = lyrics_visible;
+            control_state.now_playing_visible = show_now_playing;
             control_state.has_art        = track_context.has_art;
             companion.set_control_state(control_state);
         }
@@ -2346,6 +2480,55 @@ int main(int argc, char** argv)
         } else {
             facet.draw(frame, window.width(), window.height(), playing);
         }
+
+        // -- the now-playing card ---------------------------------------------
+        //
+        // AFTER the picture and before the swap, which is the whole reason this is
+        // a separate facet: it composites over whatever drew, crystal or debug.
+        if (overlay_ready && show_now_playing && title_texture != 0) {
+            // Rebuilt only when the words change. Comparing the string rather
+            // than watching track_changed_this_frame because a seek or a crystal
+            // reload must not re-rasterize, and a track whose metadata arrives
+            // late must.
+            const int sw = window.width();
+            const int sh = window.height();
+
+            const int pad  = sh / 24;
+            const int left = pad;
+            const int base = sh - pad;
+
+            const int block_h = title_h + (artist_h > 0 ? artist_h + 6 : 0);
+
+            // A scrim first. Antialiased type over a crystal is illegible wherever
+            // the picture is bright, and a crystal is bright somewhere by design.
+            //
+            // FULL WIDTH AND GRADIENT, not a box behind the words. The box was
+            // tried and it cut a visible seam straight across the fighters' legs;
+            // a darkening that fades upward from the bottom edge reads as part of
+            // the picture.
+            overlay.scrim(block_h + pad * 2, 0.72f, sw, sh);
+
+            // Tinted from the record. The text was rasterized white with the
+            // coverage in alpha precisely so this costs nothing.
+            // linear_to_srgb rather than a hand-rolled pow(x, 1/2.2). It is the
+            // real piecewise sRGB curve, it is tested, and it is the exact inverse
+            // of what extract_palette used on the way in -- three reasons to reuse
+            // it, and it also avoided needing <cmath> here, which GCC noticed and
+            // MSVC did not.
+            const glm::vec3 ink = track_context.has_art
+                                      ? glm::vec3(linear_to_srgb(track_context.palette_accent.r),
+                                                  linear_to_srgb(track_context.palette_accent.g),
+                                                  linear_to_srgb(track_context.palette_accent.b))
+                                      : glm::vec3(0.95f);
+
+            overlay.draw(title_texture, left, base - block_h, title_w, title_h, ink, 1.0f, sw,
+                         sh);
+            if (artist_texture != 0) {
+                overlay.draw(artist_texture, left, base - artist_h, artist_w, artist_h,
+                             glm::vec3(0.80f), 0.85f, sw, sh);
+            }
+        }
+
         window.swap();
 
         // Consumed by exactly one drawn frame, which is what TrackContext

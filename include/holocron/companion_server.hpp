@@ -167,7 +167,8 @@ public:
         std::string title;
         std::string artist;
 
-        bool lyrics_visible = false;
+        bool now_playing_visible = false;
+        bool lyrics_visible      = false;
         bool has_art        = false;
     };
 
@@ -181,11 +182,15 @@ public:
     // directions for crystals whose manifests contain spaces or quotes.
     using SelectCrystalHandler = std::function<void(std::size_t index)>;
 
-    // Called when the page asks to show or hide the lyric overlay.
-    using LyricsHandler = std::function<void(bool visible)>;
+    // Called when the page asks to show or hide an overlay. Two separate handlers
+    // rather than one taking a name: there are two overlays, they are wired to
+    // different things, and a string would need validating.
+    using LyricsHandler     = std::function<void(bool visible)>;
+    using NowPlayingHandler = std::function<void(bool visible)>;
 
     void set_select_crystal_handler(SelectCrystalHandler handler);
     void set_lyrics_handler(LyricsHandler handler);
+    void set_now_playing_handler(NowPlayingHandler handler);
 
     // Set before start(). Unset handlers mean the command is logged and
     // acknowledged, which is what happened before anything could play.
