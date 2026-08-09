@@ -268,12 +268,12 @@ bool Compositor::bind_layer(std::size_t index)
     return true;
 }
 
-void Compositor::composite(std::span<const LayerState> states, int screen_width,
-                           int screen_height)
+TextureHandle Compositor::composite(std::span<const LayerState> states, int screen_width,
+                                    int screen_height, bool leave_in_canvas)
 {
     if (!ready()) {
         RenderTarget::bind_default(screen_width, screen_height);
-        return;
+        return 0;
     }
 
     const std::size_t n = states.size() < impl_->layers.size() ? states.size()
@@ -282,11 +282,13 @@ void Compositor::composite(std::span<const LayerState> states, int screen_width,
     // Does anything this frame need to read what is under it? Asked before
     // anything is drawn, because the answer decides where the stack is
     // assembled -- and an archive with no such blend must not pay for the canvas.
-    bool needs_canvas = false;
-    for (std::size_t i = 0; i < n; ++i) {
+    // A final pass needs one too, for exactly the same reason a read-back blend
+    // does: it has to sample the finished picture, and a framebuffer cannot be
+    // read while it is being written.
+    bool needs_canvas = leave_in_canvas;
+    for (std::size_t i = 0; i < n && !needs_canvas; ++i) {
         if (states[i].live && states[i].opacity > 0.0f && reads_back(states[i].blend)) {
             needs_canvas = true;
-            break;
         }
     }
 
@@ -374,8 +376,10 @@ void Compositor::composite(std::span<const LayerState> states, int screen_width,
     }
 
     // The canvas becomes the picture. One more full-screen pass, paid only by a
-    // stack that needed the canvas in the first place.
-    if (needs_canvas) {
+    // stack that needed the canvas in the first place -- and skipped entirely
+    // when the caller is going to read the canvas itself, since drawing it to the
+    // window only to draw over it again would be a full-screen pass thrown away.
+    if (needs_canvas && !leave_in_canvas) {
         RenderTarget::bind_default(screen_width, screen_height);
         glDisable(GL_BLEND);
         glUniform1i(impl_->u_mode, 0);
@@ -391,6 +395,14 @@ void Compositor::composite(std::span<const LayerState> states, int screen_width,
     glDisable(GL_BLEND);
     glBindVertexArray(0);
     glUseProgram(0);
+
+    if (leave_in_canvas && needs_canvas) {
+        // The caller draws it. The window's framebuffer is bound for them, so
+        // whatever they do next lands on screen.
+        RenderTarget::bind_default(screen_width, screen_height);
+        return impl_->canvas.texture();
+    }
+    return 0;
 }
 
 }  // namespace holocron

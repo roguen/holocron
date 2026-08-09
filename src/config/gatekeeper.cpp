@@ -144,6 +144,9 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     read_bool(tbl, "render", "vsync", out.vsync, bad);
     read_bool(tbl, "render", "gl_debug", out.gl_debug, bad);
     read_double(tbl, "render", "scale", out.render_scale, bad);
+    read_double(tbl, "render", "grain", out.grain, bad);
+    read_double(tbl, "render", "vignette", out.vignette, bad);
+    read_double(tbl, "render", "safe_area", out.safe_area, bad);
     read_string(tbl, "render", "advance", out.advance, bad);
     read_int(tbl, "render", "advance_seconds", out.advance_seconds, bad);
 
@@ -164,6 +167,19 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
         // the cost. Below 0.25 the picture is unwatchable and the setting is far
         // more likely to be a typo than an intention.
         bad = "[render] scale must be between 0.25 and 1.0";
+    }
+    if (bad.empty() && (out.grain < 0.0 || out.grain > 8.0)) {
+        // Eight 8-bit steps is well past dither and into visible texture, which
+        // is a look somebody may want; beyond it the noise is the picture.
+        bad = "[render] grain must be between 0 and 8";
+    }
+    if (bad.empty() && (out.vignette < 0.0 || out.vignette > 1.0)) {
+        bad = "[render] vignette must be between 0 and 1";
+    }
+    if (bad.empty() && (out.safe_area < 0.0 || out.safe_area > 0.2)) {
+        // A fifth of the frame off each edge is already 60 percent of the
+        // picture gone. Past that it is a typo, not a mask.
+        bad = "[render] safe_area must be between 0 and 0.2";
     }
     if (bad.empty() && out.advance_seconds < 5) {
         // Below this the transition is most of what is on screen. Refused rather
