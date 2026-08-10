@@ -2650,11 +2650,37 @@ int main(int argc, char** argv)
         track_context.title  = !what.title.empty() ? what.title : track.title;
         track_context.artist = !what.artist.empty() ? what.artist : track.artist;
         track_context.album  = !what.album.empty() ? what.album : track.album;
-        // Genre and year are not on a Plex Track element and would need a second
-        // request per track to obtain. Left empty, which TrackContext documents
-        // as legitimate, rather than fetched speculatively.
-        track_context.genre.clear();
-        track_context.year.clear();
+        // GENRE AND YEAR COST NOTHING AND WERE BEING THROWN AWAY.
+        //
+        // These two were cleared here, on the reasoning -- repeated in three
+        // comments across the tree -- that they are not on a Plex Track element
+        // and would need a second request per track. The first half is true. The
+        // second half was never true in this build, because nothing has to ask
+        // Plex for them:
+        //
+        //   PlaybackSession::start() probes the source it is about to play, which
+        //   means FFmpeg has already read the container's tags, and it fills any
+        //   NowPlaying field Plex left empty from them
+        //   (src/audio/playback_session.cpp:332-337). Plex leaves genre and year
+        //   empty on every cast, so they arrive here already filled from the
+        //   file's own tags -- and then this cleared them.
+        //
+        // So the same `!empty()` pattern as the three lines above, and for the
+        // same reason: whichever source knows wins, and Plex simply does not know
+        // these two.
+        track_context.genre = what.genre;
+        track_context.year  = what.year;
+
+        // PRINTED BECAUSE IT CANNOT BE CHECKED FROM HERE. Whether FFmpeg gets a
+        // container's tags back over an HTTPS part URL, for every format on the
+        // rack, is not answerable at this desk -- it needs one real cast. A line
+        // per track makes that a glance at the log rather than a session's work,
+        // and it is the same discipline that #114 cost a session for the lack of:
+        // an empty field and a field nobody printed look identical.
+        std::printf("holocron: \"%s\" -- genre \"%s\", year \"%s\"\n",
+                    track_context.title.c_str(), track_context.genre.c_str(),
+                    track_context.year.c_str());
+        std::fflush(stdout);
 
         track_context.track_changed_this_frame = true;
         ++track_context.track_change_count;
