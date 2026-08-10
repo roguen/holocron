@@ -51,6 +51,7 @@
 #include <holocron/final_pass.hpp>
 #include <holocron/image_decode.hpp>
 #include <holocron/lyrics.hpp>
+#include <holocron/notices.hpp>
 #include <holocron/overlay_facet.hpp>
 #include <holocron/palette.hpp>
 #include <holocron/text_render.hpp>
@@ -97,6 +98,12 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+
+#if defined(_WIN32)
+// For putting stdout into binary mode before --notices writes the file's bytes.
+#include <fcntl.h>
+#include <io.h>
+#endif
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -155,6 +162,20 @@ struct Options {
     // which is otherwise only discoverable by reading frame_binding.hpp or by
     // making a typo on purpose.
     bool        list_bindings = false;
+
+    // Print THIRD-PARTY-NOTICES.md and exit.
+    //
+    // NOT A CONVENIENCE. The about panel is how LGPL-2.1 section 6 is
+    // discharged on screen, and a panel needs a GL context, a window, a working
+    // OverlayFacet and -- for the phone to summon it -- a reachable port.
+    // OverlayFacet::init failing is deliberately non-fatal, so there is a real
+    // configuration in which the panel is the only notices path and it is not
+    // there. This path needs none of that: it is the bytes and stdout.
+    //
+    // It is also the CI drift check. `holocron --notices | diff -` against the
+    // file tests the SHIPPED BINARY rather than a build artifact, which is the
+    // only version of that check that covers what somebody actually receives.
+    bool        notices = false;
     bool        no_audio = false;
     // Announce over GDM and serve the Companion endpoints, then wait. No track,
     // no window, no audio device. This is how discovery is checked from the
@@ -314,6 +335,8 @@ Options parse(int argc, char** argv)
             o.no_compositor = true;
         } else if (std::strcmp(a, "--debug-facet") == 0) {
             o.debug_facet = true;
+        } else if (std::strcmp(a, "--notices") == 0) {
+            o.notices = true;
         } else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
             o.help = true;
         } else if (a[0] != '-' && o.path == nullptr) {
@@ -385,6 +408,9 @@ void usage()
         "                 allocate a float framebuffer takes anyway, reachable on\n"
         "                 purpose so it can be tested and so the compositor's\n"
         "                 cost can be measured\n"
+        "  --notices      print the third-party licence notices and exit. The\n"
+        "                 text is compiled into the binary, so it needs no file\n"
+        "                 on disk, no window and no working directory\n"
         "  --frames N     render exactly N frames then exit\n"
         "  --shot PATH    write the last rendered frame to PATH as a BMP\n"
         "  --width W      window width in pixels (default 1280)\n"
@@ -1814,6 +1840,24 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "holocron: `%s` -- %s\n", opt.bad_option, opt.bad_reason);
         std::fprintf(stderr, "holocron: --help lists every option\n");
         return 2;
+    }
+
+    // BEFORE EVERYTHING, INCLUDING --help. A licence notice that can be
+    // suppressed by another flag on the same line is not reliably available,
+    // and this path deliberately touches no window, no device and no network.
+    //
+    // Written with fwrite through a stdout put into BINARY MODE on Windows,
+    // because the point is to reproduce the file byte for byte: in text mode
+    // the CRT would turn every '\n' into "\r\n", and the working tree's file is
+    // already CRLF, so each line would gain a second carriage return and the CI
+    // diff would fail on a difference this program invented.
+    if (opt.notices) {
+#if defined(_WIN32)
+        _setmode(_fileno(stdout), _O_BINARY);
+#endif
+        const std::string_view text = notices_text();
+        std::fwrite(text.data(), 1, text.size(), stdout);
+        return 0;
     }
 
     // Before the track check on purpose -- asking what you may bind is a

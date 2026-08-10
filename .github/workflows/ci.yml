@@ -239,6 +239,29 @@ jobs:
           cmake --build --preset linux
           ctest --preset linux
 
+      # THE LICENCE NOTICE, CHECKED THROUGH THE SHIPPED BINARY.
+      #
+      # The test suite already compares the embedded bytes against
+      # THIRD-PARTY-NOTICES.md, which catches a stale generated source in the
+      # build tree. This checks the same property from the other end: it asks
+      # the executable somebody would actually receive what notices it carries,
+      # and diffs that against the file in the repository.
+      #
+      # It matters because M6's about panel is how LGPL-2.1 section 6 is
+      # discharged on screen, and section 6 is about what the DISTRIBUTED
+      # program displays. A build artifact agreeing with the repository is not
+      # the same claim as the binary agreeing with it.
+      #
+      # Linux only, because the working tree is LF here. On Windows the checkout
+      # is CRLF and both sides would carry it, so the comparison would pass but
+      # would be comparing a different pair of files -- the unit test covers that
+      # platform.
+      - name: The shipped binary carries the current notices
+        if: runner.os == 'Linux'
+        run: |
+          ./build/linux/bin/holocron --notices > /tmp/embedded-notices.md
+          diff -u THIRD-PARTY-NOTICES.md /tmp/embedded-notices.md
+
       # AFTER the build, and only when it worked. See the long note above the
       # restore: this is what stops a cancelled or failed run pinning a partial
       # archive set, without needing a unique key per run to paper over it.
