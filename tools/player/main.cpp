@@ -50,6 +50,7 @@
 #include <holocron/crystal.hpp>
 #include <holocron/final_pass.hpp>
 #include <holocron/image_decode.hpp>
+#include <holocron/last_good.hpp>
 #include <holocron/lyrics.hpp>
 #include <holocron/notices.hpp>
 #include <holocron/notices_view.hpp>
@@ -2467,14 +2468,30 @@ int main(int argc, char** argv)
 
     // -- render loop ---------------------------------------------------------
 
-    // The frame currently on screen. Kept across iterations because "nothing
-    // new to show" is the normal case, not an error: at 144 fps against 93.75 Hz
-    // analysis the same frame is drawn repeatedly by design, and a failed
-    // select() means exactly the same thing.
-    AudioFrame    frame{};
-    int           rendered    = 0;
-    std::uint64_t lead_sum_us = 0;   // what the newest-wins frame would have led by
-    std::uint64_t lead_n      = 0;
+    // The frame currently on screen, and the slot the next candidate is read
+    // into. Kept across iterations because "nothing new to show" is the normal
+    // case, not an error: at 144 fps against 93.75 Hz analysis the same frame is
+    // drawn repeatedly by design, and a failed select() means the same thing.
+    //
+    // TWO SLOTS RATHER THAN ONE, because a failed select() has already written
+    // into the frame it was given -- the history copies first and verifies after,
+    // which is what keeps this thread from ever blocking. With one frame there
+    // was nothing for the check to protect and the loop drew the torn copy
+    // (issue 198). See last_good.hpp; promoting costs an index flip, not a copy.
+    LastGood<AudioFrame> tap;
+    int                  rendered    = 0;
+    std::uint64_t        lead_sum_us = 0;   // what newest-wins would have led by
+    std::uint64_t        lead_n      = 0;
+
+    // Reads the producer lapped, EXCLUDING the ones that simply predate the
+    // first published frame.
+    //
+    // Reported in the run summary because this is otherwise completely
+    // invisible: one frame of the previous picture is not something an eye can
+    // catch, and until now there was no number anywhere saying it had happened.
+    // A count that suddenly stops being zero is the only way anybody finds out
+    // the render thread is stalling past the 1.37 s the history holds.
+    std::uint64_t lapped_reads = 0;
 
     // The device rate is no longer needed here: converting the clock into
     // microseconds is the session's job, since it is the thing that knows which
@@ -3537,10 +3554,16 @@ int main(int argc, char** argv)
         std::uint64_t played_us_raw = 0;
         const bool    have_clock    = session.played_us(played_us_raw);
 
+        // READ INTO THE SLOT THAT IS NOT ON SCREEN. Whichever branch runs below,
+        // it may overwrite this one with a partially-written frame and then say
+        // so; nothing has been shown until take() promotes it.
+        bool have_frame = false;
+
         if (have_clock) {
             const auto         played_us = static_cast<std::int64_t>(played_us_raw);
             const std::int64_t target    = played_us - trim_us;
-            session.select_frame(target > 0 ? static_cast<std::uint64_t>(target) : 0, frame);
+            have_frame = session.select_frame(target > 0 ? static_cast<std::uint64_t>(target) : 0,
+                                              tap.scratch());
 
             // Measure what the OLD behaviour would have shown, so the fix is
             // quantified rather than asserted. The newest frame's position
@@ -3568,8 +3591,20 @@ int main(int argc, char** argv)
             // No clock to place anything against -- muted, or a sink that
             // cannot report a position. Newest-wins is correct here, and is
             // exactly what the player did everywhere before #53.
-            session.newest_frame(frame);
+            have_frame = session.newest_frame(tap.scratch());
         }
+
+        // A READ THAT FAILED BECAUSE NOTHING HAS BEEN PUBLISHED YET IS NOT A
+        // LAPSE. That is the first few render frames of every track, before the
+        // analysis has produced anything, and counting it would put a number in
+        // the summary that means "the album had twelve tracks".
+        if (!have_frame && session.frames_published() != 0) {
+            ++lapped_reads;
+        }
+
+        // The promotion. On failure this hands back the frame that was already
+        // on screen, unchanged -- which is what the loop does constantly anyway.
+        const AudioFrame& frame = tap.take(have_frame);
 
         // Per O-005 / #16 the render thread works on its OWN copy and never
         // writes into shared storage; FrameHistory hands out copies for the
@@ -4560,6 +4595,16 @@ int main(int argc, char** argv)
     std::printf("holocron: %d frames drawn, %llu analysis frames published\n",
                 rendered,
                 static_cast<unsigned long long>(session.frames_published()));
+    if (lapped_reads > 0) {
+        // Only when it happened, and loudly when it did. The history holds about
+        // 1.37 seconds at 93.75 Hz, so a non-zero count here means this thread
+        // stalled for longer than that -- a driver reset, a long GPU hitch or a
+        // debugger break. Each one cost a repeated frame, which is invisible; the
+        // number is the only evidence the stall occurred at all (issue 198).
+        std::printf("holocron: %llu analysis read(s) lapped by the producer and discarded "
+                    "-- the render thread stalled past the history window\n",
+                    static_cast<unsigned long long>(lapped_reads));
+    }
     if (const std::uint64_t ran = herald.errands_run(), lost = herald.failures();
         ran > 0 || lost > 0) {
         // Reported because an absent receiver is otherwise visible only as log

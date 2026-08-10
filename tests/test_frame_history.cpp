@@ -11,11 +11,13 @@
 // the bug #53 describes and exactly the kind that survives review.
 
 #include <holocron/frame_history.hpp>
+#include <holocron/last_good.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <thread>
 
 using namespace holocron;
@@ -232,4 +234,135 @@ TEST_CASE("FrameHistory never hands back a torn frame under real contention",
     // would satisfy `ahead == 0` by never once evaluating it -- a green test
     // that had checked nothing, which is worse than a red one.
     REQUIRE(reads.load() > lapped.load());
+}
+
+// ---------------------------------------------------------------------------
+// LastGood -- the caller's half of the contract (issue 198)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("LastGood keeps the previous value when a read is rejected", "[history][198]")
+{
+    LastGood<Probe> tap;
+    CHECK(tap.shown().a == 0);          // value-initialised before anything is taken
+
+    tap.scratch() = make(7);
+    CHECK(tap.take(true).a == 7);
+
+    // A rejected read has ALREADY scribbled on the scratch -- that is what
+    // FrameHistory does, and why the bool exists. What is shown must not move.
+    tap.scratch() = make(999);
+    CHECK(tap.take(false).a == 7);
+    CHECK(tap.shown().a == 7);
+
+    // And the next good read still lands.
+    tap.scratch() = make(8);
+    CHECK(tap.take(true).a == 8);
+}
+
+TEST_CASE("LastGood never shows a torn frame under real contention", "[history][198]")
+{
+    // THE TEST THE OLD RENDER LOOP FAILS.
+    //
+    // The case above proves LastGood does what it says. This one proves the
+    // pattern protects the player, by driving a real FrameHistory the way the
+    // render loop drives it -- and by inspecting what is SHOWN on every
+    // iteration, including the ones where the read was rejected. The existing
+    // contention test only ever looks at `out` when select() returned true, so it
+    // says nothing about what a caller that ignored the bool would have drawn,
+    // which is exactly what the player did.
+    //
+    // EIGHT SLOTS, NOT SIXTY-FOUR, AND THAT IS THE WHOLE REASON THIS TEST WORKS.
+    // It was first written against the 64-slot ring above and it PASSED with
+    // `take(ok)` replaced by `take(true)` -- a green test that had checked
+    // nothing, because no lap ever occurred. Measured, runs of 200,000 frames:
+    //
+    //     slots=64,  24 B payload   ~100k reads, 1-4 rejected,      0-1 torn
+    //     slots=128, 10 KB payload  ~147k reads, 0-2 rejected,        0 torn
+    //     slots=8,   4 KB payload   ~108k reads, ~85k rejected, 222-4068 torn
+    //     slots=4,   4 KB payload   ~100k reads, ~95k rejected,     ~25k torn
+    //
+    // A lap needs the consumer descheduled for longer than the producer takes to
+    // fill the ring. At 64 slots that is a rare accident; at 8 it is any context
+    // switch landing inside the copy. Shrinking the window is how a test reaches
+    // the same event the player would need a 1.37-second stall for -- the shrink
+    // is the instrument, not a weakening of the case.
+    //
+    // 8 rather than 4 because N * sizeof(T) + N * 8 must land on a 64-byte
+    // boundary or `alignas(64) head_` pads the structure and MSVC's C4324 fails
+    // the build under /WX. 8 x 4096 + 64 = 32832, which does.
+    //
+    // Confirmed to go red with `take(ok)` replaced by `take(true)`.
+
+    constexpr std::size_t   kSlots = 8;
+    constexpr std::uint64_t kTotal = 200000;
+
+    // Big enough that the copy is long against a context switch. AudioFrame is
+    // 10,768 bytes; 4 KB is the same regime and keeps the ring cheap.
+    struct Wide {
+        std::uint64_t w[512];
+    };
+    const auto wide = [](std::uint64_t v) {
+        Wide p{};
+        for (auto& e : p.w) {
+            e = v;
+        }
+        return p;
+    };
+
+    // Heap, not stack: FrameHistory stores its slots inline, and the header's own
+    // size warning is about exactly this.
+    auto history = std::make_unique<FrameHistory<Wide, kSlots>>();
+    auto& h      = *history;
+
+    std::atomic<bool>          done{false};
+    std::atomic<std::uint64_t> torn{0};
+    std::atomic<std::uint64_t> rejected{0};
+    std::atomic<std::uint64_t> looks{0};
+
+    std::thread producer([&] {
+        for (std::uint64_t k = 0; k < kTotal; ++k) {
+            h.publish(wide(k), k * 10);
+        }
+        done.store(true, std::memory_order_release);
+    });
+
+    std::thread consumer([&] {
+        auto  owned = std::make_unique<LastGood<Wide>>();
+        auto& tap   = *owned;
+
+        while (!done.load(std::memory_order_acquire)) {
+            const std::uint64_t published = h.published();
+            if (published == 0) {
+                continue;
+            }
+            const std::uint64_t newest_us = (published - 1) * 10;
+            const std::uint64_t target    = newest_us > 200 ? newest_us - 200 : 0;
+
+            const bool  ok    = h.select(target, tap.scratch());
+            const Wide& shown = tap.take(ok);
+
+            if (!ok) {
+                rejected.fetch_add(1, std::memory_order_relaxed);
+            }
+            for (const std::uint64_t e : shown.w) {
+                if (e != shown.w[0]) {
+                    torn.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                }
+            }
+            looks.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+
+    producer.join();
+    consumer.join();
+
+    REQUIRE(torn.load() == 0);
+    REQUIRE(looks.load() > 0);
+
+    // AND THAT THE PATH WAS ACTUALLY EXERCISED. Without this the test is green
+    // whenever no lap happened, which is precisely how the 64-slot version
+    // reported success for a run in which it had checked nothing. The same
+    // argument the ordering test above makes about `lapped`.
+    REQUIRE(rejected.load() > 0);
 }
