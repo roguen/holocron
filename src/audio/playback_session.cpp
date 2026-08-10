@@ -59,7 +59,20 @@ void on_analysis_frame(const AudioFrame& f, void* user)
 {
     auto* s = static_cast<Shared*>(user);
 
-    const std::uint64_t k = s->published.fetch_add(1, std::memory_order_relaxed);
+    // COUNTED AFTER THE FRAME IS IN THE HISTORY, not before.
+    //
+    // This was a fetch_add ahead of the publish, which left a window -- short,
+    // but once per track -- where `published` said 1 and the history still held
+    // nothing. A reader that uses the counter to tell "the producer has not
+    // started yet" from "the producer lapped me" would call that first case a
+    // lapse and report a stall that never happened, and the render loop now does
+    // exactly that (issue 198). One counter with one meaning: frames a consumer
+    // can actually find.
+    //
+    // Plain load and store rather than fetch_add because there is exactly one
+    // producer. Relaxed for the same reason it always was: this counter carries
+    // no data, and FrameHistory::publish does its own release.
+    const std::uint64_t k = s->published.load(std::memory_order_relaxed);
 
     // The instant this frame REPRESENTS, which is the centre of its analysis
     // window rather than its start. Keying on the window's start would place
@@ -71,6 +84,7 @@ void on_analysis_frame(const AudioFrame& f, void* user)
         (centre_samples * 1'000'000ULL) / static_cast<std::uint64_t>(kAnalysisRate);
 
     s->frames.publish(f, position_us);
+    s->published.store(k + 1, std::memory_order_relaxed);
 }
 
 // THE DEVICE THREAD ENTERS HERE, and this is all it is: unpack the void* and
@@ -554,9 +568,9 @@ bool PlaybackSession::played_us(std::uint64_t& out) const
     return true;
 }
 
-void PlaybackSession::select_frame(std::uint64_t target_us, AudioFrame& out) const
+bool PlaybackSession::select_frame(std::uint64_t target_us, AudioFrame& out) const
 {
-    impl_->shared->frames.select(target_us, out);
+    return impl_->shared->frames.select(target_us, out);
 }
 
 std::int64_t PlaybackSession::track_position_ms() const

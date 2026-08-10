@@ -209,7 +209,19 @@ public:
     bool played_us(std::uint64_t& out) const;
 
     // The frame whose audio is coming out of the speakers at `target_us`.
-    void select_frame(std::uint64_t target_us, AudioFrame& out) const;
+    //
+    // RETURNS FALSE WHEN `out` MUST NOT BE DRAWN, and that return value is not
+    // advisory. `FrameHistory::select` copies before it verifies -- which is what
+    // keeps the consumer non-blocking -- so a false here means `out` has ALREADY
+    // been overwritten with a partially-written frame. It used to return void,
+    // which made a lapsed read impossible to report and left the render loop
+    // drawing torn values (issue 198). The caller writes into a scratch and
+    // promotes it only on true; see holocron/last_good.hpp.
+    //
+    // False also covers "nothing has been published yet", which is the first few
+    // render frames of every track and is not a fault. Distinguish with
+    // frames_published() if the difference matters.
+    [[nodiscard]] bool select_frame(std::uint64_t target_us, AudioFrame& out) const;
 
     // How far into the TRACK playback has reached, in milliseconds.
     //
@@ -223,7 +235,10 @@ public:
     std::int64_t track_position_ms() const;
 
     // The newest frame produced, for when there is no clock to place against.
-    bool newest_frame(AudioFrame& out) const;
+    //
+    // Same contract as select_frame: false means `out` was lapped mid-copy and
+    // must not be drawn.
+    [[nodiscard]] bool newest_frame(AudioFrame& out) const;
 
     // The position of the newest frame, in microseconds. Zero if none yet.
     // Used to report how much lead exists, which is the floor on a negative
