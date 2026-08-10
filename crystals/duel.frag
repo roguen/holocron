@@ -1029,8 +1029,14 @@ float attacker_for(float beat)
 // beat to ask kind_for with. Keeping it pure is what makes the fall coherent with
 // the throw that caused it instead of the two being independently random.
 //
-// One beat in nine or so. Rarer than a strike because a throw takes the other one
-// off its feet, and a fight where that happens every other exchange is a comedy.
+// One beat in nine here, but the EFFECTIVE rate is about half that -- roughly one
+// in nineteen -- because a throw also has to pass the clear-run gate before it is
+// performed at all. See the note on falls for why it is gated twice.
+//
+// That second gate is easy to forget and it invalidates the obvious way to test a
+// throw. Forcing this function true to see one makes every beat seed a knockdown,
+// which means no beat ever HAS a clear run behind it, so no throw is ever
+// performed and the probe shows nothing happening at all. Bypass the gate as well.
 bool throw_on(float beat)
 {
     return hash11(beat * 12.7 + 5.0) > 0.885;
