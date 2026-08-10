@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 namespace holocron {
 
@@ -94,6 +95,44 @@ bool read_int(const toml::table& tbl, const char* section, const char* key, int&
         return false;
     }
     out = static_cast<int>(i->get());
+    return true;
+}
+
+// A list of strings, for the herald's errands.
+//
+// THE FIRST LIST-VALUED KEY IN THE CONFIG, so it also decides what a wrong TYPE
+// does here. A non-array is reported like any other shape error; a non-string
+// ELEMENT is reported with its index, because "herald.on_start must be a list of
+// strings" over a list of forty tells the owner nothing about which one.
+//
+// It does NOT validate the strings. Whether `eiscp://.../PWR01` is a real errand
+// is the Herald's question, and it deliberately answers it non-fatally -- see
+// Herald::start. The loader's job stops at the shape.
+bool read_string_list(const toml::table& tbl, const char* section, const char* key,
+                      std::vector<std::string>& out, std::string& bad)
+{
+    const auto node = tbl[section][key];
+    if (!node) {
+        return false;
+    }
+    const auto* arr = node.as_array();
+    if (arr == nullptr) {
+        bad = std::string(section) + "." + key + " must be a list of strings";
+        return false;
+    }
+
+    std::vector<std::string> parsed;
+    parsed.reserve(arr->size());
+    for (std::size_t i = 0; i < arr->size(); ++i) {
+        const auto* s = arr->get(i)->as_string();
+        if (s == nullptr) {
+            bad = std::string(section) + "." + key + " entry " + std::to_string(i + 1) +
+                  " must be a string";
+            return false;
+        }
+        parsed.push_back(s->get());
+    }
+    out = std::move(parsed);
     return true;
 }
 
@@ -249,6 +288,11 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     read_string(tbl, "plex", "capabilities", out.plex_capabilities, bad);
     read_string(tbl, "plex", "device_class", out.plex_device_class, bad);
     read_string(tbl, "plex", "token", out.plex_token, bad);
+
+    read_string_list(tbl, "herald", "on_start", out.herald_on_start, bad);
+    read_string_list(tbl, "herald", "on_stop", out.herald_on_stop, bad);
+    read_int(tbl, "herald", "connect_timeout_ms", out.herald_connect_timeout_ms, bad);
+    read_int(tbl, "herald", "cooldown_seconds", out.herald_cooldown_seconds, bad);
 
     if (!bad.empty()) {
         out         = Gatekeeper{};

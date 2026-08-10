@@ -22,8 +22,12 @@ already prefers.
 does not need the PC powered on — tracked as M8 and deliberately *after* M5,
 because the Plex protocol work is pure networking and ports unchanged, while the
 platform layer does not. Doing the protocol on Windows first de-risks the unknown
-half without also fighting a new platform. Windows remains the target until that
-is explicitly revisited (D-022).
+half without also fighting a new platform.
+
+**M8 IS IN OFFICIAL SCOPE as of 2026-08-10**, on the owner's instruction. It had
+read "possible, not committed" since the Roadmap was written. Windows remains the
+build and test target (D-022) and the Shield is now a destination rather than a
+maybe.
 
 Read [`README.md`](README.md) for what it is and
 [`docs/audio-frame.md`](docs/audio-frame.md) for the contract everything depends on.
