@@ -31,7 +31,20 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: M3, M4 and M5 are DONE. Only M2's visual language is open.
+## Status: M3, M4 and M5 are DONE. M1 and M2 are BOTH still open.
+
+**`v0.4.1`.** And the sentence above used to say "only M2's visual language is
+open", which was wrong — checked against the Roadmap on 2026-08-09:
+
+| | |
+|---|---|
+| **M1** | **OPEN, 6 of 8.** Never picked up: a golden-file diff for the headless analysis, and zero allocation in the audio callback *demonstrated* rather than assumed. Neither blocks anything, which is exactly why both have sat there. |
+| **M2** | **OPEN, 5 of 8.** Per-uniform envelope overrides (`attack`, `decay`, `mode = "accumulate"`) are **not built**. The rest is the visual language, which is the owner's call. |
+| **M5** | **DONE, with recorded debt** — the on-disk art cache and metadata-derived filenames. The naming half landed at `v0.4.1`; nothing is wired to it yet. |
+
+Three later milestones being finished makes it easy to assume the first one must
+be. It is not. See the eight-row table at the top of the wiki
+[Roadmap](https://github.com/roguen/holocron/wiki/Roadmap).
 
 **Three milestones are finished.** M5 — Holocron is a Plex cast target and plays
 what it is sent, confirmed on the rack from the phone. M3 — the compositor, at
@@ -434,7 +447,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.4.0`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.4.1`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
