@@ -72,6 +72,7 @@
 #include <holocron/debug_facet.hpp>
 #include <holocron/decoder.hpp>
 #include <holocron/playback_session.hpp>
+#include <holocron/queue_walk.hpp>
 #include <holocron/sdl_sink.hpp>
 #include <holocron/wasapi_sink.hpp>
 #include <holocron/triple_buffer.hpp>
@@ -2521,6 +2522,15 @@ int main(int argc, char** argv)
     // happened rather than every frame afterwards.
     bool was_ended = false;
 
+    // Whose turn it is in the album, and whether the album is still going during
+    // the frames when nothing is playing.
+    //
+    // A SEPARATE OBJECT BECAUSE THE INTENT HAS TO OUTLIVE THE SESSION. Everything
+    // else about the queue can be read off `session`; this cannot, because the
+    // one case that needs it -- a track that will not open -- is exactly the case
+    // where the session has been stopped. See queue_walk.hpp and issue 202.
+    QueueWalk walk;
+
     // -- the now-playing card -------------------------------------------------
     //
     // M6's first real surface, and the first text this project has ever drawn.
@@ -3075,10 +3085,16 @@ int main(int argc, char** argv)
                     // still name a track that is no longer playing.
                     timeline = TimelineState{};
                     forget_track();
+                    // Somebody pressed stop while the loop was stepping over
+                    // tracks that would not open. The walk must not resume.
+                    walk.reset();
                     std::printf("holocron: stopped\n");
                     std::fflush(stdout);
                     want_play = false;
                 } else if (want_play) {
+                    // Whatever the walk wanted, this command supersedes it.
+                    walk.reset();
+
                     std::string        detail;
                     const SessionError serr = session.start(url, offset, what, detail);
                     if (serr != SessionError::kOk) {
@@ -3088,6 +3104,17 @@ int main(int argc, char** argv)
                         timeline = TimelineState{};
                         std::fprintf(stderr, "holocron: %s -- \"%s\"\n%s\n", to_string(serr),
                                      what.title.c_str(), detail.c_str());
+
+                        // AN ALBUM WHOSE FIRST TRACK WILL NOT OPEN IS THE SAME
+                        // BUG AS ONE WHOSE THIRD WILL NOT: without this the walk
+                        // never begins and the cast is simply dead. Only when
+                        // THIS command brought the queue -- a bare playMedia that
+                        // fails must not start walking a queue left over from an
+                        // earlier cast, which would skip a track nobody asked to
+                        // skip.
+                        if (!new_queue.empty()) {
+                            walk.failed();
+                        }
                     } else {
                         // Carried through from the REQUEST rather than
                         // remembered separately: a controller matches the
@@ -3181,6 +3208,10 @@ int main(int argc, char** argv)
                                             "skipped to")) {
                     at_in_queue = target;
                     begin_track(queue_request, queue.tracks[target], session.now_playing());
+
+                    // A skip lands where it was told to. Any pending walk was
+                    // heading somewhere else and is now wrong.
+                    walk.reset();
                 }
             }
         }
@@ -3303,7 +3334,18 @@ int main(int argc, char** argv)
         // conversation has stopped listening, and these errands are about the
         // room rather than about the transport. The settle window is what stops
         // a short pause from firing anything.
-        herald.observe(session.active() && !session.paused());
+        //
+        // AND SO DOES A SESSION THAT IS BETWEEN TRACKS BECAUSE THE LAST ONE
+        // WOULD NOT OPEN -- which is why the predicate is not `session.active()`
+        // alone. What the herald is being asked is whether the album is playing,
+        // not whether a session object is alive, and the two differ for exactly
+        // as long as the walk is stepping over unplayable tracks. Each attempt
+        // can cost a connect timeout, so a few in a row exceed the 2.5 s settle
+        // window and would latch a falling edge -- powering the receiver down
+        // between two tracks of the same album, and back up when one finally
+        // opened. A stop caused by a failure and a stop caused by the album
+        // ending are different events; `walk.pending()` is what tells them apart.
+        herald.observe((session.active() || walk.pending()) && !session.paused());
 
         // A pause or resume that arrived since the last frame. Applied here for
         // the same reason a play command is: this is the thread that owns the
@@ -3351,30 +3393,47 @@ int main(int argc, char** argv)
         }
         was_ended = track_ended;
 
-        if (cast_mode && track_ended) {
-            if (!queue.empty() && at_in_queue + 1 < queue.tracks.size()) {
-                if (play_queue_track(session, queue, queue_request, at_in_queue + 1, timeline,
-                                     "next --")) {
-                    ++at_in_queue;
-                    begin_track(queue_request, queue.tracks[at_in_queue], session.now_playing());
-                } else {
-                    // One unplayable track must not end the album.
-                    ++at_in_queue;
-                    session.stop();
-                    forget_track();
-                }
+        // THE END OF A TRACK AND THE WANT OF THE NEXT ONE ARE DIFFERENT FACTS,
+        // and conflating them is what made one unplayable track end the album
+        // (issue 202). `track_ended` is read off the session and needs it to be
+        // active; the want has to survive `session.stop()`, so it lives in
+        // `walk`. The queue is walked one attempt per frame -- see
+        // queue_walk.hpp for why this is not a loop.
+        const bool has_next = !queue.empty() && at_in_queue + 1 < queue.tracks.size();
+        const QueueStep queue_step =
+            cast_mode ? walk.step(track_ended, has_next) : QueueStep::kNothing;
+
+        if (queue_step == QueueStep::kPlayNext) {
+            if (play_queue_track(session, queue, queue_request, at_in_queue + 1, timeline,
+                                 "next --")) {
+                ++at_in_queue;
+                begin_track(queue_request, queue.tracks[at_in_queue], session.now_playing());
             } else {
-                // Nothing left. SAYING SO IS THE POINT: a controller learns
-                // playback is over by seeing the player go from playing to
-                // stopped, and until the timeline reported anything but
-                // `stopped` that transition never happened at all.
+                // One unplayable track must not end the album -- and now it does
+                // not. The index moves past the track that failed and the walk
+                // stays pending, so the frame after this one tries the track
+                // after it. Before, this branch called stop() and made the
+                // condition that would have retried unreachable for good.
+                ++at_in_queue;
                 session.stop();
-                timeline = TimelineState{};
-                queue    = PlexQueue{};
                 forget_track();
-                std::printf("holocron: queue finished\n");
-                std::fflush(stdout);
+                walk.failed();
             }
+        } else if (queue_step == QueueStep::kFinished) {
+            // Nothing left. SAYING SO IS THE POINT: a controller learns
+            // playback is over by seeing the player go from playing to
+            // stopped, and until the timeline reported anything but
+            // `stopped` that transition never happened at all.
+            //
+            // Reached both when the last track played out and when the last
+            // few would not open. Those are the same event as far as the
+            // controller and the receiver are concerned: the album is over.
+            session.stop();
+            timeline = TimelineState{};
+            queue    = PlexQueue{};
+            forget_track();
+            std::printf("holocron: queue finished\n");
+            std::fflush(stdout);
         } else if (timeline.state != TransportState::kStopped) {
             const std::int64_t at = session.track_position_ms();
             if (at > 0) {
