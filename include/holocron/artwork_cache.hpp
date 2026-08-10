@@ -21,6 +21,22 @@
 // the part with the edge cases, and it is the part that can be tested without a
 // disk, a server or a token.
 //
+// NOTHING CALLS ANY OF THIS, DELIBERATELY -- D-044, 2026-08-10.
+//
+// The on-disk cache it was written for is not being built. Measured against the
+// real library: a sleeve the Plex photo transcoder has rendered before comes back
+// in ONE MILLISECOND, because Plex already keeps on disk exactly what M5's
+// criterion was asking Holocron to keep a second copy of. First sight is 38 ms,
+// on a worker thread that never touches a frame. The in-memory cache in
+// `ArtworkLoader` collapses an album to one fetch and that is where it ends.
+//
+// This header stays anyway, for the same reason `facet_abi.h` ships with nothing
+// implementing it: it is the half that would be got WRONG, the Windows behaviour
+// below was measured rather than recalled, and the decision reverses on a
+// measurement -- the Shield over Wi-Fi at M8, or a library reached over the WAN.
+// Finding a naming bug while this is a header is cheap. Finding it later is a
+// cache that silently misses forever.
+//
 // -- what Windows actually does, measured rather than recalled -----------------
 //
 // Tested on the rack (Windows 10 Pro 19045) by writing bytes to each name.

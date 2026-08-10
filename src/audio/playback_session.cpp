@@ -12,6 +12,7 @@
 #include <holocron/playback_session.hpp>
 
 #include <holocron/analysis.hpp>
+#include <holocron/audio_callback.hpp>
 #include <holocron/decoder.hpp>
 #include <holocron/pcm_ring.hpp>
 #include <holocron/sdl_sink.hpp>
@@ -72,28 +73,20 @@ void on_analysis_frame(const AudioFrame& f, void* user)
     s->frames.publish(f, position_us);
 }
 
+// THE DEVICE THREAD ENTERS HERE, and this is all it is: unpack the void* and
+// call the shared body.
+//
+// The body itself lives in holocron/audio_callback.hpp so that
+// tests/test_audio_callback.cpp can count the allocations in the REAL function
+// rather than in a copy of it -- M1's "demonstrated not assumed". Anything added
+// here rather than there is on the audio path and untested; put it there.
 void render_audio(float* out, std::size_t frames, std::uint16_t channels, void* user)
 {
     auto* s = static_cast<Shared*>(user);
     (void)channels;
 
-    // A ring that runs dry MID-TRACK and one that runs dry at the END OF THE
-    // FILE are not the same event, and one counter for both cries wolf. After
-    // the decoder has finished, a handful of padded periods is simply the file
-    // ending, and that happens on every complete play.
-    //
-    // Two relaxed atomic loads and no allocation, so the audio-path rule holds.
-    const bool          done   = s->finished.load(std::memory_order_acquire);
-    const std::uint64_t before = s->pcm.silence_padded();
-
-    s->pcm.read(out, frames);
-
-    if (done) {
-        const std::uint64_t after = s->pcm.silence_padded();
-        if (after > before) {
-            s->drain_padded.fetch_add(after - before, std::memory_order_relaxed);
-        }
-    }
+    render_from_ring(s->pcm, out, frames, s->finished.load(std::memory_order_acquire),
+                     s->drain_padded);
 }
 
 }  // namespace

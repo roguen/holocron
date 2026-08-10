@@ -12,8 +12,10 @@ add_executable(holocron_tests
     test_audio_frame_contract.cpp
     test_analysis_constants.cpp
     test_analysis_stage.cpp
+    test_analysis_golden.cpp
     test_rhythm_and_loudness.cpp
     test_audio_sink.cpp
+    test_audio_callback.cpp
     test_triple_buffer.cpp
     test_decoder.cpp
     test_sdl_sink.cpp

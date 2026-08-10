@@ -1247,11 +1247,33 @@ private:
     // skipping back and forth between a couple of records, which is what actually
     // happens when someone is choosing something to listen to.
     //
-    // Deliberately small and in memory. The M5 exit criterion asks for an ON-DISK
-    // cache with a configurable path, and that needs metadata-derived filenames
-    // sanitised for Windows -- reserved characters, trailing dots, and the device
-    // names -- which is a separate piece of work with real failure modes. This
-    // removes the cost without the filesystem risk.
+    // IN MEMORY, AND THAT IS THE FINAL ANSWER RATHER THAN A STOPGAP -- D-044.
+    //
+    // M5's criterion asked for an on-disk cache with a configurable path, and this
+    // comment used to say so and call itself an interim measure. Measured against
+    // the real library on 2026-08-10, twenty-five distinct albums a row, with the
+    // client-side request cache explicitly disabled so only the server could
+    // answer:
+    //
+    //     first sight of a sleeve      38 ms median, 160 ms worst
+    //     the same twenty-five again    1 ms median
+    //     and a third time              1 ms median
+    //
+    // PLEX ALREADY HAS THE DISK CACHE. Its photo transcoder stores what it has
+    // rendered, so every fetch after the first -- of any sleeve, from any process,
+    // across a restart of this one -- is a millisecond away on the LAN. A cache
+    // here would be a second copy of that, and on the case it would actually hit it
+    // would save the millisecond.
+    //
+    // The 38 ms is not on the render thread either; that is what ArtworkLoader is
+    // for. Two frames of a 60 Hz display, once per album, for a sleeve nobody is
+    // looking at yet -- against atomic writes, a sweep, an index scan and a corrupt
+    // -file-on-disk failure mode the network path cannot have.
+    //
+    // What would reverse it is a measurement, not an opinion: the Shield at M8 over
+    // Wi-Fi, a library reached over the WAN, or anyone actually seeing the palette
+    // arrive late. `include/holocron/artwork_cache.hpp` is the naming half, already
+    // built and tested, so that day is cheap.
     static constexpr std::size_t kCacheSlots = 4;
 
     struct Entry {
