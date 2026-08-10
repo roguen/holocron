@@ -817,16 +817,18 @@ HttpError fetch_artwork(const PlayRequest& server, const PlexTrack& track, int s
     return HttpError::kOk;
 }
 
-HttpError fetch_lyrics(const PlayRequest& server, const PlexTrack& track, std::string& out_body,
-                       bool& out_synced, std::string& out_detail)
+LyricFetch fetch_lyrics(const PlayRequest& server, const PlexTrack& track, std::string& out_body,
+                        bool& out_synced, std::string& out_detail)
 {
     out_body.clear();
     out_synced = false;
     out_detail.clear();
 
     if (track.rating_key.empty()) {
+        // Nothing to ask about, which is the same dead end as no stream: no
+        // amount of waiting gives this track a ratingKey.
         out_detail = "the track has no ratingKey to ask about";
-        return HttpError::kBadUrl;
+        return LyricFetch::kNoStream;
     }
 
     // TWO REQUESTS, AND THE FIRST ONE IS NOT OPTIONAL. The lyric streams do not
@@ -839,12 +841,12 @@ HttpError fetch_lyrics(const PlayRequest& server, const PlexTrack& track, std::s
     const HttpError meta_err = https_request("GET", server.address, server.port, meta_path,
                                              {{"Accept", "text/xml"}}, meta, out_detail);
     if (meta_err != HttpError::kOk) {
-        return meta_err;
+        return LyricFetch::kFailed;
     }
     if (meta.status != 200) {
         out_detail = "the server answered HTTP " + std::to_string(meta.status) +
                      " for the track metadata";
-        return HttpError::kRequestFailed;
+        return LyricFetch::kFailed;
     }
 
     std::string key;
@@ -853,7 +855,7 @@ HttpError fetch_lyrics(const PlayRequest& server, const PlexTrack& track, std::s
         // as one -- a log line per track saying lyrics failed would be noise on
         // every fourth track and would bury the times it really did fail.
         out_detail = "the track has no lyric stream";
-        return HttpError::kBadUrl;
+        return LyricFetch::kNoStream;
     }
 
     HttpsResponse   body;
@@ -861,32 +863,33 @@ HttpError fetch_lyrics(const PlayRequest& server, const PlexTrack& track, std::s
     const HttpError err = https_request("GET", server.address, server.port, body_path,
                                         {{"Accept", "text/plain"}}, body, out_detail);
     if (err != HttpError::kOk) {
-        return err;
+        return LyricFetch::kFailed;
     }
     if (body.status == 404) {
-        // A 404 HERE IS "NO LYRICS", NOT A FAILURE, and the distinction is not
-        // pedantic: the metadata advertises lyric streams the server will not
-        // serve. Observed on the rack -- a stream that returned 1953 bytes
-        // earlier in the same session answered 404 half an hour later, and a
-        // sweep of 40 tracks got 404 on every advertised stream while a track
-        // playing at the time fetched fine.
+        // A 404 HERE IS NOT A FAILURE AND IS NOT PERMANENT EITHER, which is why
+        // it has its own outcome. The metadata advertises lyric streams the
+        // server will not serve. Observed on the rack -- a stream that returned
+        // 1953 bytes earlier in the same session answered 404 half an hour
+        // later, and a sweep of 40 tracks got 404 on every advertised stream
+        // while a track playing at the time fetched fine.
         //
         // Whatever the server is doing, this arrives during ordinary playback
         // and reporting it as an error puts a red line in the log on tracks
-        // where nothing is wrong -- which buries the times something is.
+        // where nothing is wrong -- which buries the times something is. It is
+        // still the one case worth asking about twice; see lyric_retry_after.
         out_detail = "the server has no body for the advertised lyric stream";
-        return HttpError::kBadUrl;
+        return LyricFetch::kUnserved;
     }
     if (body.status != 200) {
         out_detail = "the server answered HTTP " + std::to_string(body.status) +
                      " for the lyric stream";
-        return HttpError::kRequestFailed;
+        return LyricFetch::kFailed;
     }
 
     // NOTHING SWITCHES ON THE CONTENT TYPE. The server serves LRC as
     // `text/html`, which is wrong and is not going to change.
     out_body = body.body;
-    return HttpError::kOk;
+    return LyricFetch::kServed;
 }
 
 }  // namespace holocron

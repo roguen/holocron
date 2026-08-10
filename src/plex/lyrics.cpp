@@ -249,6 +249,24 @@ Lyrics parse_lyrics(const std::string& body, bool synced_hint)
     return out;
 }
 
+bool lyric_retry_after(LyricFetch outcome, int attempts_so_far, std::int64_t& out_delay_ms)
+{
+    out_delay_ms = 0;
+
+    // Only the advertised-then-refused case. `kNoStream` is permanent and
+    // `kFailed` is the network or the server being broken rather than coy --
+    // neither is fixed by asking the same question again twenty seconds later.
+    if (outcome != LyricFetch::kUnserved) {
+        return false;
+    }
+    if (attempts_so_far >= kLyricAttempts) {
+        return false;
+    }
+
+    out_delay_ms = kLyricRetryDelayMs;
+    return true;
+}
+
 std::size_t lyric_index_at(const Lyrics& lyrics, std::int64_t position_ms)
 {
     if (lyrics.lines.empty() || position_ms < lyrics.lines.front().at_ms) {
