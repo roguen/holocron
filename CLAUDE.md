@@ -40,7 +40,7 @@ open", which was wrong — checked against the Roadmap on 2026-08-09:
 |---|---|
 | **M1** | **OPEN, 6 of 8.** Never picked up: a golden-file diff for the headless analysis, and zero allocation in the audio callback *demonstrated* rather than assumed. Neither blocks anything, which is exactly why both have sat there. |
 | **M2** | **OPEN, 5 of 8.** Per-uniform envelope overrides (`attack`, `decay`, `mode = "accumulate"`) are **not built**. The rest is the visual language, which is the owner's call. |
-| **M5** | **DONE, with recorded debt** — the on-disk art cache and metadata-derived filenames. The naming half landed at `v0.4.1`; nothing is wired to it yet. |
+| **M5** | **DONE — all six criteria, one amended.** The last debt closed 2026-08-10 by measuring rather than building: the NAS answers a repeat sleeve in **1 ms**, so the art cache stays in memory (D-044). `artwork_cache.hpp` ships unused on purpose. |
 
 Three later milestones being finished makes it easy to assume the first one must
 be. It is not. See the eight-row table at the top of the wiki
@@ -214,9 +214,11 @@ skip both ways, `skipTo`, pause, seeking, shuffle, `refreshPlayQueue` (which is 
 "play next" works), a live progress bar, and the visuals coloured from the album
 art.
 
-**What M5 still owes, none of it behavioural:** an artwork cache
-([#118](https://github.com/roguen/holocron/issues/118)), genre and year on
-`TrackContext`, and PNG art ([#116](https://github.com/roguen/holocron/issues/116)).
+**M5 owes nothing further as of 2026-08-10.** The artwork cache
+([#118](https://github.com/roguen/holocron/issues/118)) is **closed by
+measurement, not by building it** — D-044. Genre and year are on `TrackContext`.
+PNG art ([#116](https://github.com/roguen/holocron/issues/116)) stays open and
+stays moot while Plex serves JPEG.
 
 **Three things about the Plex protocol that cost a session each and are not
 guessable:**
