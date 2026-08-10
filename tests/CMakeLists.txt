@@ -35,6 +35,7 @@ add_executable(holocron_tests
     test_palette.cpp
     test_image_decode.cpp
     test_projectm_api.cpp
+    test_artwork_cache.cpp
 )
 
 # The shipped vault's location, baked in rather than searched for relative to the
