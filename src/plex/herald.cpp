@@ -179,9 +179,20 @@ bool send_all(socket_t s, std::string_view bytes)
 #else
     constexpr int kFlags = 0;
 #endif
+    // THE LENGTH ARGUMENT IS A DIFFERENT TYPE ON EACH PLATFORM: `int` on Winsock,
+    // `size_t` on POSIX. A single cast satisfies one compiler and trips
+    // -Wsign-conversion on the other, which is what Linux CI caught -- Windows
+    // built this file clean.
+#if defined(_WIN32)
+    using send_len_t = int;
+#else
+    using send_len_t = std::size_t;
+#endif
+
     std::size_t sent = 0;
     while (sent < bytes.size()) {
-        const auto n = ::send(s, bytes.data() + sent, static_cast<int>(bytes.size() - sent), kFlags);
+        const auto remaining = static_cast<send_len_t>(bytes.size() - sent);
+        const auto n         = ::send(s, bytes.data() + sent, remaining, kFlags);
         if (n <= 0) {
             return false;
         }
