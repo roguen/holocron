@@ -383,6 +383,7 @@ struct Move {
     // dropkick, the cartwheel, the flip.
     float spin;      // radians of body tilt, out and back with the commit
     float flip;      // whole revolutions, driven monotonically -- see build_pose
+    float spine;     // trunk bow: positive arches back, negative crunches forward
     float travel;    // forward drive, beyond the lunge
     float fold;      // trailing leg tucked up under the body
 };
@@ -404,6 +405,7 @@ Move move_for(int kind, vec3 shape)
     m.lean    = 0.0;
     m.spin    = 0.0;
     m.flip    = 0.0;
+    m.spine   = 0.0;
     m.travel  = 0.0;
     m.fold    = 0.0;
 
@@ -450,6 +452,7 @@ Move move_for(int kind, vec3 shape)
         m.elbow = vec2(0.150, -0.055);
         m.lean  = 0.30;
         m.crouch = 0.030;   // drops to load it, which is where the power is
+        m.spine  = 0.55;    // arches to drive up through it
     } else if (kind == kElbow) {
         // MUAY THAI. The contact is the ELBOW, and the hand comes back rather
         // than going anywhere -- which is why contact is named per move instead
@@ -565,6 +568,7 @@ Move move_for(int kind, vec3 shape)
         // that reaches most of kLeg.
         m.limb = 2; m.contact = kAtFoot;
         m.crouch = 0.175;
+        m.spine  = -0.75;   // folded right over to get down there
         m.foot   = vec2(0.40, -0.265);
         m.knee   = vec2(0.235, -0.185);
         m.lean   = -0.25;
@@ -611,6 +615,7 @@ Move move_for(int kind, vec3 shape)
         m.elbow  = vec2(0.145, 0.020);
         m.lift   = 0.090;
         m.spin   = 1.10;
+        m.spine  = 1.35;    // the arch is the whole silhouette of a suplex
         m.lean   = -0.85;
     } else if (kind == kClothesline) {
         // A running straight arm across the chest. The arm is held out rather
@@ -626,6 +631,7 @@ Move move_for(int kind, vec3 shape)
         // and wrapping.
         m.limb  = 0; m.contact = kAtNone;
         m.crouch = 0.260;
+        m.spine  = -1.10;   // folded under the guard
         m.hand   = vec2(0.295, -0.115);
         m.elbow  = vec2(0.165, -0.135);
         m.travel = 0.130;
@@ -666,6 +672,7 @@ Move move_for(int kind, vec3 shape)
         m.lift   = 0.300;
         m.flip   = 1.0;
         m.travel = -0.135;
+        m.spine  = -1.25;   // tucked, which is what keeps a flip in frame
         m.fold   = 1.0;
 
     // -- not attacking -------------------------------------------------------
@@ -684,6 +691,7 @@ Move move_for(int kind, vec3 shape)
         // were, which is what a boxer does.
         m.limb   = 0; m.contact = kAtNone;
         m.crouch = 0.155;
+        m.spine  = -1.05;   // the crunch IS the duck
         m.hand   = vec2(kGuardX - 0.010, 0.050);
         m.elbow  = vec2(0.040, -kArm * 0.26);
         m.lean   = 0.30;
@@ -691,10 +699,21 @@ Move move_for(int kind, vec3 shape)
         // Pulling back off it, weight onto the rear foot.
         m.limb  = 0; m.contact = kAtNone;
         m.lean  = -1.35;
+        m.spine = 0.95;     // arched away from it, not tipped away
         m.hand  = vec2(kGuardX - 0.020, 0.010);
         m.elbow = vec2(0.010, -kArm * 0.30);
     }
     // kGuard falls through to the neutral values above, which ARE the guard.
+
+    // A DEFAULT BOW DERIVED FROM THE LEAN, so that every move has a trunk doing
+    // something without all thirty entries having to say so -- which is the sort
+    // of duplication that made the moves disagree with each other before they
+    // became a table. A move that leans in crunches slightly; one that leans away
+    // arches. That is what a spine does under those loads, and it is only
+    // overridden above for the moves where the trunk IS the move.
+    if (m.spine == 0.0) {
+        m.spine = -m.lean * 0.30;
+    }
 
     m.hand  = reach_to(m.hand, kArm);
     m.elbow = reach_to(m.elbow, kArm * 0.62);
@@ -715,6 +734,15 @@ Move move_for(int kind, vec3 shape)
 
 struct Pose {
     vec2 hip;
+    // THE TRUNK BENDS, and before this it could not.
+    //
+    // The torso was one straight segment from hip to shoulder, which can tilt and
+    // cannot fold -- so every pose in the crystal had a rigid back, and the fall
+    // was a plank going over. That is most of what "the bodies are stiff" was.
+    // One joint between them is enough: the trunk can now arch for an uppercut,
+    // crunch for a duck, jackknife when it is swept, and never be perfectly
+    // straight even standing still.
+    vec2 chest;
     vec2 shoulder;
     vec2 head;
     vec2 elbow_a; vec2 hand_a;   // striking arm
@@ -738,18 +766,50 @@ Pose build_pose(int kind, vec3 shape, float commit, float progress, float bob,
 
     Pose s;
 
-    float lift   = mv.lift * commit;
-    float crouch = mv.crouch * commit;
+    // -- OVERLAPPING ACTION --------------------------------------------------
+    //
+    // EVERY JOINT USED TO MOVE ON ONE CURVE, and that is most of what made these
+    // bodies read as linkages rather than as people: the hip, the shoulder and
+    // the fist all started together and all arrived on the same frame. A real
+    // body leads with the trunk and the hand gets there last.
+    //
+    // Three easings of the same commitment instead of one. Free -- it is not a
+    // second pose evaluation, just a different curve per joint group -- and the
+    // arm still reaches full extension at commit 1.0, so the strike lands on the
+    // beat exactly as before. That part is not negotiable.
+    float lead = smoothstep(0.0, 0.86, commit);   // the trunk goes first
+    float leg  = smoothstep(0.0, 1.0, commit);
+    float arm  = smoothstep(0.14, 1.0, commit);   // the hand is late
+
+    float lift   = mv.lift * lead;
+    float crouch = mv.crouch * lead;
     float hip_y  = kHipY + bob + lift - crouch;
 
     // The lean the shape asks for, plus the lean the move needs. Both are small
     // and they add: a cross thrown by a figure already leaning in leans further.
-    float lean = shape.z * 0.055 + mv.lean * 0.085 * commit - recoil * 0.090;
+    float lean = shape.z * 0.055 + mv.lean * 0.085 * lead - recoil * 0.090;
 
-    s.hip      = vec2(-0.015 * commit + mv.travel * commit, hip_y);
+    s.hip      = vec2(-0.015 * lead + mv.travel * lead, hip_y);
     s.shoulder = s.hip + vec2(lean, kShoulderY - kHipY - crouch * 0.22);
     s.head     = s.shoulder + vec2(lean * 0.32 + 0.008 - recoil * 0.030,
                                    kHeadY - kShoulderY - recoil * 0.012);
+
+    // -- the trunk, which bows ------------------------------------------------
+    //
+    // The chest sits a little above halfway and off the straight line between hip
+    // and shoulder. Positive bows it forward, which arches the back; negative
+    // bows it in, which crunches.
+    //
+    // THE BREATH TERM IS NOT DECORATION. A trunk that is exactly straight
+    // whenever nothing is happening is the tell that gave the whole figure away
+    // as a mechanism, and it is cheap to make sure that never happens: a couple
+    // of millimetres off the bar-phase, so a fighter standing on guard is still
+    // a body. It also runs off the music rather than off u_time, like everything
+    // else here, so it survives a reload in the same place.
+    float bow = mv.spine * 0.052 * lead
+              + 0.0065 * sin(u_bar * 4.0 * kPi)
+              - recoil * 0.055;
+    s.chest = mix(s.hip, s.shoulder, 0.56) + vec2(bow, 0.0);
 
     // -- legs ---------------------------------------------------------------
 
@@ -817,7 +877,7 @@ Pose build_pose(int kind, vec3 shape, float commit, float progress, float bob,
 
     // Eased, so the limb accelerates out of the stance rather than moving at a
     // constant rate -- which is most of what separates a strike from a stretch.
-    float leg = smoothstep(0.0, 1.0, commit);
+    // `leg` is one of the three overlapping-action curves at the top.
     s.foot_f  = mix(n_foot_f, m_foot_f, leg);
     s.knee_f  = mix(n_knee_f, m_knee_f, leg);
     s.foot_b  = mix(n_foot_b, m_foot_b, leg);
@@ -851,7 +911,6 @@ Pose build_pose(int kind, vec3 shape, float commit, float progress, float bob,
         t_elbow = vec2(0.105, -0.095);
     }
 
-    float arm = smoothstep(0.0, 1.0, commit);
     s.hand_a  = s.shoulder + mix(g_hand, t_hand, arm);
     s.elbow_a = s.shoulder + mix(g_elbow, t_elbow, arm);
 
@@ -924,6 +983,7 @@ Pose build_pose(int kind, vec3 shape, float commit, float progress, float bob,
         float sn = sin(ang);
         #define TURN(v) (pivot + vec2((v - pivot).x * c - (v - pivot).y * sn, \
                                       (v - pivot).x * sn + (v - pivot).y * c))
+        s.chest    = TURN(s.chest);
         s.shoulder = TURN(s.shoulder); s.head    = TURN(s.head);
         s.elbow_a  = TURN(s.elbow_a);  s.hand_a  = TURN(s.hand_a);
         s.elbow_b  = TURN(s.elbow_b);  s.hand_b  = TURN(s.hand_b);
@@ -945,7 +1005,12 @@ float draw_pose(vec2 p, Pose s)
     // head, so the union holds the head on without a segment between them. The
     // old explicit neck was a fix for a head that detached under recoil, and it
     // fixed it by drawing something a stick figure does not have.
-    d = smin(d, sd_segment(p, s.hip, s.shoulder, kLimb * 1.3), kJoint);
+    //
+    // TWO SEGMENTS THROUGH THE CHEST rather than one, which is what lets the
+    // trunk bend at all. The smooth union hides the joint, so a straight back
+    // still draws as a straight line.
+    d = smin(d, sd_segment(p, s.hip, s.chest, kLimb * 1.3), kJoint);
+    d = smin(d, sd_segment(p, s.chest, s.shoulder, kLimb * 1.25), kJoint);
 
     d = smin(d, sd_segment(p, s.hip, s.knee_f, kLimb), kJoint);
     d = smin(d, sd_segment(p, s.knee_f, s.foot_f, kLimb), kJoint);
@@ -1291,6 +1356,7 @@ Pose curl_pose(Pose s, float k)
     s.hand_a  = mix(s.hand_a, s.shoulder, k * 0.30);
     s.elbow_b = mix(s.elbow_b, s.shoulder, k * 0.35);
     s.hand_b  = mix(s.hand_b, s.shoulder, k * 0.30);
+    s.chest   = mix(s.chest, mix(s.hip, s.shoulder, 0.5), k * 0.25);
     s.head    = mix(s.head, s.shoulder, k * 0.12);
     return s;
 }
@@ -1309,7 +1375,8 @@ Pose rotate_pose(Pose s, float ang, vec2 pivot)
     // Falling towards the person who just hit you is the wrong picture.
     #define ROT(v) (pivot + vec2((v - pivot).x * c - (v - pivot).y * sn, \
                                  (v - pivot).x * sn + (v - pivot).y * c))
-    s.hip = ROT(s.hip);           s.shoulder = ROT(s.shoulder);
+    s.hip = ROT(s.hip);           s.chest = ROT(s.chest);
+    s.shoulder = ROT(s.shoulder);
     s.head = ROT(s.head);
     s.elbow_a = ROT(s.elbow_a);   s.hand_a = ROT(s.hand_a);
     s.elbow_b = ROT(s.elbow_b);   s.hand_b = ROT(s.hand_b);
@@ -1321,10 +1388,100 @@ Pose rotate_pose(Pose s, float ang, vec2 pivot)
     return s;
 }
 
+// Push a limb's middle joint off the straight line between its ends.
+//
+// THE DIFFERENCE BETWEEN A LIMB BENDING AND A LIMB SHORTENING, which is the whole
+// reason the first attempt at a soft fall read as a body melting rather than
+// folding. curl_pose drags every joint towards the trunk, so an arm at full curl
+// is a short arm -- the figure loses its proportions and collapses into a mass
+// with a head on it. A real limb keeps its length and gives way at the knee or the
+// elbow, which is this: the ends stay put and the middle bows out.
+//
+// The perpendicular is the root-to-tip direction turned a quarter turn, so a
+// positive amount bows the joint FORWARD -- the way a knee and an elbow actually
+// go.
+vec2 bow_joint(vec2 root, vec2 mid, vec2 tip, float amount)
+{
+    vec2 d = tip - root;
+    return mid + dir_or(vec2(-d.y, d.x), vec2(1.0, 0.0)) * amount;
+}
+
+// Turn the upper body about a pivot, leaving the hips and legs where they are.
+//
+// THIS IS THE JOINT A FALL BENDS AT. rotate_pose turns the whole figure, which is
+// a rigid object going over; turning the trunk relative to the legs is a body
+// folding. The arms come with the trunk because they hang off it.
+Pose bend_upper(Pose s, float ang, vec2 pivot)
+{
+    float c  = cos(ang);
+    float sn = sin(ang);
+    #define BND(v) (pivot + vec2((v - pivot).x * c - (v - pivot).y * sn, \
+                                 (v - pivot).x * sn + (v - pivot).y * c))
+    s.chest   = BND(s.chest);    s.shoulder = BND(s.shoulder);  s.head = BND(s.head);
+    s.elbow_a = BND(s.elbow_a);  s.hand_a   = BND(s.hand_a);
+    s.elbow_b = BND(s.elbow_b);  s.hand_b   = BND(s.hand_b);
+    #undef BND
+    return s;
+}
+
+// A fall that BENDS instead of tipping over.
+//
+// The old one curled the limbs by a fixed fraction of the fall and then rotated
+// every joint about one pivot by one angle. That is exactly a rigid object going
+// over, and it read as a mannequin being pushed -- which is the specific thing the
+// owner called stiff. A falling body does three things and none of them was here:
+//
+//   IT JACKKNIFES. The hips go out from under it first and the trunk follows, so
+//   for most of the fall the body is folded rather than straight. That is what
+//   bend_upper is for.
+//
+//   ITS LIMBS ARRIVE LATE. Nothing about an arm is driving a fall, so the arms and
+//   legs trail the trunk -- the same overlapping action the strikes got, applied
+//   to going down. `k_limb` is simply the fall curve evaluated a tenth of a beat
+//   earlier, which is free and exactly right.
+//
+//   IT SETTLES. A body that stops dead the instant it reaches the floor is a rigid
+//   one. The last term is a damped overshoot that runs AFTER the fall has
+//   bottomed out, which is why it is driven by `age` rather than by `k` -- `k`
+//   saturates at 1.0 and holds, so there is nothing left in it to oscillate.
+Pose fall_pose(Pose s, float k, float k_limb, float age)
+{
+    // HALF THE CURL THE RIGID VERSION USED. The curl existed to keep a toppling
+    // plank inside the frame, and the fold now does that job -- so most of it can
+    // come back off, which is what lets the body keep its proportions on the way
+    // down instead of compressing into a ball with a head on it.
+    s = curl_pose(s, k_limb * 0.52);
+
+    // And the joints give way rather than the limbs retracting.
+    s.knee_f  = bow_joint(s.hip, s.knee_f, s.foot_f, 0.060 * k_limb);
+    s.knee_b  = bow_joint(s.hip, s.knee_b, s.foot_b, 0.050 * k_limb);
+    s.elbow_a = bow_joint(s.shoulder, s.elbow_a, s.hand_a, 0.042 * k_limb);
+    s.elbow_b = bow_joint(s.shoulder, s.elbow_b, s.hand_b, 0.038 * k_limb);
+
+    // The waist folds, and HOW FAR IS BOUNDED BY THE FRAME rather than by taste.
+    // The trunk ends up at (rotation - fold) from vertical, and every radian of
+    // that throws the head further sideways: at 0.66 the head reached 0.63 from
+    // the hips and went off the right of a 16:9 frame. 0.45 keeps it inside with
+    // room for the stage wander, and still reads as a body folded at the waist
+    // rather than a plank.
+    s = bend_upper(s, -0.45 * k, s.hip);
+
+    // The head tucks towards the chest, which is both what a body does when it
+    // hits something and the cheapest length to take out of the silhouette.
+    s.head = mix(s.head, s.chest, 0.20 * k_limb);
+
+    float t      = max(age - 0.30, 0.0);
+    float settle = 0.20 * exp(-t * 5.5) * sin(t * 13.0);
+
+    // The pivot sits under the hips rather than at the heels: at the heels the
+    // body swings through a quarter circle and the head leaves the frame.
+    return rotate_pose(s, k * 1.30 + settle, vec2(-0.03, 0.13));
+}
+
 Pose mirror_pose(Pose s)
 {
     #define MIR(v) (v = vec2(-(v).x, (v).y))
-    MIR(s.hip);      MIR(s.shoulder);  MIR(s.head);
+    MIR(s.hip);      MIR(s.chest);     MIR(s.shoulder);  MIR(s.head);
     MIR(s.elbow_a);  MIR(s.hand_a);    MIR(s.elbow_b);  MIR(s.hand_b);
     MIR(s.knee_f);   MIR(s.foot_f);    MIR(s.toe_f);
     MIR(s.knee_b);   MIR(s.foot_b);    MIR(s.toe_b);
@@ -1335,7 +1492,7 @@ Pose mirror_pose(Pose s)
 
 Pose translate_pose(Pose s, vec2 d)
 {
-    s.hip += d;      s.shoulder += d;  s.head += d;
+    s.hip += d;      s.chest += d;     s.shoulder += d;  s.head += d;
     s.elbow_a += d;  s.hand_a += d;    s.elbow_b += d;  s.hand_b += d;
     s.knee_f += d;   s.foot_f += d;    s.toe_f += d;
     s.knee_b += d;   s.foot_b += d;    s.toe_b += d;
@@ -1688,8 +1845,27 @@ Fight duel_layer(vec2 p, float beat, float phase, vec3 bandw, float seed,
     // reads as fainting rather than as being hit. Small, though: a curled body
     // still reaches half its height sideways, and any more than this puts the
     // head off the edge of the frame.
-    float root_l = stage - range + sway_l + lunge_l - recoil_l * knock - fall_l * 0.035;
-    float root_r = stage + range + sway_r - lunge_r + recoil_r * knock + fall_r * 0.035;
+    // -- A DOWNED FIGHTER COMES IN OFF THE WING -------------------------------
+    //
+    // BOUNDED BY THE FRAME, AND THIS IS WHERE THE BOUND HAS TO GO. A body lying
+    // down reaches about half its own height sideways, so at the far end of the
+    // stage wander, at the far end of the breathing range, a fallen fighter's head
+    // went off the edge -- measured at 1.21 against a frame that ends at 1.085.
+    //
+    // Shortening the body was the wrong lever: it was already shortened once to
+    // stop this and that is what made it read as a blob rather than a person.
+    // Moving it is the right one, and it needs no excuse -- a fighter on the floor
+    // is out of the exchange, so it has no business being carried around by the
+    // stage offset, and the one still standing closes in over it rather than
+    // holding its range against somebody who is not there.
+    float out_l = 1.0 - 0.60 * fall_l;
+    float out_r = 1.0 - 0.60 * fall_r;
+    float near  = 1.0 - 0.42 * max(fall_l, fall_r);
+
+    float root_l = stage * out_l - range * near * out_l + sway_l + lunge_l
+                 - recoil_l * knock - fall_l * 0.020;
+    float root_r = stage * out_r + range * near * out_r + sway_r - lunge_r
+                 + recoil_r * knock + fall_r * 0.020;
 
     // `progress` runs forward through the recovery for the flips. Zero during a
     // wind-up, because a figure crouching to jump is not yet turning.
@@ -1699,17 +1875,16 @@ Fight duel_layer(vec2 p, float beat, float phase, vec3 bandw, float seed,
     Pose pose_l = build_pose(kind_l, shape_l, commit_l * trust, prog_l, bob, recoil_l, flick_l);
     Pose pose_r = build_pose(kind_r, shape_r, commit_r * trust, prog_r, bob, recoil_r, flick_r);
 
-    // Curl first, then rotate. The other order rotates a spread-out body and then
-    // pulls its limbs towards a hip that has already moved, which folds the figure
-    // in the wrong direction.
-    //
-    // The pivot sits under the hips rather than at the heels: at the heels the
-    // body swings through a quarter circle and the head leaves the frame.
+    // THE LIMBS ARE THE SAME CURVE, A TENTH OF A BEAT EARLIER. That is the whole
+    // mechanism behind arms and legs trailing a falling trunk, and it costs one
+    // more evaluation of a function that is four compares.
     if (fall_l > 0.0) {
-        pose_l = rotate_pose(curl_pose(pose_l, fall_l), fall_l * 1.34, vec2(-0.03, 0.13));
+        pose_l = fall_pose(pose_l, fall_l,
+                           fall_curve(age_l - 0.10, thrown_l > 0.5), age_l);
     }
     if (fall_r > 0.0) {
-        pose_r = rotate_pose(curl_pose(pose_r, fall_r), fall_r * 1.34, vec2(-0.03, 0.13));
+        pose_r = fall_pose(pose_r, fall_r,
+                           fall_curve(age_r - 0.10, thrown_r > 0.5), age_r);
     }
 
     // -- a throw draws both bodies in ONE space -------------------------------
@@ -1808,11 +1983,20 @@ Fight duel_layer(vec2 p, float beat, float phase, vec3 bandw, float seed,
     // choreography says what was MEANT to happen; the field says whether the limb
     // is anywhere near the other body, which it is not when a low-confidence
     // tempo has held the commitment back. A flash needs both.
-    vec2  strike   = striker < 0.0 ? contact_l : contact_r;
-    float into     = striker < 0.0
+    // GATED, BECAUSE IT IS A WHOLE EXTRA BODY SOLVED PER PIXEL. This was being
+    // evaluated on every frame including the ones where nothing had been thrown
+    // and the answer was thrown away -- a third of the distance-field work in the
+    // crystal, spent to compute a number multiplied by zero. `live` and `recover`
+    // are both uniform across the draw, so the branch is coherent across the warp
+    // and costs nothing on the frames that do need it.
+    vec2  strike  = striker < 0.0 ? contact_l : contact_r;
+    float reached = 0.0;
+    if (live && recover > 0.02) {
+        float into = striker < 0.0
                          ? draw_pose(vec2((strike.x - root_r) * -1.0, strike.y), pose_r)
                          : draw_pose(vec2(strike.x - root_l, strike.y), pose_l);
-    float reached  = 1.0 - smoothstep(-0.01, 0.055, into);
+        reached = 1.0 - smoothstep(-0.01, 0.055, into);
+    }
 
     float landed  = live && outcome == kLanded  ? reached : 0.0;
     float parried = live && outcome == kBlocked ? reached : 0.0;
