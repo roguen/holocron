@@ -33,7 +33,7 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ## Status: M3, M4 and M5 are DONE. M1 and M2 are BOTH still open.
 
-**`v0.4.1`.** And the sentence above used to say "only M2's visual language is
+**`v0.4.2`.** And the sentence above used to say "only M2's visual language is
 open", which was wrong — checked against the Roadmap on 2026-08-09:
 
 | | |
@@ -127,6 +127,7 @@ tested:
 | `duel` | **Reworked on the owner's feedback** ([#127](https://github.com/roguen/holocron/issues/127)). No necks — the head sits ON the shoulders, which broke every hand position near the face and needed `clear_head` to fix as a class rather than one at a time. Feet, thicker limbs, and rear knees that bend the right way. **Thirty moves as a table of numbers** rather than geometry per move, across boxing, karate, Muay Thai, taekwondo, capoeira and wrestling — including **four throws that pose BOTH fighters**, the only moves that do. **Reactive**: every beat has a landed/blocked/evaded outcome, so a block only appears against a strike that was blocked and never against a fighter lying on the floor. The fight **ranges across the stage** and the gap between them breathes. **A spin is a tilt, not a pirouette** — a picture-plane rotation in a side-on silhouette reads as falling over, so big rotations are only for bodies that really are horizontal. **4K cost 6.65 ms against 3.90 before**, three-point slope. |
 | Beat grid | **`beat_phase` lands ON the beat** — measured at 0.0 ms median against a real track, quartiles also zero. It was a per-track error of up to 100 ms until #94: the phase was nudged by every onset, so ordinary off-beat content dragged it. Now estimated by correlating seconds of onset history against a pulse train, with the analysis's own ~28 ms flux lag compensated. |
 | Control surface | **`GET /control` on the Companion port** — a phone-browser page that switches crystals and toggles overlays, plus **`/control/tuning`** for the A/V trim and the beat instrument. Plain form POSTs with a 303 back, so it works with no JavaScript and a reload always shows the truth. Starts even with `--no-discover`: not announcing is not the same as not listening. |
+| Overlay text | **Outlined, and its ink has a luminance floor** ([#179](https://github.com/roguen/holocron/issues/179), D-043). The words used to be tinted with the raw `palette_accent` — chosen for contrast against the *primary*, which says nothing about a crystal, and the crystals tint from the same palette — so they were often the same hue as what moved behind them. `readable_ink` brightens and then lifts to a luminance floor, because **brightness is not luminance**: a brightened pure blue is still 0.072. `OverlayFacet::draw_text` draws the mask eight times in near-black and once in the ink. **A bigger scrim cannot fix this** — behind 0.42 of black a bright crystal still leaves 0.58 luminance. The card's gradient falls off as `pow(y, 1.6)`, so the title sat where it had faded to 0.07. |
 | Text | `render_text` — the **platform** rasterizer behind `_WIN32`, no font dependency, same trade as WASAPI and WinHTTP. Returns white with the coverage in alpha so the caller tints it. `OverlayFacet` composites it over whatever drew. Needs a platform layer at M8, like the audio backend. |
 | Lyrics | `parse_lyrics` reads LRC; `choose_lyric_stream` picks the right `streamType=4` off the track's metadata. **Two tracks in five ADVERTISE timed lyrics** — 16 synced, 14 text-only, 10 with none, from a 40-track sample of 50,414. **Advertised is not the same as fetchable**: the body 404s often, so that is the ceiling and not the rate — and a refused body now gets **one more request, 20 s in** ([#153](https://github.com/roguen/holocron/issues/153)). Never a third: the best guess at the 404 stretches is a rate limit, and a fix for a rate limit must not be more traffic. One line at a time, centred, rasterized only when the line changes. Unsynced lyrics draw **nothing**: a static wall of words over a moving picture is not what was asked for. |
 | Hot reload | `CrystalWatch` — saving the `.frag` or `.toml` rebuilds it in place, on by default with `--crystal`. A shader that fails to compile is reported and the running one keeps drawing; `u_time` carries across. |
@@ -447,7 +448,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.4.1`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.4.2`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
