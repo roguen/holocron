@@ -417,3 +417,15 @@ implementing changes are M1 work and have not landed yet.
    testable at all. Reading `time_seconds` off the shared slot instead of a private
    copy is a bug with a name; it belongs in the debug facet's checks, not only here.
    Recorded as Decision-Log O-005.
+
+   **That golden file now exists** — `tests/fixtures/analysis-golden.csv`, 750
+   frames of a generated eight-second fixture, closing M1's seventh exit criterion
+   on 2026-08-10. Its columns are whatever `frame_csv_header()` returns, which is
+   also what `holocron-analyze --csv` writes: the two share one writer so that the
+   golden guards the harness rather than a copy of it. **A deliberate analysis
+   change is supposed to make it fail.** Read the diff, then regenerate with
+   `HOLOCRON_WRITE_GOLDEN=1` and commit the new file in the same commit as the
+   change, so `git show` on that commit is the record of what moved. The comparison
+   is by tolerance rather than byte-for-byte, because MSVC and gcc do not agree in
+   the last bit; `tests/test_analysis_golden.cpp` states the numbers and carries a
+   third case whose job is to make sure the tolerance can still reject something.

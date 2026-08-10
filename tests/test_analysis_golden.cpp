@@ -537,6 +537,41 @@ TEST_CASE("the decoded path reproduces the golden file", "[analysis][golden][dec
 // than any analysis change anyone would make deliberately -- and requires the
 // comparison to reject it. If the tolerance is ever widened past the point of
 // usefulness, this is what goes red.
+// The fixture above never produces one, which is why this is a separate case
+// rather than a column in the golden: a window of `waveform` that sits entirely
+// below zero has a real maximum that is negative, and a digest seeding its max at
+// 0.0 would report 0 for every such window whatever the samples were. Two
+// different waveforms would then fingerprint identically on that column, which is
+// the one thing a digest must not do.
+//
+// Regenerating the golden after fixing it produced NO diff -- the eight-second
+// fixture has no such window -- so without this the fix would be a branch nothing
+// runs.
+TEST_CASE("an all-negative array digests to its real maximum", "[analysis][golden]")
+{
+    AudioFrame f{};
+    f.waveform.fill(-0.5f);
+    f.waveform[7] = -0.25f;   // the real maximum, and not the first element
+
+    char              line[kFrameCsvRowMax];
+    const std::size_t n = format_frame_csv(f, line, sizeof(line));
+    REQUIRE(n > 0);
+
+    const std::vector<std::string> columns = split(frame_csv_header());
+    const std::vector<std::string> values  = split(std::string(line, n));
+    REQUIRE(values.size() == columns.size());
+
+    std::size_t at = columns.size();
+    for (std::size_t i = 0; i < columns.size(); ++i) {
+        if (columns[i] == "waveform_max") {
+            at = i;
+        }
+    }
+    REQUIRE(at < columns.size());
+
+    CHECK(std::strtod(values[at].c_str(), nullptr) == -0.25);
+}
+
 TEST_CASE("the golden comparison can fail", "[analysis][golden]")
 {
     if (writing_golden()) {
