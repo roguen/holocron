@@ -160,6 +160,43 @@ float relative_luminance(const glm::vec3& linear_rgb)
     return 0.2126f * linear_rgb.r + 0.7152f * linear_rgb.g + 0.0722f * linear_rgb.b;
 }
 
+glm::vec3 readable_ink(const glm::vec3& linear_rgb, float min_luminance)
+{
+    glm::vec3 c(std::max(linear_rgb.r, 0.0f), std::max(linear_rgb.g, 0.0f),
+                std::max(linear_rgb.b, 0.0f));
+
+    // 1: scale the brightest channel to 1. Exact hue preservation, and it rescues
+    // anything that is merely dim rather than genuinely dark.
+    //
+    // The guard is not paranoia: a fully black swatch is reachable. extract_palette
+    // has a floor, but neutral_palette's darkest entry and any caller passing a
+    // zero vector both land here, and 0/0 would put a NaN into a uniform.
+    const float m = std::max(std::max(c.r, c.g), c.b);
+    if (m > 1.0e-4f) {
+        c /= m;
+    } else {
+        return glm::vec3(1.0f);   // nothing to preserve; white is the safe answer
+    }
+
+    // 2: mix towards white until the luminance target is met.
+    //
+    // Solvable rather than iterated, because luminance is linear in the channels:
+    //     L(mix(c, white, t)) = L(c) * (1 - t) + 1 * t = L + t * (1 - L)
+    // so the t that reaches the target is (target - L) / (1 - L).
+    const float lum = relative_luminance(c);
+    if (lum >= min_luminance) {
+        return c;   // already bright enough -- do not repaint it
+    }
+    if (lum >= 1.0f) {
+        return c;   // cannot happen for a normalised colour, but the divide below
+    }               // must not be reached with a zero denominator
+
+    const float t = std::min(std::max((min_luminance - lum) / (1.0f - lum), 0.0f), 1.0f);
+    // Written out rather than glm::mix, which lives in a header this file does not
+    // include and is not worth pulling in for one lerp.
+    return glm::vec3(c.r + (1.0f - c.r) * t, c.g + (1.0f - c.g) * t, c.b + (1.0f - c.b) * t);
+}
+
 Palette neutral_palette()
 {
     // A cool grey ramp from near-black to near-white, in linear.
