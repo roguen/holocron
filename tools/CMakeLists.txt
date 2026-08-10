@@ -52,6 +52,12 @@ target_link_libraries(holocron
         Threads::Threads
 )
 
+# The colophon prints the version on its first page, so the definition has to
+# reach this target too. It was PRIVATE to holocron_plex, which announces it over
+# GDM -- and the panel making the number visible on a projector is exactly the
+# kind of drift #38 is about.
+target_compile_definitions(holocron PRIVATE HOLOCRON_VERSION="${PROJECT_VERSION}")
+
 set_target_properties(holocron PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )

@@ -234,6 +234,22 @@ std::string control_page(const CompanionServer::ControlState& state)
            "Only tracks with <i>timed</i> lyrics show anything -- about two in "
            "five. The player says which it is when you turn this on.</div>";
 
+    // THE LICENCE PANEL, and it is on this page for a reason that is not
+    // convenience. It is how LGPL-2.1 section 6 is discharged on screen, and the
+    // owner is on a couch with a phone rather than at the keyboard -- so a panel
+    // only F1 can open is one he cannot reach. F1 stays as the route that does
+    // not depend on this port being reachable at all.
+    out += "<form method=\"post\" action=\"/control/colophon\">";
+    out += "<input type=\"hidden\" name=\"visible\" value=\"";
+    out += state.colophon_visible ? "0" : "1";
+    out += "\"><button class=\"";
+    out += state.colophon_visible ? "on" : "";
+    out += "\" type=\"submit\">About</button></form>";
+
+    out += "<div style=\"color:#8a8a92;font-size:13px;margin-top:4px\">"
+           "Licences and copyright notices. Left and right arrows at the "
+           "machine turn the page; F1 closes it.</div>";
+
     // -- moving on by itself -------------------------------------------------
     //
     // Next to the crystal list rather than under Setup, because it answers the
@@ -450,6 +466,7 @@ struct CompanionServer::Impl {
     CompanionServer::RefreshQueueHandler  refresh_queue_handler;
     CompanionServer::SelectCrystalHandler select_crystal_handler;
     CompanionServer::LyricsHandler        lyrics_handler;
+    CompanionServer::LyricsHandler        colophon_handler;
     CompanionServer::NowPlayingHandler    now_playing_handler;
     CompanionServer::TrimHandler          trim_handler;
     CompanionServer::SyncHandler          sync_handler;
@@ -1049,6 +1066,22 @@ void CompanionServer::Impl::install_routes()
         redirect_to_control(res);
     });
 
+    self->server.Post("/control/colophon", [self, redirect_to_control](
+                          const httplib::Request& req, httplib::Response& res) {
+        self->decorate(res);
+        const bool visible = req.get_param_value("visible") == "1";
+        std::printf("control: colophon %s\n", visible ? "on" : "off");
+        std::fflush(stdout);
+        {
+            const std::lock_guard<std::mutex> lock(self->control_mutex);
+            self->control.colophon_visible = visible;
+        }
+        if (self->colophon_handler) {
+            self->colophon_handler(visible);
+        }
+        redirect_to_control(res);
+    });
+
     self->server.Post("/control/nowplaying", [self, redirect_to_control](
                                                  const httplib::Request& req,
                                                  httplib::Response&      res) {
@@ -1305,6 +1338,11 @@ void CompanionServer::set_lyrics_handler(LyricsHandler handler)
     impl_->lyrics_handler = std::move(handler);
 }
 
+void CompanionServer::set_colophon_handler(LyricsHandler handler)
+{
+    impl_->colophon_handler = std::move(handler);
+}
+
 void CompanionServer::set_now_playing_handler(NowPlayingHandler handler)
 {
     impl_->now_playing_handler = std::move(handler);
@@ -1380,6 +1418,12 @@ void CompanionServer::set_current_crystal(std::size_t index)
 {
     const std::lock_guard<std::mutex> lock(impl_->control_mutex);
     impl_->control.current = index;
+}
+
+void CompanionServer::set_colophon_visible(bool visible)
+{
+    const std::lock_guard<std::mutex> lock(impl_->control_mutex);
+    impl_->control.colophon_visible = visible;
 }
 
 void CompanionServer::set_control_projectm(bool showing, const std::string& preset,

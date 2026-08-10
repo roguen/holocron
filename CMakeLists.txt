@@ -112,7 +112,14 @@ add_custom_command(
     VERBATIM
 )
 
-add_library(holocron_notices STATIC "${HOLOCRON_NOTICES_GENERATED}")
+add_library(holocron_notices STATIC
+    "${HOLOCRON_NOTICES_GENERATED}"
+    # Flattening the Markdown for display. Pure string work with no GL in it, so
+    # it lives HERE rather than with the render library -- which is what lets the
+    # pagination properties be proven on Linux CI, where there is no rasterizer
+    # and the render library is not even linked into the tests.
+    src/render/notices_view.cpp
+)
 add_library(holocron::notices ALIAS holocron_notices)
 target_link_libraries(holocron_notices PUBLIC holocron::contract PRIVATE holocron::warnings)
 

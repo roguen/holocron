@@ -70,6 +70,21 @@ enum class Key : std::uint8_t {
     kUp,
     kDown,
 
+    // F1. Opens and closes the colophon -- the licence panel M6's fourth
+    // criterion asks for.
+    //
+    // A KEYBOARD PATH FOR SOMETHING THE PHONE ALSO DOES, which contradicts D-034
+    // everywhere except here. The colophon is how LGPL-2.1 section 6 is
+    // discharged on screen, and the phone route runs through the Companion port:
+    // a machine off the LAN, or with 32500 taken, would have no way to reach it
+    // at all. A licence notice with a single point of failure is not reliably
+    // available, so it gets a second route that depends on nothing.
+    //
+    // F1 rather than Escape, which Window::pump already consumes to quit -- the
+    // key a couch reaches for to dismiss a panel would otherwise stop the music
+    // mid-track. The panel says which key closes it, on screen, for that reason.
+    kAbout,
+
     kCount
 };
 
