@@ -268,9 +268,9 @@ TEST_CASE("ill-formed UTF-8 becomes underscores, so both platforms agree")
 
     // A lead byte with no continuation, an overlong encoding, a surrogate, and a
     // code point above U+10FFFF. None may leave a byte >= 0x80 in the output.
-    for (const std::string bad : {std::string("a\xC3"), std::string("a\xE0\x80\x80"),
-                                  std::string("a\xED\xA0\x80"), std::string("a\xF5\x80\x80\x80"),
-                                  std::string("a\x80\x80")}) {
+    for (const std::string& bad : {std::string("a\xC3"), std::string("a\xE0\x80\x80"),
+                                   std::string("a\xED\xA0\x80"), std::string("a\xF5\x80\x80\x80"),
+                                   std::string("a\x80\x80")}) {
         const std::string got = safe_artwork_label(bad, 64);
         CHECK(well_formed_utf8(got));
         for (const char c : got) {
@@ -455,12 +455,16 @@ TEST_CASE("every produced stem is storable on Windows")
     // The sweep over the awkward real-world shapes, asserting the properties
     // rather than one string each: no separators, no leading dot, no trailing dot
     // or space, not a device name, well-formed UTF-8.
-    const char* labels[] = {
+    // std::string, NOT const char*. The first version ended this array with
+    // `std::string(300, 'z').c_str()`, which dangles -- the temporary dies at the
+    // end of the initialiser and the array holds a pointer into freed memory. MSVC
+    // compiled it and it happened to pass; it is undefined behaviour either way.
+    const std::string labels[] = {
         "AC/DC", "CON", "NUL ", "..", "", "   ", "Bj\xF6rk", "Tool - \xC3\x86nima",
         "AUX. Volume 1", "COM1", "a\x01" "b", "C:\\Windows", "Album.", "?????",
-        std::string(300, 'z').c_str(),
+        std::string(300, 'z'),
     };
-    for (const char* l : labels) {
+    for (const std::string& l : labels) {
         assert_storable(artwork_cache_stem(l, kKey));
     }
 }
