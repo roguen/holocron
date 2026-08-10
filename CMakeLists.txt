@@ -14,7 +14,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(holocron
-    VERSION 0.6.0
+    VERSION 0.6.1
     DESCRIPTION "GPU music visualization engine that is also the music player"
     LANGUAGES CXX
 )
@@ -483,6 +483,11 @@ find_package(httplib CONFIG REQUIRED)
 add_library(holocron_plex STATIC
     src/plex/plex_device.cpp
     src/plex/gdm_responder.cpp
+    # M7. Pure framing with no socket in it, so the wire format is golden-tested
+    # on both CI platforms with no receiver present -- which matters, because
+    # there is not one.
+    src/plex/eiscp.cpp
+    src/plex/herald.cpp
     src/plex/companion_server.cpp
     src/plex/plex_link.cpp
     src/plex/https_client.cpp

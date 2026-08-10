@@ -22,8 +22,12 @@ already prefers.
 does not need the PC powered on — tracked as M8 and deliberately *after* M5,
 because the Plex protocol work is pure networking and ports unchanged, while the
 platform layer does not. Doing the protocol on Windows first de-risks the unknown
-half without also fighting a new platform. Windows remains the target until that
-is explicitly revisited (D-022).
+half without also fighting a new platform.
+
+**M8 IS IN OFFICIAL SCOPE as of 2026-08-10**, on the owner's instruction. It had
+read "possible, not committed" since the Roadmap was written. Windows remains the
+build and test target (D-022) and the Shield is now a destination rather than a
+maybe.
 
 Read [`README.md`](README.md) for what it is and
 [`docs/audio-frame.md`](docs/audio-frame.md) for the contract everything depends on.
@@ -31,9 +35,9 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: M1, M2, M3, M4 and M5 are DONE. M6 is 3 of 4.
+## Status: M1, M2, M3, M4 and M5 are DONE. M6 is 3 of 4, M7 is 3 of 3 built.
 
-**`v0.6.0`.** M1 closed 2026-08-10, ten sessions after its last two criteria were
+**`v0.6.1`.** M1 closed 2026-08-10, ten sessions after its last two criteria were
 first written down as open, and M2's last unbuilt criterion closed the same day:
 
 | | |
@@ -41,6 +45,8 @@ first written down as open, and M2's last unbuilt criterion closed the same day:
 | **M1** | **DONE, 8 of 8, 2026-08-10.** The two that had never been picked up in ten sessions both landed: `tests/fixtures/analysis-golden.csv` diffs 750 frames of a generated fixture against the harness's own CSV writer, and `tests/test_audio_callback.cpp` replaces the global `operator new` to count what the callback allocates — on a real device thread as well as directly. |
 | **M2** | **DONE, 8 of 8, two amended, 2026-08-10.** Per-uniform envelope overrides landed — the last unbuilt piece — and **the owner authorised the closure the same day**. The visual language was his judgement and nobody else's, which is why the milestone stayed open for a few hours after the code was finished. `v0.6.0`. |
 | **M6** | **3 of 4.** The about panel — the **colophon** — is built, and building it found that `THIRD-PARTY-NOTICES.md` carried **no copyright notice for anything**: LGPL-2.1 §6 names "the copyright notice for the Library" *and* a reference to the licence, and the file had only the second. Criterion 1 **amended 2026-08-10 (D-045): the phone IS the control surface**, which is the design rather than a shortfall. **One left, and it is not a task** — legibility on the projector. |
+| **M7** | **3 of 3 BUILT, not ticked.** The **herald** runs errands when playback starts and stops -- eISCP over TCP 60128, verified end to end against a loopback listener carrying the exact golden bytes (`!1PWR01`, `!1SLI05`, `!1LMD01`). **Nothing is confirmed against the receiver, which has no network cable in it.** An errand is a URI, so a webhook replaces eISCP by editing a value. |
+| **M8** | **IN SCOPE, groundwork done.** D-046 settles the Roadmap's "real unknown": shaders are authored at `#version 300 es` and compile unchanged on both platforms, because desktop GL has accepted ES shaders since 4.3. **The shaders are not the hard part** -- about 41 DSA call sites have no ES equivalent at any version. |
 | **M5** | **DONE — all six criteria, one amended.** The last debt closed 2026-08-10 by measuring rather than building: the NAS answers a repeat sleeve in **1 ms**, so the art cache stays in memory (D-044). `artwork_cache.hpp` ships unused on purpose. |
 
 See the eight-row table at the top of the wiki
@@ -141,6 +147,7 @@ tested:
 | Beat grid | **`beat_phase` lands ON the beat** — measured at 0.0 ms median against a real track, quartiles also zero. It was a per-track error of up to 100 ms until #94: the phase was nudged by every onset, so ordinary off-beat content dragged it. Now estimated by correlating seconds of onset history against a pulse train, with the analysis's own ~28 ms flux lag compensated. |
 | Control surface | **`GET /control` on the Companion port** — a phone-browser page that switches crystals and toggles overlays, plus **`/control/tuning`** for the A/V trim and the beat instrument. Plain form POSTs with a 303 back, so it works with no JavaScript and a reload always shows the truth. Starts even with `--no-discover`: not announcing is not the same as not listening. |
 | Overlay text | **Outlined, and its ink has a luminance floor** ([#179](https://github.com/roguen/holocron/issues/179), D-043). The words used to be tinted with the raw `palette_accent` — chosen for contrast against the *primary*, which says nothing about a crystal, and the crystals tint from the same palette — so they were often the same hue as what moved behind them. `readable_ink` brightens and then lifts to a luminance floor, because **brightness is not luminance**: a brightened pure blue is still 0.072. `OverlayFacet::draw_text` draws the mask eight times in near-black and once in the ink. **A bigger scrim cannot fix this** — behind 0.42 of black a bright crystal still leaves 0.58 luminance. The card's gradient falls off as `pow(y, 1.6)`, so the title sat where it had faded to 0.07. |
+| Herald | **M7, 3 of 3 built 2026-08-10.** Errands for the receiver when playback starts and stops. **An errand is a URI** -- `eiscp://192.0.2.50/PWR01`, `wait://4000` -- so replacing eISCP with a Home Assistant webhook is an edit to a value rather than a change of shape, which is criterion 3 satisfied rather than claimed. **Three connections, not one**: a receiver waking from standby re-initialises its network stack, so anything written into the connection that carried the power-on is lost. **The edge is latched over 2.5 s** because `PlaybackSession::start()` calls `stop()` first, so a bare rising edge fires once per TRACK -- an input-select per song, which on a receiver reads as the input flickering. **Two ways this could have killed the player, both closed**: `MSG_NOSIGNAL` on every send (SIGPIPE terminates by default, and this is the first stream socket the project owns) and `catch(...)` round the worker (an escaping exception is `std::terminate`). Config errors here are deliberately NON-fatal. **Nothing is confirmed against the receiver** -- it has no network cable. |
 | Colophon | **M6's fourth criterion, closed 2026-08-10.** The licence panel: Holocron's GPL-3 notice, then `THIRD-PARTY-NOTICES.md` flattened out of Markdown and paged, seven pages at 1920×1080. Reached from the phone's control page, from **F1**, and from **`holocron --notices`** — three routes because the panel discharges a licence term and the phone route depends on the Companion port being reachable. **The notices are compiled into the binary** (`cmake/embed_notices.cmake`, hex not a string literal): an obligation met only when a file happens to sit beside the executable is not met. Three guards — embedded-equals-file, a copyright line per dependency, and `--notices \| diff` in Linux CI **through the shipped binary**. **`draw`, not `draw_text`**: the outline is sized `height/22`, which is right for one line of type and paints a second copy of a whole 848-pixel page 38 px away. |
 | Text | `render_text` — the **platform** rasterizer behind `_WIN32`, no font dependency, same trade as WASAPI and WinHTTP. Returns white with the coverage in alpha so the caller tints it. `OverlayFacet` composites it over whatever drew. Needs a platform layer at M8, like the audio backend. |
 | Lyrics | `parse_lyrics` reads LRC; `choose_lyric_stream` picks the right `streamType=4` off the track's metadata. **Two tracks in five ADVERTISE timed lyrics** — 16 synced, 14 text-only, 10 with none, from a 40-track sample of 50,414. **Advertised is not the same as fetchable**: the body 404s often, so that is the ceiling and not the rate — and a refused body now gets **one more request, 20 s in** ([#153](https://github.com/roguen/holocron/issues/153)). Never a third: the best guess at the 404 stretches is a rate limit, and a fix for a rate limit must not be more traffic. One line at a time, centred, rasterized only when the line changes. Unsynced lyrics draw **nothing**: a static wall of words over a moving picture is not what was asked for. |
@@ -465,7 +472,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.6.0`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.6.1`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
