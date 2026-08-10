@@ -3852,24 +3852,34 @@ int main(int argc, char** argv)
             // the picture.
             overlay.scrim(block_h + pad * 2, 0.72f, sw, sh);
 
-            // Tinted from the record. The text was rasterized white with the
-            // coverage in alpha precisely so this costs nothing.
+            // Tinted from the record, THROUGH readable_ink. The text was rasterized
+            // white with the coverage in alpha precisely so this costs nothing.
+            //
+            // The raw accent was used here until issue 179. An accent is chosen for
+            // contrast against the PRIMARY, which says nothing about contrast
+            // against a crystal -- and the crystals tint from the same palette, so
+            // the words were often the same hue as what was moving behind them.
+            //
             // linear_to_srgb rather than a hand-rolled pow(x, 1/2.2). It is the
             // real piecewise sRGB curve, it is tested, and it is the exact inverse
             // of what extract_palette used on the way in -- three reasons to reuse
             // it, and it also avoided needing <cmath> here, which GCC noticed and
             // MSVC did not.
+            const glm::vec3 lit = readable_ink(track_context.palette_accent,
+                                               kReadableInkLuminance);
             const glm::vec3 ink = track_context.has_art
-                                      ? glm::vec3(linear_to_srgb(track_context.palette_accent.r),
-                                                  linear_to_srgb(track_context.palette_accent.g),
-                                                  linear_to_srgb(track_context.palette_accent.b))
+                                      ? glm::vec3(linear_to_srgb(lit.r), linear_to_srgb(lit.g),
+                                                  linear_to_srgb(lit.b))
                                       : glm::vec3(0.95f);
 
-            overlay.draw(title_texture, left, base - block_h, title_w, title_h, ink, 1.0f, sw,
-                         sh);
+            // draw_text, not draw: the outline is what actually makes this readable.
+            // The scrim above helps and cannot be relied on -- its gradient has
+            // faded to about 0.08 by the height the title sits at.
+            overlay.draw_text(title_texture, left, base - block_h, title_w, title_h, ink, 1.0f,
+                              sw, sh);
             if (artist_texture != 0) {
-                overlay.draw(artist_texture, left, base - artist_h, artist_w, artist_h,
-                             glm::vec3(0.80f), 0.85f, sw, sh);
+                overlay.draw_text(artist_texture, left, base - artist_h, artist_w, artist_h,
+                                  glm::vec3(0.80f), 0.85f, sw, sh);
             }
         }
 
@@ -3936,19 +3946,24 @@ int main(int argc, char** argv)
                 const int x = (sw - w) / 2;
                 const int y = sh - sh / 4 - h;
 
-                // Tinted from the record like the card, and drawn over its own
-                // scrim: antialiased type over a crystal is illegible wherever the
-                // picture is bright, and a crystal is bright somewhere by design.
-                overlay.fill(x - sh / 40, y - sh / 80, w + sh / 20, h + sh / 40,
-                             glm::vec3(0.0f), 0.42f, sw, sh);
-
+                // OUTLINED, WITH NO BOX BEHIND IT. This used to draw a hard-edged
+                // `fill` at 0.42 -- which is the mechanism `scrim`'s own doc comment
+                // says not to put behind text, because a rectangle cuts a visible
+                // seam across whatever it overlaps. It was also not enough: behind
+                // 0.42 of black, a bright crystal still leaves 0.58 luminance and no
+                // coloured ink beats that.
+                //
+                // The outline does the job locally instead, so the box goes. A lyric
+                // sits in the middle of the frame where a panel is at its most
+                // intrusive, and subtitles have never needed one.
+                const glm::vec3 lit = readable_ink(track_context.palette_accent,
+                                                   kReadableInkLuminance);
                 const glm::vec3 ink =
                     track_context.has_art
-                        ? glm::vec3(linear_to_srgb(track_context.palette_accent.r),
-                                    linear_to_srgb(track_context.palette_accent.g),
-                                    linear_to_srgb(track_context.palette_accent.b))
+                        ? glm::vec3(linear_to_srgb(lit.r), linear_to_srgb(lit.g),
+                                    linear_to_srgb(lit.b))
                         : glm::vec3(0.97f);
-                overlay.draw(lyric_texture, x, y, w, h, ink, 1.0f, sw, sh);
+                overlay.draw_text(lyric_texture, x, y, w, h, ink, 1.0f, sw, sh);
             }
         }
 

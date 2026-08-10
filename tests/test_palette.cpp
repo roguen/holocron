@@ -10,6 +10,7 @@
 
 #include <holocron/palette.hpp>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
@@ -316,4 +317,121 @@ TEST_CASE("a non-square sleeve is handled", "[palette]")
 
     const Palette p = extract_palette(wide);
     REQUIRE(p.primary.g > p.primary.r);
+}
+
+// ---------------------------------------------------------------------------
+// readable_ink -- issue 179
+//
+// The now-playing card and the lyric line were tinted straight from
+// `palette_accent`, with nothing guaranteeing it was light enough to see against
+// a crystal. Reported from the rack: the words sometimes blend into the visuals.
+//
+// The accent is chosen for contrast against the PRIMARY, which says nothing about
+// contrast against a moving picture -- and the crystals tint from the same palette,
+// so the text was frequently the same hue as the thing behind it.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("readable_ink lifts a colour that is merely dim without changing its hue",
+          "[palette][179]")
+{
+    // A dark navy of the kind a moody sleeve yields. Scaling the brightest channel
+    // to 1 is enough here, so the ratios between channels must survive exactly --
+    // this is the case where no desaturation should happen at all.
+    const glm::vec3 dim(0.02f, 0.02f, 0.08f);
+    const glm::vec3 got = readable_ink(dim, kReadableInkLuminance);
+
+    CHECK(relative_luminance(got) >= kReadableInkLuminance);
+    // 0.02/0.08 == 0.25 going in, and the same coming out.
+    CHECK(got.b == Catch::Approx(1.0f).margin(1e-5));
+    CHECK(got.r == Catch::Approx(0.25f).margin(1e-5));
+    CHECK(got.r == Catch::Approx(got.g).margin(1e-6));
+}
+
+TEST_CASE("readable_ink rescues a pure blue, which brightness alone cannot",
+          "[palette][179]")
+{
+    // THE CASE THAT MOTIVATES THE SECOND STEP. `duel.frag`'s brighten() scales the
+    // brightest channel to 1 and stops -- which leaves pure blue as (0, 0, 1),
+    // whose relative luminance is 0.072, darker than most of any picture it will be
+    // drawn over. Brightness is not luminance.
+    const glm::vec3 blue(0.0f, 0.0f, 1.0f);
+    CHECK(relative_luminance(blue) == Catch::Approx(0.0722f).margin(1e-4));
+
+    const glm::vec3 got = readable_ink(blue, kReadableInkLuminance);
+    CHECK(relative_luminance(got) >= kReadableInkLuminance);
+
+    // It stays recognisably blue: still the dominant channel, and the mix towards
+    // white is the smallest that reaches the floor rather than a jump to grey.
+    CHECK(got.b > got.r);
+    CHECK(got.b > got.g);
+    CHECK(got.r == Catch::Approx(got.g).margin(1e-6));
+    CHECK(got.r < 0.5f);
+}
+
+TEST_CASE("readable_ink leaves a colour that is already bright alone", "[palette][179]")
+{
+    // MOST SLEEVES YIELD AN ACCENT THAT NEEDS NOTHING, and this must not quietly
+    // repaint them -- the whole point of tinting from the record is lost if every
+    // accent comes out the same washed cream.
+    const glm::vec3 bright(0.9f, 0.85f, 0.3f);
+    const glm::vec3 got = readable_ink(bright, kReadableInkLuminance);
+
+    // Normalised to a brightest channel of 1, and otherwise untouched.
+    CHECK(got.r == Catch::Approx(1.0f).margin(1e-5));
+    CHECK(got.g == Catch::Approx(0.85f / 0.9f).margin(1e-5));
+    CHECK(got.b == Catch::Approx(0.3f / 0.9f).margin(1e-5));
+}
+
+TEST_CASE("readable_ink meets the floor for every hue, including the worst one",
+          "[palette][179]")
+{
+    // A sweep, because the floor has to hold for whatever a sleeve produces and
+    // pure blue is only the most obvious offender. Saturated primaries and
+    // secondaries at a range of brightnesses.
+    const glm::vec3 hues[] = {
+        {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 1, 0}, {0, 1, 1}, {1, 0, 1},
+        {1, 1, 1}, {0.5f, 0.1f, 0.9f}, {0.1f, 0.05f, 0.02f}, {0.03f, 0.0f, 0.06f},
+    };
+    for (const glm::vec3& h : hues) {
+        for (const float scale : {1.0f, 0.5f, 0.1f, 0.02f}) {
+            const glm::vec3 got = readable_ink(h * scale, kReadableInkLuminance);
+            CHECK(relative_luminance(got) >= kReadableInkLuminance - 1e-4f);
+            // Never out of range, and never a NaN reaching a uniform.
+            CHECK(got.r >= 0.0f); CHECK(got.r <= 1.0f);
+            CHECK(got.g >= 0.0f); CHECK(got.g <= 1.0f);
+            CHECK(got.b >= 0.0f); CHECK(got.b <= 1.0f);
+            CHECK(got.r == got.r);   // NaN check
+            CHECK(got.g == got.g);
+            CHECK(got.b == got.b);
+        }
+    }
+}
+
+TEST_CASE("readable_ink survives black without producing a NaN", "[palette][179]")
+{
+    // REACHABLE, not paranoia: neutral_palette's darkest entry is near zero and a
+    // caller passing a default-constructed vec3 lands exactly here. Dividing by the
+    // brightest channel would put a NaN into a GL uniform, which shows up as text
+    // that is invisible or white noise rather than as an error anywhere.
+    const glm::vec3 got = readable_ink(glm::vec3(0.0f), kReadableInkLuminance);
+    CHECK(got.r == got.r);
+    CHECK(relative_luminance(got) >= kReadableInkLuminance);
+
+    // Negative input cannot happen from a palette but must not produce nonsense.
+    const glm::vec3 neg = readable_ink(glm::vec3(-0.5f, -0.1f, 0.0f), kReadableInkLuminance);
+    CHECK(neg.r == neg.r);
+    CHECK(relative_luminance(neg) >= kReadableInkLuminance);
+}
+
+TEST_CASE("the ink floor is low enough to keep a saturated red recognisable",
+          "[palette][179]")
+{
+    // THE FLOOR IS A BACKSTOP, NOT THE MECHANISM -- the outline the overlay draws is
+    // what actually makes text readable. So the floor must be low enough that a red
+    // accent stays red. Pure red's luminance is 0.2126, just under the 0.25 floor,
+    // so it is the tightest case: it should be nudged, not washed out.
+    const glm::vec3 got = readable_ink(glm::vec3(1.0f, 0.0f, 0.0f), kReadableInkLuminance);
+    CHECK(got.r == Catch::Approx(1.0f).margin(1e-5));
+    CHECK(got.g < 0.06f);   // barely any white mixed in
+    CHECK(got.b < 0.06f);
 }
