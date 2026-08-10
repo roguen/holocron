@@ -113,9 +113,15 @@ struct NowPlaying {
     // gets whatever the file says about itself -- which before issue 133 was
     // nowhere at all, leaving the now-playing card blank.
     //
-    // `genre` and `year` are the interesting case: they are NOT on a Plex Track
-    // element and would cost a second request per track, so a cast leaves them
-    // empty and a local file fills them for free.
+    // `genre` and `year` are the interesting case, and this comment used to get
+    // it wrong. They are NOT on a Plex Track element, so a cast arrives with them
+    // empty -- and the rule above then fills them from the container's tags, for
+    // a cast exactly as much as for a local file. Nothing has to ask Plex for
+    // them and nothing ever did.
+    //
+    // That was worth correcting rather than tidying, because the player believed
+    // the old version and cleared both fields on every track (issue 133 wired
+    // them up; the cast path threw them away again).
 };
 
 class PlaybackSession {
