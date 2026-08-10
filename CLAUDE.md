@@ -33,8 +33,8 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ## Status: M1, M3, M4 and M5 are DONE. M2 is the only one still open.
 
-**`v0.4.2`.** And the sentence above used to say "only M2's visual language is
-open", which was wrong — checked against the Roadmap on 2026-08-09:
+**`v0.5.0`.** M1 closed 2026-08-10, ten sessions after its last two criteria were
+first written down as open:
 
 | | |
 |---|---|
@@ -455,7 +455,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.4.2`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.5.0`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
@@ -465,8 +465,10 @@ the `duel` crystal, the compositor, the crossfade, the tuning page and lyrics al
 landed as patches while M3 was still open. That is the rule working as written,
 not a mistake.
 
-**`v0.4.0` is M4, the THIRD completed milestone** — after M5 at `v0.2.0` and M3
-at `v0.3.0`. The minor number counts how many are finished, not which one.
+**`v0.5.0` is M1, the FOURTH completed milestone** — after M5 at `v0.2.0`, M3 at
+`v0.3.0` and M4 at `v0.4.0`. The minor number counts how many are finished, not
+which one, and M1 being the first milestone and the fourth to finish is the
+clearest illustration of that this project will produce.
 
 **The minor number tracks how many milestones are DONE, not which one.** `v0.2.0`
 is the first completed milestone and that milestone is **M5**, because D-029 made
