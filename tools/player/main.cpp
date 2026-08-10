@@ -1307,14 +1307,40 @@ private:
 // because the two fetch different things from different endpoints and only one
 // of them is worth caching: a sleeve repeats fifteen times across an album,
 // lyrics never repeat at all.
+// THE ONE THING THIS DOES THAT ArtworkLoader DOES NOT IS ASK TWICE.
+//
+// Plex serves a lyric body for a stretch and 404s the same stream, with the same
+// token, for another (issue 153). The fetch happens the moment a track starts, so
+// a single unlucky attempt loses the words for the whole song even when the
+// server would have handed them over seconds later.
+//
+// WHERE THE TIMER LIVES, AND THE TWO ARRANGEMENTS THAT WERE NOT CHOSEN. The
+// deadline is held here and the clock is passed in, exactly as CrystalWatch takes
+// `now` and is polled every frame. The alternatives:
+//
+//   * SLEEP IN THE WORKER for twenty seconds and fetch again. Rejected because
+//     request() joins the previous worker before starting the next, so a parked
+//     thread would stall the RENDER thread for up to twenty seconds on a track
+//     change. Making the wait interruptible means a condition variable and a
+//     wake on every path that can supersede a track, which is more machinery
+//     than a deadline and a comparison.
+//   * DRIVE IT FROM THE RENDER LOOP -- the loop notices the failure and calls
+//     request() again. Rejected because the loop would have to keep the server
+//     and the track alive to re-ask with, and the retry policy would end up
+//     split across two files. The loop is already long.
+//
+// Passing the clock in rather than reading it also keeps the decision itself a
+// pure function, in lyrics.hpp, where it can be tested without a server or a
+// twenty-second wait. This class is in a tools/ translation unit and no test can
+// reach it; the part with the edge cases is deliberately not in here.
 class LyricsLoader {
 public:
+    using Clock = std::chrono::steady_clock;
+
     ~LyricsLoader() { join(); }
 
     void request(const PlayRequest& server, const PlexTrack& track)
     {
-        join();
-
         std::uint64_t generation = 0;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -1322,37 +1348,57 @@ public:
             generation = generation_;
             ready_     = false;
             lyrics_    = Lyrics{};
+
+            // A new track gets a fresh budget, and the previous track's pending
+            // retry must not fire against it.
+            attempts_       = 0;
+            retry_delay_ms_ = 0;
+            retry_armed_    = false;
+            server_         = server;
+            track_          = track;
         }
         if (track.rating_key.empty()) {
             return;
         }
+        start_fetch(server, track, generation);
+    }
 
-        worker_ = std::thread([this, server, track, generation] {
-            std::string body;
-            std::string detail;
-            bool        synced = false;
-
-            const HttpError err = fetch_lyrics(server, track, body, synced, detail);
-            if (err != HttpError::kOk) {
-                // A QUARTER OF A REAL LIBRARY HAS NO LYRICS, so kBadUrl is
-                // silent. Anything else is a server or a network problem and is
-                // worth one line -- but still not worth interrupting playback.
-                if (err != HttpError::kBadUrl) {
-                    std::fprintf(stderr, "holocron: no lyrics for \"%s\" -- %s\n",
-                                 track.title.c_str(), detail.c_str());
-                }
+    // Give the retry deadline a chance to come due. Called every frame; does
+    // nothing at all unless a fetch came back kUnserved.
+    void poll(Clock::time_point now)
+    {
+        PlayRequest   server;
+        PlexTrack     track;
+        std::uint64_t generation = 0;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (retry_delay_ms_ <= 0) {
                 return;
             }
-
-            const Lyrics parsed = parse_lyrics(body, synced);
-
-            const std::lock_guard<std::mutex> lock(mutex_);
-            if (generation != generation_) {
-                return;   // a newer track has been asked for; this answer is stale
+            if (!retry_armed_) {
+                // ARMED HERE RATHER THAN IN THE WORKER so that every clock read
+                // in this class is a value handed to it. One frame later than
+                // the failure, which against twenty seconds is nothing.
+                retry_at_    = now + std::chrono::milliseconds(retry_delay_ms_);
+                retry_armed_ = true;
+                return;
             }
-            lyrics_ = parsed;
-            ready_  = true;
-        });
+            if (now < retry_at_) {
+                return;
+            }
+            retry_delay_ms_ = 0;
+            retry_armed_    = false;
+            server          = server_;
+            track           = track_;
+            generation      = generation_;
+        }
+
+        // WORTH A LINE. This is a second request per track against a server that
+        // may be rate-limiting, and if that guess is right this log is how anyone
+        // would ever find out.
+        std::fprintf(stderr, "holocron: asking again for the lyrics of \"%s\"\n",
+                     track.title.c_str());
+        start_fetch(server, track, generation);
     }
 
     bool take(Lyrics& out)
@@ -1368,13 +1414,16 @@ public:
     }
 
     // Called before a track is replaced, exactly as the artwork loader is: an
-    // answer for a track that is no longer playing must not land.
+    // answer for a track that is no longer playing must not land -- and neither
+    // must a retry for it be sent.
     void abandon()
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         generation_ += 1;
         ready_ = false;
         lyrics_ = Lyrics{};
+        retry_delay_ms_ = 0;
+        retry_armed_    = false;
     }
 
     void join()
@@ -1385,11 +1434,67 @@ public:
     }
 
 private:
+    void start_fetch(const PlayRequest& server, const PlexTrack& track, std::uint64_t generation)
+    {
+        join();
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            attempts_ += 1;
+        }
+
+        worker_ = std::thread([this, server, track, generation] {
+            std::string body;
+            std::string detail;
+            bool        synced = false;
+
+            const LyricFetch outcome = fetch_lyrics(server, track, body, synced, detail);
+            if (outcome == LyricFetch::kFailed) {
+                // A QUARTER OF A REAL LIBRARY HAS NO LYRICS and a refused body
+                // arrives during ordinary playback, so both of those are silent.
+                // A network or server fault is worth one line -- but still not
+                // worth interrupting playback over.
+                std::fprintf(stderr, "holocron: no lyrics for \"%s\" -- %s\n",
+                             track.title.c_str(), detail.c_str());
+            }
+
+            Lyrics parsed;
+            if (outcome == LyricFetch::kServed) {
+                parsed = parse_lyrics(body, synced);
+            }
+
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (generation != generation_) {
+                return;   // a newer track has been asked for; this answer is stale
+            }
+            if (outcome == LyricFetch::kServed) {
+                lyrics_ = std::move(parsed);
+                ready_  = true;
+                return;
+            }
+
+            std::int64_t delay_ms = 0;
+            if (lyric_retry_after(outcome, attempts_, delay_ms)) {
+                retry_delay_ms_ = delay_ms;
+                retry_armed_    = false;
+            }
+        });
+    }
+
     std::thread        worker_;
     mutable std::mutex mutex_;
     std::uint64_t      generation_ = 0;
     bool               ready_      = false;
     Lyrics             lyrics_;
+
+    // What to ask again with, and when. `retry_delay_ms_` above zero means a
+    // retry is wanted; `retry_armed_` means `retry_at_` has been set from a real
+    // clock reading.
+    PlayRequest       server_;
+    PlexTrack         track_;
+    int               attempts_       = 0;
+    std::int64_t      retry_delay_ms_ = 0;
+    bool              retry_armed_    = false;
+    Clock::time_point retry_at_{};
 };
 
 extern "C" void on_interrupt(int)
@@ -3129,6 +3234,11 @@ int main(int argc, char** argv)
             // is nothing to upload: the fetch produces a parsed structure and
             // the rasterizing happens when the line changes, which is a
             // different event.
+            // A refused lyric body gets one more request, twenty seconds in.
+            // Costs a comparison per frame when nothing is pending, which is
+            // every frame on a track whose words arrived or never existed.
+            lyrics.poll(std::chrono::steady_clock::now());
+
             if (Lyrics fetched; lyrics.take(fetched)) {
                 song = std::move(fetched);
                 std::printf("holocron: %zu lyric line(s) for \"%s\"%s\n", song.lines.size(),

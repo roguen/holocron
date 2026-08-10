@@ -69,6 +69,50 @@ struct Lyrics {
     bool empty() const { return lines.empty(); }
 };
 
+// Why a lyric fetch produced words, or did not.
+//
+// THE DISTINCTION THAT MATTERS IS BETWEEN THE LAST TWO. A track that has no
+// lyric stream will never have one, and asking again is pure waste on a quarter
+// of a real library. A track that advertises a stream the server then refuses to
+// serve has been observed to recover -- the same stream, the same token, 404 for
+// a stretch and 200 afterwards (issue 153). Only that case is worth repeating,
+// and before this enum existed both arrived as the same `kBadUrl` and could only
+// be told apart by string-matching the human-readable detail.
+enum class LyricFetch : std::uint8_t {
+    kServed = 0,   // a body came back
+    kNoStream,     // no `streamType="4"` on the track at all -- permanent, and not an error
+    kUnserved,     // a stream is advertised and its body 404'd -- transient, issue 153
+    kFailed,       // network or server trouble; the detail string says what
+};
+
+// How many fetches a single track gets in total: the first one, and one retry.
+constexpr int kLyricAttempts = 2;
+
+// How long to wait before the retry. See lyric_retry_after for where the number
+// came from and how weak the evidence for it is.
+constexpr std::int64_t kLyricRetryDelayMs = 20'000;
+
+// Whether a fetch that produced no words is worth repeating, and how long to
+// wait first. False means never ask again for this track.
+//
+// `attempts_so_far` counts fetches already made, so it is 1 the first time this
+// is asked.
+//
+// ONE RETRY, AND THE REASON IT IS NOT MORE IS THE SUSPECTED CAUSE. The best
+// guess at the 404 stretches is a rate limit -- the one time recovery was
+// measured, it followed a sweep of about 110 requests in a few minutes and took
+// something between five and ten minutes to clear. A fix for a rate limit must
+// not be more traffic, so this adds at most one extra pair of round trips on a
+// track that would otherwise show nothing, and never a third.
+//
+// THE DELAY IS A COMPROMISE AND THE EVIDENCE FOR IT IS THIN. Twenty seconds is
+// short enough that the words still cover most of a song and long enough for a
+// brief outage to clear, but the only recovery anyone has timed took minutes.
+// This recovers a blip; it will not recover the burst case. Raising it trades
+// tracks short enough to end first against outages long enough to matter, and
+// there is no measurement yet that says which way to go.
+bool lyric_retry_after(LyricFetch outcome, int attempts_so_far, std::int64_t& out_delay_ms);
+
 // Pick the best lyric stream out of a `/library/metadata/{ratingKey}` response.
 //
 // Prefers `format="lrc"` over `format="txt"`, which is the whole reason this is

@@ -230,3 +230,61 @@ TEST_CASE("carriage returns from a network body do not end up in the words")
     REQUIRE(lyrics.lines.size() == 1);
     CHECK(lyrics.lines[0].text == "with a carriage return");
 }
+
+// ---------------------------------------------------------------------------
+// The retry policy (issue 153)
+//
+// Plex serves a lyric body for a stretch and 404s the same stream for another.
+// The three bugs a retry can have are all in this one predicate: retrying the
+// permanent cases, retrying forever, and retrying with no delay. One test each.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("only a refused body is asked about again")
+{
+    std::int64_t delay_ms = -1;
+
+    // The case the issue is about: the track advertises a lyric stream and the
+    // server will not serve its body. Transient, and worth one more request.
+    CHECK(lyric_retry_after(LyricFetch::kUnserved, 1, delay_ms));
+    CHECK(delay_ms == kLyricRetryDelayMs);
+    CHECK(delay_ms > 0);   // a retry with no delay is the same failed request twice
+
+    // A quarter of a real library has no lyric stream at all. Waiting does not
+    // give a track one, and asking again would double the traffic for every
+    // fourth track to no possible benefit.
+    delay_ms = -1;
+    CHECK_FALSE(lyric_retry_after(LyricFetch::kNoStream, 1, delay_ms));
+    CHECK(delay_ms == 0);
+
+    // A network fault or an HTTP 500 is the server or the wire being broken
+    // rather than coy. Not the observed behaviour this works around.
+    CHECK_FALSE(lyric_retry_after(LyricFetch::kFailed, 1, delay_ms));
+
+    // And success obviously asks for nothing.
+    CHECK_FALSE(lyric_retry_after(LyricFetch::kServed, 1, delay_ms));
+}
+
+TEST_CASE("a track gets one retry and never a third request")
+{
+    std::int64_t delay_ms = 0;
+
+    // THE POINT OF THIS TEST IS THE SECOND LINE. The best guess at the 404
+    // stretches is a rate limit, so a fix that keeps asking is a fix that makes
+    // the suspected cause worse. The budget has to be a hard stop.
+    CHECK(lyric_retry_after(LyricFetch::kUnserved, 1, delay_ms));
+    CHECK_FALSE(lyric_retry_after(LyricFetch::kUnserved, kLyricAttempts, delay_ms));
+    CHECK_FALSE(lyric_retry_after(LyricFetch::kUnserved, kLyricAttempts + 1, delay_ms));
+    CHECK_FALSE(lyric_retry_after(LyricFetch::kUnserved, 99, delay_ms));
+}
+
+TEST_CASE("the retry delay leaves most of a song to sing")
+{
+    // A number rather than an assertion about the number: twenty seconds is a
+    // compromise recorded in lyrics.hpp, and the property worth pinning is that
+    // it is inside a track rather than past the end of one. A delay longer than
+    // the shortest real songs would mean the retry never pays off at all.
+    std::int64_t delay_ms = 0;
+    REQUIRE(lyric_retry_after(LyricFetch::kUnserved, 1, delay_ms));
+    CHECK(delay_ms >= 5'000);    // long enough for a brief outage to clear
+    CHECK(delay_ms <= 60'000);   // short enough that a three-minute track still shows words
+}

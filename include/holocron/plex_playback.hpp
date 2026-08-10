@@ -46,6 +46,7 @@
 #pragma once
 
 #include <holocron/https_client.hpp>
+#include <holocron/lyrics.hpp>   // LyricFetch, which fetch_lyrics answers with
 
 #include <cstdint>
 #include <string>
@@ -399,12 +400,19 @@ HttpError fetch_artwork(const PlayRequest& server, const PlexTrack& track, int s
 // anything a play queue hands over. There is no way to learn the stream key
 // without asking.
 //
-// Returns kBadUrl when the track simply has no lyrics, which is a quarter of a
-// real library and must not be logged as a failure. `out_synced` reports what
-// the stream's `format` claimed; parse_lyrics has the last word on whether the
-// body actually carries timing.
-HttpError fetch_lyrics(const PlayRequest& server, const PlexTrack& track, std::string& out_body,
-                       bool& out_synced, std::string& out_detail);
+// ANSWERS WITH LyricFetch RATHER THAN HttpError, which is the one place in this
+// header that breaks the symmetry with fetch_artwork above. It earns it: there
+// are three distinct ways to come back with no words and the caller has to treat
+// them differently -- no stream is permanent and silent, a refused body is worth
+// one retry (issue 153), and a network failure is worth a log line. HttpError
+// collapsed the first two into `kBadUrl` and the only way to separate them was
+// to match on the text of `out_detail`. `out_detail` still carries the reason
+// for a human; nothing branches on it.
+//
+// `out_synced` reports what the stream's `format` claimed; parse_lyrics has the
+// last word on whether the body actually carries timing.
+LyricFetch fetch_lyrics(const PlayRequest& server, const PlexTrack& track, std::string& out_body,
+                        bool& out_synced, std::string& out_detail);
 
 // ---------------------------------------------------------------------------
 // The small amount of XML reading this needs
