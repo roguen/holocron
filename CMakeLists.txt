@@ -14,7 +14,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(holocron
-    VERSION 0.4.2
+    VERSION 0.5.0
     DESCRIPTION "GPU music visualization engine that is also the music player"
     LANGUAGES CXX
 )
@@ -98,6 +98,10 @@ find_library(EBUR128_LIBRARY NAMES ebur128 REQUIRED)
 
 add_library(holocron_analysis STATIC
     src/analysis/analysis.cpp
+    # One AudioFrame as one CSV line, shared by holocron-analyze and the
+    # golden-file test so the golden guards the harness's real output format
+    # rather than a second copy of it that can drift.
+    src/analysis/frame_csv.cpp
 )
 add_library(holocron::analysis ALIAS holocron_analysis)
 

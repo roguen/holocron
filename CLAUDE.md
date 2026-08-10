@@ -31,29 +31,31 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: M3, M4 and M5 are DONE. M1 and M2 are BOTH still open.
+## Status: M1, M3, M4 and M5 are DONE. M2 is the only one still open.
 
-**`v0.4.2`.** And the sentence above used to say "only M2's visual language is
-open", which was wrong — checked against the Roadmap on 2026-08-09:
+**`v0.5.0`.** M1 closed 2026-08-10, ten sessions after its last two criteria were
+first written down as open:
 
 | | |
 |---|---|
-| **M1** | **OPEN, 6 of 8.** Never picked up: a golden-file diff for the headless analysis, and zero allocation in the audio callback *demonstrated* rather than assumed. Neither blocks anything, which is exactly why both have sat there. |
+| **M1** | **DONE, 8 of 8, 2026-08-10.** The two that had never been picked up in ten sessions both landed: `tests/fixtures/analysis-golden.csv` diffs 750 frames of a generated fixture against the harness's own CSV writer, and `tests/test_audio_callback.cpp` replaces the global `operator new` to count what the callback allocates — on a real device thread as well as directly. |
 | **M2** | **OPEN, 5 of 8.** Per-uniform envelope overrides (`attack`, `decay`, `mode = "accumulate"`) are **not built**. The rest is the visual language, which is the owner's call. |
-| **M5** | **DONE, with recorded debt** — the on-disk art cache and metadata-derived filenames. The naming half landed at `v0.4.1`; nothing is wired to it yet. |
+| **M5** | **DONE — all six criteria, one amended.** The last debt closed 2026-08-10 by measuring rather than building: the NAS answers a repeat sleeve in **1 ms**, so the art cache stays in memory (D-044). `artwork_cache.hpp` ships unused on purpose. |
 
-Three later milestones being finished makes it easy to assume the first one must
-be. It is not. See the eight-row table at the top of the wiki
+See the eight-row table at the top of the wiki
 [Roadmap](https://github.com/roguen/holocron/wiki/Roadmap).
 
-**Three milestones are finished.** M5 — Holocron is a Plex cast target and plays
-what it is sent, confirmed on the rack from the phone. M3 — the compositor, at
-`v0.3.0`. M4 — projectM, at `v0.4.0`, all seven exit criteria met.
+**Four milestones are finished.** M1 — the spine, closed 2026-08-10 after its
+last two criteria had sat untouched for ten sessions. M5 — Holocron is a Plex
+cast target and plays what it is sent, confirmed on the rack from the phone. M3
+— the compositor, at `v0.3.0`. M4 — projectM, at `v0.4.0`, all seven exit
+criteria met.
 
-**M2 is still open and is the odd one out.** Its plumbing has been done since
-`v0.1.13`; what remains is the **visual language**, which is the owner's
-judgement and not a task anyone else can close. Three crystals and one archive
-ship. He has feedback outstanding on `duel` and on the lyric display.
+**M2 is the only one still open, and it is the odd one out.** Its plumbing has
+been done since `v0.1.13`; what remains is per-uniform envelope overrides and
+the **visual language**, which is the owner's judgement and not a task anyone
+else can close. Three crystals and one archive ship. He has feedback outstanding
+on `duel` and on the lyric display.
 
 **NOTHING FROM `v0.3.0` OR `v0.4.0` HAS BEEN SEEN ON THE PROJECTOR.** The
 compositor, archives, bloom, the lyric display and now the whole of projectM
@@ -116,10 +118,12 @@ tested:
 | Build | CMake + Ninja + MSVC, vcpkg manifest mode. Catch2 suite green on Windows **and** Linux. |
 | Contract | `AudioFrame` signed off; every field populated by the analysis stage. |
 | Analysis | Spectrum, bands, levels, stereo, spectral descriptors, onsets, tempo, beat/bar phase, BS.1770-4 loudness. |
+| Golden file | **M1's last-but-one criterion, closed 2026-08-10.** `tests/fixtures/analysis-golden.csv` — 750 frames of a generated 8-second fixture, compared field by field. The CSV writer lives in `holocron/frame_csv.hpp` so the golden guards **`holocron-analyze`'s own output** rather than a second copy of it. Two paths share one golden: straight into the stage, and through a WAV + `Decoder` + `Resampler`. Regenerate with `HOLOCRON_WRITE_GOLDEN=1`. Compared with a **5e-4 relative tolerance**, because MSVC and gcc do not agree in the last bit and Linux CI is kept precisely because they do not — and a third case runs a config with `band_decay` moved 4% and **requires the comparison to reject it**, so a tolerance quietly widened past usefulness goes red. |
 | Decode | FFmpeg behind `Decoder` (native rate) + `Resampler` (48 kHz stereo tap). |
 | Publication | `TripleBuffer` — lock-free SPSC, verified tear-free under real thread contention. Answers "newest frame", which is the right question for a renderer with no clock. |
 | Tap placement | `FrameHistory` — bounded history selectable **by position**, so the frame drawn is the one the speakers are producing. Measured 51 ms of correction against newest-wins (#53). **Heap-allocate it**: 128 `AudioFrame`s is ~1.38 MB, larger than the default stack. |
 | PCM handoff | `PcmRing` — lock-free SPSC ring, decode thread to audio callback. Lossless and ordered, which is the opposite of `TripleBuffer`'s job. |
+| Audio-path rule | **M1's last criterion, closed 2026-08-10 — the rule is now checked rather than written down.** The callback body moved to `holocron/audio_callback.hpp` as `render_from_ring`, because a test that reimplements the callback has demonstrated nothing; `render_audio` is now a three-line adapter. `tests/test_audio_callback.cpp` **replaces the global `operator new`** — every form, including the aligned ones, since skipping those is the quiet way the test lies — with a `thread_local` counter, and counts zero across the ring's every state, under a concurrent writer, and **on a real device thread** through `SdlSink`. Confirmed to fail on a single `new int` added to the callback. "Zero locks" is `static_assert`ed as `is_always_lock_free` on the three atomic types, because a `std::atomic` that is not lock-free takes a hidden mutex with no diagnostic — which is an M8 risk, not a theoretical one. |
 | Sink | `WasapiSink` — **exclusive mode verified bit-perfect on the rack**, 160-frame period, plus a shared-mode fallback. `SdlSink` behind it, exercised headless in CI through SDL's dummy driver. Chosen at runtime through the interface. |
 | Render | `Window` (GL 4.5 core, KHR_debug) and `DebugFacet`, drawing every field as bars and markers — **`--debug-facet`**, which it needs because the config's vault defaults to `crystals` and there was otherwise no command line that reached it (issue 144). |
 | Compositor | **M3's first step.** The picture is drawn into a `RenderTarget` — an FBO with one `GL_RGBA16F` colour texture — and a `Compositor` pass draws the stack onto the window. Float, not 8-bit, because crystals exceed 1.0 before their vignette and an 8-bit layer would clip differently depending on what else was on screen. **Measured at 0.06 ms per frame at 4K** on the RX 6800, against a 16.7 ms budget. `--no-compositor` draws straight to the window, which is also the fallback if a float framebuffer cannot be allocated. |
@@ -214,9 +218,11 @@ skip both ways, `skipTo`, pause, seeking, shuffle, `refreshPlayQueue` (which is 
 "play next" works), a live progress bar, and the visuals coloured from the album
 art.
 
-**What M5 still owes, none of it behavioural:** an artwork cache
-([#118](https://github.com/roguen/holocron/issues/118)), genre and year on
-`TrackContext`, and PNG art ([#116](https://github.com/roguen/holocron/issues/116)).
+**M5 owes nothing further as of 2026-08-10.** The artwork cache
+([#118](https://github.com/roguen/holocron/issues/118)) is **closed by
+measurement, not by building it** — D-044. Genre and year are on `TrackContext`.
+PNG art ([#116](https://github.com/roguen/holocron/issues/116)) stays open and
+stays moot while Plex serves JPEG.
 
 **Three things about the Plex protocol that cost a session each and are not
 guessable:**
@@ -254,7 +260,8 @@ guessable:**
 generalisation of it: **a value a branch depends on and no log prints is a branch
 that cannot be diagnosed.** #114 cost a session to find for exactly that reason.
 
-**All four M1 blockers were resolved on 2026-08-01.** What remains for M1:
+**All four M1 blockers were resolved on 2026-08-01, and M1 itself closed on
+2026-08-10.** Nothing remains for it.
 
 **M1's spine is complete and M2 has started.** It decodes, analyses, plays
 bit-perfect, draws, and what it draws is what you are hearing — and it now draws
@@ -448,7 +455,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.4.2`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.5.0`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
@@ -458,8 +465,10 @@ the `duel` crystal, the compositor, the crossfade, the tuning page and lyrics al
 landed as patches while M3 was still open. That is the rule working as written,
 not a mistake.
 
-**`v0.4.0` is M4, the THIRD completed milestone** — after M5 at `v0.2.0` and M3
-at `v0.3.0`. The minor number counts how many are finished, not which one.
+**`v0.5.0` is M1, the FOURTH completed milestone** — after M5 at `v0.2.0`, M3 at
+`v0.3.0` and M4 at `v0.4.0`. The minor number counts how many are finished, not
+which one, and M1 being the first milestone and the fourth to finish is the
+clearest illustration of that this project will produce.
 
 **The minor number tracks how many milestones are DONE, not which one.** `v0.2.0`
 is the first completed milestone and that milestone is **M5**, because D-029 made

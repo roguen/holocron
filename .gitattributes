@@ -102,6 +102,13 @@ Makefile                text eol=lf
 *.inc                   text eol=lf
 *.toml                  text eol=lf
 
+# The analysis golden file, and anything else a tool of ours writes and then
+# reads back. `holocron-analyze --csv` and the golden-file test both write '\n'
+# through a stream opened in binary mode, so without this pin the file checks
+# out CRLF on Windows, is regenerated as LF, and `git diff` reports every line
+# in a 750-line file as changed when nothing about the analysis moved.
+*.csv                   text eol=lf
+
 
 # ---------------------------------------------------------------------------
 # 4. Files that must be CRLF even on Linux
