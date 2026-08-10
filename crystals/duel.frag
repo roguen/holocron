@@ -189,13 +189,30 @@ const int kDropkick   = 18;
 const int kLegFirst   = 8;
 const int kLegLast    = 18;
 
+// Throws. Judo, freestyle wrestling, and the professional-wrestling repertoire.
+//
+// THESE ARE THE ONLY MOVES THAT POSE BOTH FIGHTERS. Everything above is one body
+// doing something and the other body reacting to it; a throw is a single shape
+// made of two people, and the victim's joints have no meaning except relative to
+// the hands holding it. See build_victim.
+const int kHipToss    = 19;
+const int kSuplex     = 20;
+const int kClothesline = 21;
+const int kTakedown   = 22;
+const int kThrowFirst = 19;
+const int kThrowLast  = 22;
+
 // Getting somewhere rather than hitting something. These land no blow, which is
 // deliberate: a fight in which every beat connects has no shape to it.
-const int kSlide      = 19;
-const int kCartwheel  = 20;
-const int kBackflip   = 21;
-const int kMoveFirst  = 19;
-const int kMoveLast   = 21;
+const int kSlide      = 23;
+const int kCartwheel  = 24;
+const int kBackflip   = 25;
+const int kMoveFirst  = 23;
+const int kMoveLast   = 25;
+
+// Everything below this throws nothing, which is the test the exchange logic
+// needs rather than a list of the moves that happen to be harmless.
+const int kNoBlowFirst = 23;
 
 // Not attacking.
 //
@@ -205,10 +222,10 @@ const int kMoveLast   = 21;
 // which reads as cringing rather than as fighting. kBlock is now only for a
 // strike that the choreography says was actually blocked; kDuck and kLean are for
 // one it says was evaded; kGuard is the rest of the time.
-const int kGuard      = 22;
-const int kBlock      = 23;
-const int kDuck       = 24;
-const int kLean       = 25;
+const int kGuard      = 26;
+const int kBlock      = 27;
+const int kDuck       = 28;
+const int kLean       = 29;
 
 // Where a move would connect. Named rather than inferred, because an elbow
 // strike and a knee strike connect with the JOINT and not with the end of the
@@ -568,6 +585,51 @@ Move move_for(int kind, vec3 shape)
         m.lift   = 0.185;
         m.spin   = 1.30;
         m.travel = 0.055;
+
+    // -- throws --------------------------------------------------------------
+    //
+    // These are only the THROWER. The body being thrown is built by build_victim
+    // in this figure's own coordinate space, because the two of them are one
+    // shape for the duration.
+
+    } else if (kind == kHipToss) {
+        // Judo o-goshi. Drop the hips under, turn in, and haul across -- so the
+        // crouch and the turn are the move, and the arms end up high and behind
+        // where the other body is going.
+        m.limb  = 0; m.contact = kAtNone;
+        m.crouch = 0.165;
+        m.hand   = vec2(0.055, 0.215);
+        m.elbow  = vec2(0.165, 0.055);
+        m.lean   = 0.80;
+        m.spin   = 0.36;
+    } else if (kind == kSuplex) {
+        // ARCHES BACKWARDS, and that is the entire silhouette. The thrower's own
+        // rotation is why this needs a real spin where the striking moves do not:
+        // its body genuinely is going past horizontal.
+        m.limb  = 0; m.contact = kAtNone;
+        m.hand   = vec2(0.075, 0.185);
+        m.elbow  = vec2(0.145, 0.020);
+        m.lift   = 0.090;
+        m.spin   = 1.10;
+        m.lean   = -0.85;
+    } else if (kind == kClothesline) {
+        // A running straight arm across the chest. The arm is held out rather
+        // than thrown, and the legs drive -- so unlike a punch the travel is
+        // most of it.
+        m.limb  = 1; m.contact = kAtHand;
+        m.hand   = vec2(0.400, 0.055);
+        m.elbow  = vec2(0.210, 0.045);
+        m.travel = 0.095;
+        m.lean   = 0.45;
+    } else if (kind == kTakedown) {
+        // Double-leg. Drop under the guard, drive through the hips, both arms low
+        // and wrapping.
+        m.limb  = 0; m.contact = kAtNone;
+        m.crouch = 0.260;
+        m.hand   = vec2(0.295, -0.115);
+        m.elbow  = vec2(0.165, -0.135);
+        m.travel = 0.130;
+        m.lean   = 1.05;
 
     // -- getting somewhere ---------------------------------------------------
 
@@ -958,6 +1020,29 @@ float attacker_for(float beat)
     return mod(beat, 2.0) < 1.0 ? -1.0 : 1.0;
 }
 
+// -- is this beat a throw ----------------------------------------------------
+//
+// DECIDED BEFORE THE MOVE IS, AND FROM THE BEAT ALONE rather than through
+// kind_for like everything else. That is not tidiness: a throw always ends with
+// the other one on the floor, so the knockdown machinery has to be able to look
+// backwards and ask "was that beat a throw?" -- and it has no bands from that
+// beat to ask kind_for with. Keeping it pure is what makes the fall coherent with
+// the throw that caused it instead of the two being independently random.
+//
+// One beat in nine or so. Rarer than a strike because a throw takes the other one
+// off its feet, and a fight where that happens every other exchange is a comedy.
+bool throw_on(float beat)
+{
+    return hash11(beat * 12.7 + 5.0) > 0.885;
+}
+
+int throw_kind_for(float beat)
+{
+    float pick = hash11(beat * 6.1 + 23.0);
+    return kThrowFirst + min(int(pick * float(kThrowLast - kThrowFirst + 1)),
+                             kThrowLast - kThrowFirst);
+}
+
 // -- what happened to the strike ---------------------------------------------
 //
 // THE FIX FOR BLOCKING A BLOW THAT WAS NEVER THROWN, and for blocking every
@@ -1020,6 +1105,11 @@ const float kDownBeats = 3.0;   // fall, lie there, get up -- then fight again
 // other beat is a comedy, and the recovery would swallow the fighting.
 bool knockdown_seed(float beat)
 {
+    // A THROW ALWAYS ENDS WITH THE OTHER ONE DOWN, by definition rather than by
+    // luck. This is the reason throw_on has to be a pure function of the beat.
+    if (throw_on(beat)) {
+        return true;
+    }
     return outcome_for(beat) == kLanded && hash11(beat * 5.7 + 3.0) > 0.72;
 }
 
@@ -1058,7 +1148,18 @@ bool knockdown_seed(float beat)
 // At most one of the three can be true, because of the clear run -- so the
 // assignments below cannot fight. They are still written nearest-last so that
 // "the most recent fall wins" survives anyone widening the window later.
-void falls(float beat, float phase, out float age_l, out float age_r)
+// `now_clear` and `next_clear` report whether a knockdown on this beat or the next
+// would survive the clear-run rule.
+//
+// THE CALLER NEEDS THEM BECAUSE A THROW HAS TO BE ABLE TO NOT HAPPEN. A throw puts
+// the other one down by definition, but the clear-run rule can still suppress that
+// fall if somebody went down in the beats before -- and a fighter who gets hip
+// thrown and simply stays on his feet is exactly the class of incoherence this
+// pass exists to remove. So the throw is only performed when its own knockdown
+// will survive, and the answer is free here: these are the same seeds.
+void falls(float beat, float phase, out float age_l, out float age_r,
+           out float thrown_l, out float thrown_r,
+           out float now_clear, out float next_clear)
 {
     bool s0 = knockdown_seed(beat);
     bool s1 = knockdown_seed(beat - 1.0);
@@ -1076,20 +1177,46 @@ void falls(float beat, float phase, out float age_l, out float age_r)
     float a1 = -a0;
     float a2 = a0;
 
-    age_l = -1.0;
-    age_r = -1.0;
-    // A fall belongs to whichever fighter was NOT attacking on that beat.
-    if (kd2) { if (a2 > 0.0) { age_l = 2.0 + phase; } else { age_r = 2.0 + phase; } }
-    if (kd1) { if (a1 > 0.0) { age_l = 1.0 + phase; } else { age_r = 1.0 + phase; } }
-    if (kd0) { if (a0 > 0.0) { age_l = phase; }       else { age_r = phase; } }
+    // Given that this beat seeds a knockdown, kd0's condition IS the clear run --
+    // and a knockdown on the next beat needs the three beats ending at this one.
+    now_clear  = (!s1 && !s2 && !s3) ? 1.0 : 0.0;
+    next_clear = (!s0 && !s1 && !s2) ? 1.0 : 0.0;
+
+    age_l = -1.0;      age_r = -1.0;
+    thrown_l = 0.0;    thrown_r = 0.0;
+
+    // A fall belongs to whichever fighter was NOT attacking on that beat. Whether
+    // it was THROWN comes back too, because a thrown body is already on the floor
+    // at the moment of impact and must not play the topple -- see fall_curve.
+    if (kd2) {
+        float w = throw_on(beat - 2.0) ? 1.0 : 0.0;
+        if (a2 > 0.0) { age_l = 2.0 + phase; thrown_l = w; }
+        else          { age_r = 2.0 + phase; thrown_r = w; }
+    }
+    if (kd1) {
+        float w = throw_on(beat - 1.0) ? 1.0 : 0.0;
+        if (a1 > 0.0) { age_l = 1.0 + phase; thrown_l = w; }
+        else          { age_r = 1.0 + phase; thrown_r = w; }
+    }
+    if (kd0) {
+        float w = throw_on(beat) ? 1.0 : 0.0;
+        if (a0 > 0.0) { age_l = phase; thrown_l = w; }
+        else          { age_r = phase; thrown_r = w; }
+    }
 }
 
 // 0 upright, 1 flat out. Down fast, up slowly -- which is both what happens and
 // what reads as weight.
-float fall_curve(float age)
+//
+// A THROWN FIGHTER IS ALREADY DOWN WHEN IT LANDS, and skips the ramp. The ordinary
+// topple from upright over a third of a beat is right for a body that has just
+// been hit and wrong for one that was over somebody's shoulder a frame earlier:
+// it would snap upright at the moment of impact and then fall over, which is the
+// opposite of a slam.
+float fall_curve(float age, bool thrown)
 {
     if (age < 0.0)  { return 0.0; }
-    if (age < 0.32) { return smoothstep(0.0, 0.32, age); }
+    if (!thrown && age < 0.32) { return smoothstep(0.0, 0.32, age); }
     if (age < 1.60) { return 1.0; }
     return 1.0 - smoothstep(1.60, 2.60, age);
 }
@@ -1188,6 +1315,90 @@ Pose rotate_pose(Pose s, float ang, vec2 pivot)
     return s;
 }
 
+Pose mirror_pose(Pose s)
+{
+    #define MIR(v) (v = vec2(-(v).x, (v).y))
+    MIR(s.hip);      MIR(s.shoulder);  MIR(s.head);
+    MIR(s.elbow_a);  MIR(s.hand_a);    MIR(s.elbow_b);  MIR(s.hand_b);
+    MIR(s.knee_f);   MIR(s.foot_f);    MIR(s.toe_f);
+    MIR(s.knee_b);   MIR(s.foot_b);    MIR(s.toe_b);
+    MIR(s.contact);
+    #undef MIR
+    return s;
+}
+
+Pose translate_pose(Pose s, vec2 d)
+{
+    s.hip += d;      s.shoulder += d;  s.head += d;
+    s.elbow_a += d;  s.hand_a += d;    s.elbow_b += d;  s.hand_b += d;
+    s.knee_f += d;   s.foot_f += d;    s.toe_f += d;
+    s.knee_b += d;   s.foot_b += d;    s.toe_b += d;
+    s.contact += d;
+    return s;
+}
+
+// The body being thrown, in the THROWER'S coordinate space.
+//
+// WHY THIS EXISTS AT ALL. Every other move in this crystal is one figure doing
+// something with the other figure reacting to it, and the two are posed
+// independently in their own mirrored spaces. A throw is not that: it is a single
+// shape made of two people, and the victim's joints are meaningless except
+// relative to the hands holding it. Building it in the thrower's space and
+// drawing it with the thrower's transform is what makes the two of them one
+// object -- and it is why the draw below has a paired branch at all.
+//
+// The construction is four steps and each is a fact about being thrown. A body
+// standing in front of the thrower, facing it. Limbs going slack and folding in,
+// because somebody off the ground has no stance. Pulled IN, because nobody throws
+// anybody at arm's length. And then swung about a point on the thrower -- which
+// point and how far is the whole difference between the four of them.
+Pose build_victim(int kind, float commit, float gap, float bob)
+{
+    Pose v = build_pose(kGuard, vec3(0.5, 0.5, 0.0), 0.0, 0.0, bob, 0.0, 0.0);
+    v = mirror_pose(v);
+    v = translate_pose(v, vec2(gap, 0.0));
+    // HARD, because a thrown body is a compact one. The first pass curled it to
+    // 0.75 and the legs stuck straight out, so the victim swung as a long bar and
+    // the far end left the top of the frame -- and a body with a stance in it does
+    // not read as a body somebody else is carrying.
+    v = curl_pose(v, 0.45 + 0.50 * commit);
+
+    // Over the hip and down the other side: the judo hip throw.
+    //
+    // THE PIVOT IS LOW AND THE PULL IS MOST OF THE GAP, and both are for the same
+    // reason. Swinging about the shoulder at arm's length gives a radius of half
+    // the gap, which puts the victim's far end above y = 1.19 in a frame that ends
+    // at about 1.12 -- it was clipped. It is also just wrong: nobody throws
+    // anybody from arm's length, and a hip throw has the other body ON the hip.
+    vec2  pivot = vec2(0.0, kHipY + 0.140);
+    float ang   = 2.40;
+    float pull  = gap * 0.74;
+
+    if (kind == kSuplex) {
+        // Further over, because a suplex takes it past vertical and behind.
+        pivot = vec2(-0.020, kShoulderY - 0.050);
+        ang   = 3.00;
+        pull  = gap * 0.72;
+    } else if (kind == kClothesline) {
+        // PIVOTS ABOUT THE VICTIM'S OWN CHEST, not about the thrower. That is the
+        // difference between being thrown and being clotheslined: the arm stops
+        // the top half and the legs keep going, so it rotates where it stands and
+        // travels backwards rather than being carried.
+        pivot = vec2(gap * 0.58, kShoulderY - 0.095);
+        ang   = 1.75;
+        pull  = gap * 0.16;
+    } else if (kind == kTakedown) {
+        // Low pivot, because a double-leg folds it over the hips rather than
+        // lifting it over the shoulder.
+        pivot = vec2(0.050, kHipY - 0.100);
+        ang   = 1.35;
+        pull  = gap * 0.52;
+    }
+
+    v = translate_pose(v, vec2(-pull * commit, 0.0));
+    return rotate_pose(v, ang * smoothstep(0.0, 1.0, commit), pivot);
+}
+
 // ---------------------------------------------------------------------------
 // One pair, fought inside its own little world
 //
@@ -1262,11 +1473,12 @@ Fight duel_layer(vec2 p, float beat, float phase, vec3 bandw, float seed,
     // dutifully blocking a punch it had not thrown. Everything about the
     // exchange now derives from the condition of the two bodies, which has to be
     // known before any of it.
-    float age_l;
-    float age_r;
-    falls(beat, phase, age_l, age_r);
-    float fall_l = fall_curve(age_l);
-    float fall_r = fall_curve(age_r);
+    float age_l;    float age_r;
+    float thrown_l; float thrown_r;
+    float now_clear; float next_clear;
+    falls(beat, phase, age_l, age_r, thrown_l, thrown_r, now_clear, next_clear);
+    float fall_l = fall_curve(age_l, thrown_l > 0.5);
+    float fall_r = fall_curve(age_r, thrown_r > 0.5);
 
     float striker = attacker_for(beat);
     float next    = attacker_for(beat + 1.0);
@@ -1285,8 +1497,14 @@ Fight duel_layer(vec2 p, float beat, float phase, vec3 bandw, float seed,
     // arrives while it is down, it arrives.
     if (target_down) { outcome = kLanded; }
 
-    int kind_now  = kind_for(beat, bass, treble);
-    int kind_next = kind_for(beat + 1.0, bass, treble);
+    // A THROW OVERRIDES THE MOVE THE SPECTRUM WOULD HAVE PICKED, because it is
+    // chosen from the beat alone -- see throw_on for why it has to be.
+    // Only if the fall it causes can actually happen -- see the note on falls.
+    bool throw_now  = throw_on(beat)       && now_clear  > 0.5;
+    bool throw_next = throw_on(beat + 1.0) && next_clear > 0.5;
+
+    int kind_now  = throw_now  ? throw_kind_for(beat)       : kind_for(beat, bass, treble);
+    int kind_next = throw_next ? throw_kind_for(beat + 1.0) : kind_for(beat + 1.0, bass, treble);
     vec3 shape_now  = shape_blended(beat, bass, mid, treble);
     vec3 shape_next = shape_blended(beat + 1.0, bass, mid, treble);
 
@@ -1294,17 +1512,24 @@ Fight duel_layer(vec2 p, float beat, float phase, vec3 bandw, float seed,
     // movement rather than strikes, so an exchange built on one is not an
     // exchange -- and a defender bracing against a cartwheel is the same mistake
     // as bracing against nothing.
-    bool throws_blow = kind_now < kMoveFirst;
+    bool throws_blow = kind_now < kNoBlowFirst;
     if (!throws_blow) { live = false; }
+
+    // AND A THROW IS NEVER BLOCKED OR EVADED. Not because it could not be, but
+    // because a stick figure blocking a hip throw and a stick figure being hip
+    // thrown are the same drawing -- and the fall on the following beats is
+    // already committed to by knockdown_seed, so an outcome that said otherwise
+    // would contradict it.
+    if (throw_now) { outcome = kLanded; }
 
     float bob = 0.010 * sin(u_bar * 2.0 * kPi) + 0.018 * bass;
 
     // The exchange one beat ahead, because the defender has to start answering it
     // while it is still on its way.
     int  outcome_next = outcome_for(beat + 1.0);
-    bool live_next    = kind_next < kMoveFirst && !next_down;
+    bool live_next    = kind_next < kNoBlowFirst && !next_down;
     bool next_target_down = (next < 0.0 ? fall_r : fall_l) > 0.02;
-    if (next_target_down) { outcome_next = kLanded; }
+    if (next_target_down || throw_next) { outcome_next = kLanded; }
 
     // -- WHAT EACH FIGHTER IS DOING, AND WHAT IT IS ANSWERING -----------------
     //
@@ -1481,11 +1706,41 @@ Fight duel_layer(vec2 p, float beat, float phase, vec3 bandw, float seed,
         pose_r = rotate_pose(curl_pose(pose_r, fall_r), fall_r * 1.34, vec2(-0.03, 0.13));
     }
 
-    // +1 on the left so it faces right; -1 on the right so it faces left. Getting
-    // this backwards draws both facing outward, which is what the first version
-    // did.
-    float d_l = draw_pose(vec2((p.x - root_l) * 1.0, p.y), pose_l);
-    float d_r = draw_pose(vec2((p.x - root_r) * -1.0, p.y), pose_r);
+    // -- a throw draws both bodies in ONE space -------------------------------
+    //
+    // For the duration of a throw the two of them are a single shape, so the
+    // victim is built in the thrower's coordinate space and drawn with the
+    // thrower's transform. Two independently-placed figures cannot express one
+    // being carried by the other: the victim's joints only mean anything relative
+    // to the hands holding it.
+    //
+    // ONLY DURING THE WIND-UP, which is where the throw actually happens. The
+    // wind-up of beat N+1 runs through the tail of beat N, so the lift and the
+    // swing are here; at the beat itself the victim hits the floor and the
+    // knockdown machinery has it from there -- already flat, because fall_curve
+    // skips its topple for a body that was thrown.
+    bool paired = throw_next && live_next && !next_target_down && windup > 0.04;
+    float gap   = root_r - root_l;
+
+    float d_l;
+    float d_r;
+    if (paired) {
+        Pose victim = build_victim(kind_next, windup, gap, bob);
+        if (next < 0.0) {
+            // The left is throwing, so both are drawn in the left's space.
+            d_l = draw_pose(vec2(p.x - root_l, p.y), pose_l);
+            d_r = draw_pose(vec2(p.x - root_l, p.y), victim);
+        } else {
+            d_r = draw_pose(vec2((p.x - root_r) * -1.0, p.y), pose_r);
+            d_l = draw_pose(vec2((p.x - root_r) * -1.0, p.y), victim);
+        }
+    } else {
+        // +1 on the left so it faces right; -1 on the right so it faces left.
+        // Getting this backwards draws both facing outward, which is what the
+        // first version did.
+        d_l = draw_pose(vec2((p.x - root_l) * 1.0, p.y), pose_l);
+        d_r = draw_pose(vec2((p.x - root_r) * -1.0, p.y), pose_r);
+    }
 
     vec2 contact_l = vec2(root_l + pose_l.contact.x, pose_l.contact.y);
     vec2 contact_r = vec2(root_r - pose_r.contact.x, pose_r.contact.y);
