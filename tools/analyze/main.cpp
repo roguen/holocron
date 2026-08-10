@@ -19,6 +19,7 @@
 #include <holocron/analysis.hpp>
 #include <holocron/audio_frame.hpp>
 #include <holocron/decoder.hpp>
+#include <holocron/frame_csv.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -142,25 +143,15 @@ void on_frame(const AudioFrame& f, void* user)
     }
 
     if (ctx.csv.is_open()) {
-        // Fixed precision on purpose. Floating point is not bit-identical
-        // across compilers, so a golden file compared byte-for-byte would fail
-        // between MSVC and gcc for reasons that have nothing to do with the
-        // analysis being wrong. Six decimals is far tighter than any visual
-        // difference and coarse enough to survive the last-bit disagreements.
-        char line[512];
-        std::snprintf(
-            line, sizeof(line),
-            "%llu,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%u,%.6f,%.2f,%.6f,%u,%.6f\n",
-            static_cast<unsigned long long>(f.frame_index),
-            f.time_seconds,
-            double(f.rms), double(f.peak),
-            double(f.bass_norm), double(f.mid_norm), double(f.treble_norm),
-            double(f.spectral_centroid), double(f.spectral_flux),
-            double(f.spectral_rolloff),
-            unsigned(f.onset_count), double(f.onset_strength),
-            double(f.bpm), double(f.bpm_confidence),
-            unsigned(f.beat_count), double(f.loudness_short));
-        ctx.csv << line;
+        // The format lives in holocron/frame_csv.hpp, not here, so that the
+        // golden-file test compares against the harness's real output rather
+        // than against a second implementation of it. It used to be inline, and
+        // a test written against an inline copy passes forever while this drifts.
+        char             line[kFrameCsvRowMax];
+        const std::size_t n = format_frame_csv(f, line, sizeof(line));
+        if (n > 0) {
+            ctx.csv.write(line, std::streamsize(n));
+        }
     }
 }
 
@@ -211,9 +202,7 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "error: cannot write %s\n", opt.csv);
             return 1;
         }
-        ctx.csv << "frame_index,time_seconds,rms,peak,bass_norm,mid_norm,treble_norm,"
-                   "spectral_centroid,spectral_flux,spectral_rolloff,onset_count,"
-                   "onset_strength,bpm,bpm_confidence,beat_count,loudness_short\n";
+        ctx.csv << frame_csv_header();
     }
 
     AnalysisStage stage;
