@@ -31,7 +31,20 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: M3, M4 and M5 are DONE. Only M2's visual language is open.
+## Status: M3, M4 and M5 are DONE. M1 and M2 are BOTH still open.
+
+**`v0.4.1`.** And the sentence above used to say "only M2's visual language is
+open", which was wrong — checked against the Roadmap on 2026-08-09:
+
+| | |
+|---|---|
+| **M1** | **OPEN, 6 of 8.** Never picked up: a golden-file diff for the headless analysis, and zero allocation in the audio callback *demonstrated* rather than assumed. Neither blocks anything, which is exactly why both have sat there. |
+| **M2** | **OPEN, 5 of 8.** Per-uniform envelope overrides (`attack`, `decay`, `mode = "accumulate"`) are **not built**. The rest is the visual language, which is the owner's call. |
+| **M5** | **DONE, with recorded debt** — the on-disk art cache and metadata-derived filenames. The naming half landed at `v0.4.1`; nothing is wired to it yet. |
+
+Three later milestones being finished makes it easy to assume the first one must
+be. It is not. See the eight-row table at the top of the wiki
+[Roadmap](https://github.com/roguen/holocron/wiki/Roadmap).
 
 **Three milestones are finished.** M5 — Holocron is a Plex cast target and plays
 what it is sent, confirmed on the rack from the phone. M3 — the compositor, at
@@ -111,10 +124,11 @@ tested:
 | Render | `Window` (GL 4.5 core, KHR_debug) and `DebugFacet`, drawing every field as bars and markers — **`--debug-facet`**, which it needs because the config's vault defaults to `crystals` and there was otherwise no command line that reached it (issue 144). |
 | Compositor | **M3's first step.** The picture is drawn into a `RenderTarget` — an FBO with one `GL_RGBA16F` colour texture — and a `Compositor` pass draws the stack onto the window. Float, not 8-bit, because crystals exceed 1.0 before their vignette and an 8-bit layer would clip differently depending on what else was on screen. **Measured at 0.06 ms per frame at 4K** on the RX 6800, against a 16.7 ms budget. `--no-compositor` draws straight to the window, which is also the fallback if a float framebuffer cannot be allocated. |
 | Crystals | **M2's plumbing is done and three crystals ship.** A crystal is `<stem>.frag` + `<stem>.toml`; the manifest binds uniforms to `AudioFrame` fields BY NAME, validated at load. `pulse` is the reference instrument, `drift` is weather, `duel` is two stick figures fighting on the beat. A test loads the vault so it cannot rot. |
+| `duel` | **Reworked on the owner's feedback** ([#127](https://github.com/roguen/holocron/issues/127)). No necks — the head sits ON the shoulders, which broke every hand position near the face and needed `clear_head` to fix as a class rather than one at a time. Feet, thicker limbs, and rear knees that bend the right way. **Thirty moves as a table of numbers** rather than geometry per move, across boxing, karate, Muay Thai, taekwondo, capoeira and wrestling — including **four throws that pose BOTH fighters**, the only moves that do. **Reactive**: every beat has a landed/blocked/evaded outcome, so a block only appears against a strike that was blocked and never against a fighter lying on the floor. The fight **ranges across the stage** and the gap between them breathes. **A spin is a tilt, not a pirouette** — a picture-plane rotation in a side-on silhouette reads as falling over, so big rotations are only for bodies that really are horizontal. **4K cost 6.65 ms against 3.90 before**, three-point slope. |
 | Beat grid | **`beat_phase` lands ON the beat** — measured at 0.0 ms median against a real track, quartiles also zero. It was a per-track error of up to 100 ms until #94: the phase was nudged by every onset, so ordinary off-beat content dragged it. Now estimated by correlating seconds of onset history against a pulse train, with the analysis's own ~28 ms flux lag compensated. |
 | Control surface | **`GET /control` on the Companion port** — a phone-browser page that switches crystals and toggles overlays, plus **`/control/tuning`** for the A/V trim and the beat instrument. Plain form POSTs with a 303 back, so it works with no JavaScript and a reload always shows the truth. Starts even with `--no-discover`: not announcing is not the same as not listening. |
 | Text | `render_text` — the **platform** rasterizer behind `_WIN32`, no font dependency, same trade as WASAPI and WinHTTP. Returns white with the coverage in alpha so the caller tints it. `OverlayFacet` composites it over whatever drew. Needs a platform layer at M8, like the audio backend. |
-| Lyrics | `parse_lyrics` reads LRC; `choose_lyric_stream` picks the right `streamType=4` off the track's metadata. **Two tracks in five ADVERTISE timed lyrics** — 16 synced, 14 text-only, 10 with none, from a 40-track sample of 50,414. **Advertised is not the same as fetchable**: the body 404s often, so that is the ceiling and not the rate. One line at a time, centred, rasterized only when the line changes. Unsynced lyrics draw **nothing**: a static wall of words over a moving picture is not what was asked for. |
+| Lyrics | `parse_lyrics` reads LRC; `choose_lyric_stream` picks the right `streamType=4` off the track's metadata. **Two tracks in five ADVERTISE timed lyrics** — 16 synced, 14 text-only, 10 with none, from a 40-track sample of 50,414. **Advertised is not the same as fetchable**: the body 404s often, so that is the ceiling and not the rate — and a refused body now gets **one more request, 20 s in** ([#153](https://github.com/roguen/holocron/issues/153)). Never a third: the best guess at the 404 stretches is a rate limit, and a fix for a rate limit must not be more traffic. One line at a time, centred, rasterized only when the line changes. Unsynced lyrics draw **nothing**: a static wall of words over a moving picture is not what was asked for. |
 | Hot reload | `CrystalWatch` — saving the `.frag` or `.toml` rebuilds it in place, on by default with `--crystal`. A shader that fails to compile is reported and the running one keeps drawing; `u_time` carries across. |
 | Archives | **A saved facet stack**, which is what the vocabulary has meant since M1. `<stem>.toml` with `[[layer]]` entries, bottom first, each naming a crystal, a blend and an opacity that may **bind to an `AudioFrame` field** — so a layer can breathe with the bass without either shader knowing. Seven blend modes; screen, multiply, overlay and difference need to read what is under them, so they assemble the stack in a canvas, and **nothing allocates that canvas until an archive names one of the four**. Capped at 4 layers because two of `duel` at 4K is already 6.6 ms of a 16.7 ms budget. `crystals/storm` is the first one. |
 | Final pass | `FinalPass` — grain, vignette and a projector safe-area mask, all of which belong to the **display** rather than to any crystal. **Grain is on by default because it is a fix, not a look**: the layers are float and the window is 8-bit, so a dark gradient bands. Measured — the same dark patch of `drift` goes from **208 to 288 distinct colours**, which is quantisation steps being dithered. Costs nothing when everything is zero: the compositor is then told it needs no canvas. Bloom is [#160](https://github.com/roguen/holocron/issues/160) and is what would make the float layers finally pay off. |
@@ -433,7 +447,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.4.0`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.4.1`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 

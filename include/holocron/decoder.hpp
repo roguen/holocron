@@ -85,8 +85,13 @@ struct SourceInfo {
     // error. A caller should fall back rather than report a problem.
     //
     // ALSO FILLS THE TWO FIELDS THE PLEX PATH CANNOT. `genre` and `year` are not
-    // on a Plex Track element and would cost a second request per track, so a cast
-    // leaves them empty -- a locally-played file gets them for free.
+    // on a Plex Track element, so a cast arrives without them -- and this is where
+    // they come from instead, for a cast just as much as for a local file, because
+    // start() probes the source either way and the tags come with the probe.
+    //
+    // NOT "a second request per track", which is what this said and what the
+    // player believed. There is no second request; the probe has already happened
+    // by the time anybody could ask.
     //
     // UTF-8, AND THAT IS NOT FREE. Tag bytes are arbitrary: ID3v2.3 defaults to
     // Latin-1 and plenty of rippers write whatever the system codepage was.
