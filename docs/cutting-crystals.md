@@ -289,6 +289,85 @@ identical exit codes.
 `--no-audio` decodes and draws without opening a device, which is useful when you
 do not want to hear the same eight bars again.
 
+### Sample with UNEVEN gaps
+
+Shooting every N frames is the obvious way to see a stretch of a crystal, and it
+lies to you the moment N shares a factor with the beat. A beat at 128 bpm on a
+48 Hz loop is about 22 frames; shooting every 11 lands every single frame on one
+of two phases, and a crystal that spends 12 percent of each beat idle appears to
+be idle two thirds of the time.
+
+That happened in this project and produced a page of screenshots that all agreed
+with each other and with nothing real. Use gaps that grow — 4, 5, 6, 7, 8 — or
+prime-ish steps.
+
+### If the crystal picks between DISCRETE states, draw them all at once
+
+A crystal that chooses from a set — a move, a symbol, a palette branch — cannot be
+judged by watching it, because the choice comes from a hash of the beat and there
+is no way to ask for a particular one. Half of them will not appear for a minute.
+
+Write a **temporary** contact sheet into `main()` instead: tile the frame, map the
+cell index to the state, and draw every state at once. Delete it before
+committing.
+
+```glsl
+const float kCols = 7.0, kRows = 4.0;
+float cx = v_uv.x * kCols, cy = v_uv.y * kRows;
+int idx = int(floor(cx)) + (int(kRows) - 1 - int(floor(cy))) * int(kCols);
+vec2 cu = vec2(fract(cx), fract(cy));
+vec2 lp = vec2((cu.x - 0.5) / 0.92, (cu.y - 0.06) / 0.92);
+```
+
+Rewriting `duel`'s moves this way found three that were the same drawing as each
+other, one that pointed the wrong way, and two that fell over — none of which
+sampled frames had shown.
+
+**Mark up the invariants you cannot see.** A marker on the point a shape claims to
+act at catches it being on the wrong part of the shape. Draw it as a *ring* that
+replaces what is under it: an additive dot on a white figure is white.
+
+### Measuring what a crystal costs
+
+Vsync hides everything until you exceed the budget, and it is config-only. Point
+the player at a throwaway config rather than editing the real one, which holds a
+Plex token:
+
+```
+printf '[render]\nvsync = false\n' > bench.toml
+holocron.exe track.flac --config bench.toml --no-audio --crystal mine \
+    --width 3840 --height 2160 --frames 2000
+```
+
+Take the **slope** between two frame counts so process startup cancels out, and
+take **three** points rather than two — startup varies, and a two-point slope with
+one bad reading is indistinguishable from a real measurement. Three points that
+disagree tell you to run it again.
+
+---
+
+## Two things about shaders that cost real time here
+
+**A rotation in the picture plane is not a turn.** In a side-on view, rotating a
+figure does not read as it turning to face elsewhere — it reads as it *falling
+over*. `duel`'s spinning kicks were given most of a radian on the reasoning that a
+spinning move should spin, and both of them read as collapsing. A turn about the
+vertical axis is not expressible in a flat silhouette at all; what sells one is
+the limb arriving on an arc plus a fraction of a radian of body torque.
+
+**Recomputation is frequently cheaper than remembering.** Values derived only from
+`u_time` and the audio are identical for every pixel, and a fragment shader has
+nowhere to put a value computed once per draw — so the natural move is to fill a
+small array once per invocation and index it.
+
+Measured, that made `duel` **slower: 8.36 ms per frame at 4K became 11.71.** An
+array indexed by a non-constant cannot stay in registers, goes to scratch memory,
+and costs more to read back than the arithmetic it replaced. Unrolling the same
+values into named scalars the compiler can keep in registers gave 6.18 ms.
+
+Do not take either of these on trust — the point is that both were surprising, and
+both were settled by rendering it and by timing it.
+
 ---
 
 ## What a crystal cannot do yet
