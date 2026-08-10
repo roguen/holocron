@@ -214,6 +214,13 @@ bool Window::pump()
                 impl_->keys[static_cast<std::size_t>(Key::kUp)] = true;
             } else if (e.key.key == SDLK_DOWN) {
                 impl_->keys[static_cast<std::size_t>(Key::kDown)] = true;
+            } else if (e.key.key == SDLK_F1) {
+                // Filtered like left and right rather than repeated like up and
+                // down: holding it would toggle the panel at the OS repeat rate,
+                // which reads as a flicker rather than as a control.
+                if (!e.key.repeat) {
+                    impl_->keys[static_cast<std::size_t>(Key::kAbout)] = true;
+                }
             }
             break;
         default:

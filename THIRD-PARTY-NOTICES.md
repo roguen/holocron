@@ -60,10 +60,18 @@ So they are recorded here, verbatim from each package's own licence text in
 [`licenses/`](licenses/), and the panel displays this file. One source, no second
 copy to drift.
 
+**Angle brackets are spelled out rather than escaped** in the table below. The
+about panel renders this file as plain text, so a Markdown escape like `&lt;`
+would reach the projector as those five characters rather than as `<`. SDL's
+notice therefore carries its maintainer's address in parentheses. It is the one
+place where what this file has to look like on a projector overrides what it
+would look like on GitHub, and it is recorded here so the next person to tidy it
+does not put the escape back.
+
 | Library | Copyright notice, as the package states it |
 |---|---|
 | FFmpeg | Copyright (c) the FFmpeg developers. Held collectively, with per-file notices in the source — e.g. `libavutil/avutil.h`: "copyright (c) 2006 Michael Niedermayer". The package ships no single project-wide line, so the collective form is used rather than a year range this repository cannot verify from the artifact it links against. |
-| SDL3 | Copyright (C) 1997-2026 Sam Lantinga &lt;slouken@libsdl.org&gt; |
+| SDL3 | Copyright (C) 1997-2026 Sam Lantinga (slouken@libsdl.org) |
 | libebur128 | Copyright (c) 2011 Jan Kokemüller |
 | glad | Copyright (c) 2013-2021 David Herberth |
 | pocketfft | Copyright (C) 2010-2018 Max-Planck-Society |
