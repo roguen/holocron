@@ -14,7 +14,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(holocron
-    VERSION 0.3.0
+    VERSION 0.4.0
     DESCRIPTION "GPU music visualization engine that is also the music player"
     LANGUAGES CXX
 )
@@ -308,6 +308,35 @@ if(WIN32)
 endif()
 
 # ---------------------------------------------------------------------------
+# libprojectM binding
+#
+# NO find_package, NO vcpkg dependency, and that is the point (D-039, issue 11).
+# libprojectM is opened with LoadLibrary/dlopen when the player starts and every
+# entry point is a function pointer resolved by name, so this target compiles and
+# links on a machine that has never heard of projectM -- which is every CI runner
+# and every fresh checkout.
+#
+# Its own target rather than a file in holocron_render because there is no GL in
+# it. Opening a shared library and resolving symbols is testable with no window,
+# no context and no GPU, which is the same split that keeps the crystal loader
+# away from the crystal renderer.
+#
+# CMAKE_DL_LIBS is -ldl on the platforms that need it and empty on Windows, where
+# LoadLibrary is in kernel32 and needs no link line entry.
+# ---------------------------------------------------------------------------
+
+add_library(holocron_projectm STATIC
+    src/render/projectm_api.cpp
+)
+add_library(holocron::projectm ALIAS holocron_projectm)
+
+target_link_libraries(holocron_projectm
+    PUBLIC  holocron::contract
+    PRIVATE holocron::warnings
+            ${CMAKE_DL_LIBS}
+)
+
+# ---------------------------------------------------------------------------
 # Render
 #
 # The window, the GL 4.5 core context, and the debug facet. GL is reached
@@ -330,11 +359,17 @@ add_library(holocron_render STATIC
     src/render/render_target.cpp
     src/render/compositor.cpp
     src/render/final_pass.cpp
+    src/render/projectm_facet.cpp
 )
 add_library(holocron::render ALIAS holocron_render)
 
 target_link_libraries(holocron_render
     PUBLIC  holocron::contract
+            # projectm_facet.hpp is in this library's public surface and takes a
+            # ProjectMApi by reference, so anything using the renderer needs the
+            # binding's header. It brings no third-party dependency with it --
+            # that is the whole point of the runtime load. See D-039.
+            holocron::projectm
             # crystal_facet.cpp needs Crystal and the binding table. PUBLIC
             # because the facet's own header takes a Crystal by reference, so
             # anything using the renderer needs the type too.
