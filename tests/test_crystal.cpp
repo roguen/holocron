@@ -196,6 +196,30 @@ TEST_CASE("a uniform bound to a non-string is rejected", "[crystal]")
     CHECK(load_crystal(s.stem("num"), c, detail) == CrystalError::kManifestIncomplete);
 }
 
+TEST_CASE("a uniform bound twice is caught by the parser", "[crystal]")
+{
+    // There used to be a kDuplicateUniform error and a std::set guarding it, and
+    // both were unreachable: a toml::table IS a map, so toml++ rejects the
+    // repeated key while parsing. This pins the behaviour that actually happens,
+    // which nothing tested before -- the removed check had only a to_string case
+    // asserting its description was non-empty.
+    Scratch s;
+    s.write("dup.frag", kMinimalFrag);
+    s.write("dup.toml",
+            "name = \"dup\"\n"
+            "[uniforms]\n"
+            "u_bass = \"bass_norm\"\n"
+            "u_bass = \"treble_norm\"\n");
+
+    Crystal     c;
+    std::string detail;
+    CHECK(load_crystal(s.stem("dup"), c, detail) == CrystalError::kManifestUnparseable);
+    INFO(detail);
+    // The parser names the key and the line, which is more than the removed
+    // check managed.
+    CHECK(detail.find("u_bass") != std::string::npos);
+}
+
 TEST_CASE("an empty shader is rejected", "[crystal]")
 {
     // An empty .frag would fail to compile later with a GL error that says
@@ -223,7 +247,7 @@ TEST_CASE("every CrystalError has a distinct description", "[crystal]")
         CrystalError::kManifestUnparseable,
         CrystalError::kManifestIncomplete,
         CrystalError::kUnknownField,
-        CrystalError::kDuplicateUniform,
+        CrystalError::kBadEnvelope,
     };
 
     std::set<std::string> seen;

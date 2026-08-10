@@ -9,7 +9,6 @@
 
 #include <cmath>
 #include <fstream>
-#include <set>
 #include <sstream>
 
 namespace holocron {
@@ -23,7 +22,6 @@ const char* to_string(CrystalError e)
     case CrystalError::kManifestUnparseable: return "manifest is not valid TOML";
     case CrystalError::kManifestIncomplete: return "manifest is missing a required key";
     case CrystalError::kUnknownField:       return "uniform bound to an unknown contract field";
-    case CrystalError::kDuplicateUniform:   return "the same uniform is bound twice";
     case CrystalError::kBadEnvelope:        return "envelope override is not valid";
     }
     return "unknown";
@@ -333,15 +331,25 @@ CrystalError load_crystal(const std::string& stem_path, Crystal& out, std::strin
     // thing to test the pipeline with.
     const auto* uniforms = tbl["uniforms"].as_table();
     if (uniforms != nullptr) {
-        std::set<std::string> seen;
-
+        // NO DUPLICATE CHECK HERE, AND THAT IS NOT AN OVERSIGHT.
+        //
+        // There used to be one -- a std::set of names and a kDuplicateUniform
+        // error -- and it was unreachable. A toml::table IS a map, and toml++
+        // rejects a repeated key while parsing, long before this loop runs.
+        // Verified rather than reasoned about: a manifest binding `u_bass` twice
+        // fails with
+        //
+        //     manifest is not valid TOML
+        //     dup.toml: Error while parsing key-value pair: cannot redefine
+        //     existing string 'u_bass' (line 4)
+        //
+        // which names the key and the line, and is better than the message the
+        // removed check produced. The enum value went with it: an error code that
+        // can never be returned is a lie in the API, and it had accumulated a
+        // to_string case and a slot in a test that only ever asked whether its
+        // description was non-empty.
         for (const auto& [key, value] : *uniforms) {
             const std::string uniform_name(key.str());
-
-            if (!seen.insert(uniform_name).second) {
-                out_detail = manifest_path + ": uniform `" + uniform_name + "` is bound twice";
-                return CrystalError::kDuplicateUniform;
-            }
 
             // THREE-WAY, AND DELIBERATELY NOT `!is_string() && !is_table()`.
             // Anything that is neither still lands in the final branch with the

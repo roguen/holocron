@@ -152,8 +152,23 @@ std::string control_page(const CompanionServer::ControlState& state)
     if (state.crystals.empty()) {
         out += "<div class=\"np\">No vault loaded.</div>";
     } else {
+        // NOTHING IS MARKED CURRENT WHILE THE BEAT INSTRUMENT IS UP, and the
+        // field's own comment in the header has said so since it was added:
+        // "the page has to say so or it claims a crystal is running that is
+        // not". It was only ever read by the tuning page, so the main page went
+        // on highlighting whichever vault entry was current before `--calibrate`
+        // took the screen.
+        //
+        // That is the failure mode D-034 is most careful about -- a control
+        // surface that lies about the current state is worse than none -- and it
+        // was invisible because the two pages disagreed rather than the page
+        // disagreeing with the screen.
+        if (state.sync_showing) {
+            out += "<div class=\"sub\">The beat instrument is on screen. Pick one to go "
+                   "back to it.</div>";
+        }
         for (std::size_t i = 0; i < state.crystals.size(); ++i) {
-            const bool on = i == state.current;
+            const bool on = !state.sync_showing && i == state.current;
             out += "<form method=\"post\" action=\"/control/crystal\">";
             out += "<input type=\"hidden\" name=\"index\" value=\"" + std::to_string(i) + "\">";
             out += "<button class=\"";
