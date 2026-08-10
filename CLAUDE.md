@@ -31,37 +31,39 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: M1, M3, M4 and M5 are DONE. M2 awaits a sign-off; M6 has started.
+## Status: M1, M2, M3, M4 and M5 are DONE. M6 is 3 of 4.
 
-**`v0.5.2`.** M1 closed 2026-08-10, ten sessions after its last two criteria were
+**`v0.6.0`.** M1 closed 2026-08-10, ten sessions after its last two criteria were
 first written down as open, and M2's last unbuilt criterion closed the same day:
 
 | | |
 |---|---|
 | **M1** | **DONE, 8 of 8, 2026-08-10.** The two that had never been picked up in ten sessions both landed: `tests/fixtures/analysis-golden.csv` diffs 750 frames of a generated fixture against the harness's own CSV writer, and `tests/test_audio_callback.cpp` replaces the global `operator new` to count what the callback allocates — on a real device thread as well as directly. |
-| **M2** | **ALL 8 CRITERIA MET, deliberately still open.** Per-uniform envelope overrides landed 2026-08-10 — the last unbuilt piece. What remains is the **visual language**, which is the owner's call and not a task anyone else can close, so the milestone is not ticked and the release was a patch rather than `v0.6.0`. |
-| **M6** | **STARTED, 2 of 4.** The about panel — the **colophon** — is built, and building it found that `THIRD-PARTY-NOTICES.md` carried **no copyright notice for anything**: LGPL-2.1 §6 names "the copyright notice for the Library" *and* a reference to the licence, and the file had only the second. Left: legibility on the projector (the owner's judgement), and criterion 1's "in-app" wording, which predates D-029 and D-034 and now contradicts criterion 3 — three readings are in the Roadmap and the choice is his. |
+| **M2** | **DONE, 8 of 8, two amended, 2026-08-10.** Per-uniform envelope overrides landed — the last unbuilt piece — and **the owner authorised the closure the same day**. The visual language was his judgement and nobody else's, which is why the milestone stayed open for a few hours after the code was finished. `v0.6.0`. |
+| **M6** | **3 of 4.** The about panel — the **colophon** — is built, and building it found that `THIRD-PARTY-NOTICES.md` carried **no copyright notice for anything**: LGPL-2.1 §6 names "the copyright notice for the Library" *and* a reference to the licence, and the file had only the second. Criterion 1 **amended 2026-08-10 (D-045): the phone IS the control surface**, which is the design rather than a shortfall. **One left, and it is not a task** — legibility on the projector. |
 | **M5** | **DONE — all six criteria, one amended.** The last debt closed 2026-08-10 by measuring rather than building: the NAS answers a repeat sleeve in **1 ms**, so the art cache stays in memory (D-044). `artwork_cache.hpp` ships unused on purpose. |
 
 See the eight-row table at the top of the wiki
 [Roadmap](https://github.com/roguen/holocron/wiki/Roadmap).
 
-**Four milestones are finished.** M1 — the spine, closed 2026-08-10 after its
-last two criteria had sat untouched for ten sessions. M5 — Holocron is a Plex
-cast target and plays what it is sent, confirmed on the rack from the phone. M3
-— the compositor, at `v0.3.0`. M4 — projectM, at `v0.4.0`, all seven exit
-criteria met.
+**Five milestones are finished.** M1 — the spine, closed 2026-08-10 after its last
+two criteria had sat untouched for ten sessions. M2 — crystals, closed the same
+day by the owner once the last criterion landed. M5 — Holocron is a Plex cast
+target and plays what it is sent, confirmed on the rack from the phone. M3 — the
+compositor, at `v0.3.0`. M4 — projectM, at `v0.4.0`, all seven exit criteria met.
 
-**M2 is the odd one out.** Every one of its eight exit criteria is now met — the
-last, per-uniform envelope overrides, landed 2026-08-10. What remains is the
-**visual language**, which is the owner's judgement and not a task anyone else
-can close, so the milestone stays unticked and the work shipped as a patch. Three
-crystals and one archive ship. He has feedback outstanding on `duel` and on the
-lyric display.
+**M2 closed on the owner's authorisation, hours after its last criterion landed.**
+The code was finished when per-uniform envelope overrides shipped; the milestone
+was not, because what remained was the **visual language** and that was his
+judgement rather than a task. Those are two different events with two different
+people responsible, and collapsing them would have meant announcing M2 done on
+his behalf. Three crystals and one archive ship. **He still has feedback
+outstanding on `duel` (#127) and on the lyric display, and closing the milestone
+did not close those** — the sign-off was on the body of work, not on any frame.
 
-**M6 has started and is 2 of 4**, taken up because M2 could go no further without
-him. The about panel is built; what is left is one criterion only the projector
-can settle and one whose wording predates the pivot that made this a cast target.
+**M6 is 3 of 4.** The about panel is built; criterion 1 was **amended** rather
+than built (D-045: the phone IS the control surface). What is left is one
+criterion only the projector can settle.
 
 **NOTHING FROM `v0.3.0` OR `v0.4.0` HAS BEEN SEEN ON THE PROJECTOR.** The
 compositor, archives, bloom, the lyric display and now the whole of projectM
@@ -463,7 +465,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.5.2`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.6.0`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
@@ -473,10 +475,15 @@ the `duel` crystal, the compositor, the crossfade, the tuning page and lyrics al
 landed as patches while M3 was still open. That is the rule working as written,
 not a mistake.
 
-**`v0.5.0` is M1, the FOURTH completed milestone** — after M5 at `v0.2.0`, M3 at
-`v0.3.0` and M4 at `v0.4.0`. The minor number counts how many are finished, not
-which one, and M1 being the first milestone and the fourth to finish is the
-clearest illustration of that this project will produce.
+**`v0.6.0` is M2, the FIFTH completed milestone** — after M5 at `v0.2.0`, M3 at
+`v0.3.0`, M4 at `v0.4.0` and M1 at `v0.5.0`. The minor number counts how many are
+finished, not which one; M1 being the first milestone and the fourth to finish is
+the clearest illustration of that this project will produce.
+
+**M2's minor was held back by one release on purpose.** Its last criterion landed
+at `v0.5.1`, which shipped as a PATCH because the milestone was not finished until
+the owner said so — the visual language was his judgement. Publishing `v0.6.0`
+then would have announced M2 done on his behalf. He authorised it hours later.
 
 **The minor number tracks how many milestones are DONE, not which one.** `v0.2.0`
 is the first completed milestone and that milestone is **M5**, because D-029 made
