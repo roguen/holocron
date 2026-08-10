@@ -35,6 +35,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace holocron {
 
@@ -264,6 +265,21 @@ struct Gatekeeper {
     // Never print this. The player reports whether a token is present, never
     // what it is.
     std::string plex_token;
+
+    // -- [herald] -----------------------------------------------------------
+    //
+    // M7. Errands to run when playback starts and stops -- URIs, so the whole
+    // extensibility mechanism is a string and a webhook replaces eISCP by editing
+    // a value rather than the schema. See holocron/herald.hpp.
+    //
+    // EMPTY LISTS ARE THE OFF SWITCH and there is no `enabled` key, the same
+    // argument D-044 makes for `[paths] cache`: a feature whose natural "off" is
+    // an empty value does not need a second key that can disagree with it.
+    std::vector<std::string> herald_on_start;
+    std::vector<std::string> herald_on_stop;
+
+    int herald_connect_timeout_ms = 1500;
+    int herald_cooldown_seconds   = 60;
 
     // So a test can say "this file is exactly the defaults", which is what
     // gatekeeper.example.toml claims about itself in its own header.

@@ -437,3 +437,84 @@ server = "http://192.0.2.1:32400"
 # Holocron refuses to start if it finds this placeholder value in a real config,
 # rather than failing later with a confusing authentication error.
 token = ""
+
+
+# ---------------------------------------------------------------------------
+# [herald] -- errands for the room, when playback starts and stops
+#
+# WHY THIS EXISTS. Bit-perfect LPCM does not carry the flags a compressed
+# bitstream does, so a receiver fed PCM does not auto-select a listening mode --
+# it stays in whatever it was last left in. The rack wants Direct, and nobody
+# wants to walk to the amplifier.
+#
+# AN ERRAND IS A URI, and that is the whole extensibility mechanism. Two schemes
+# run today:
+#
+#   eiscp://<address>[:port]/<COMMAND>   an Onkyo/Integra command over TCP 60128
+#   wait://<milliseconds>               pause before the next errand
+#
+# ADDRESSES ARE DOTTED QUADS, NOT NAMES. Resolving a name has no portable
+# timeout, and these run where a stall would be felt. Give the receiver a static
+# lease on the router.
+#
+# LIVE, and both lists default to empty -- which is the off switch. There is no
+# `enabled` key, because a second key that can disagree with the list is a way to
+# be confused rather than a feature. `--no-herald` overrides the file for one run.
+# ---------------------------------------------------------------------------
+[herald]
+
+# What to send when playback starts.
+#
+# THE WAIT IS NOT A NICETY. A receiver waking from standby re-initialises its
+# network stack, so anything sent too soon after the power-on is simply dropped
+# on the floor -- and each errand opens its own connection precisely because the
+# one that carried PWR01 does not survive the wake. Four seconds is a starting
+# point; a cold unit can want longer, and the right number belongs to the rack.
+#
+#   on_start = [
+#       "eiscp://192.0.2.50/PWR01",   # power on
+#       "wait://4000",                # let it wake up
+#       "eiscp://192.0.2.50/SLI05",   # select the PC input -- see the table below
+#       "eiscp://192.0.2.50/LMD01",   # listening mode DIRECT
+#   ]
+#
+# LMD01 IS DIRECT. LMD11 IS PURE AUDIO, which on several Onkyo models shuts the
+# video circuitry down along with the front display -- with a projector on the
+# HDMI output that is a black screen and a confused evening. Do not "upgrade" it.
+#
+# Input codes (SLI): 00 VCR/DVR, 01 CBL/SAT, 02 GAME, 03 AUX, 05 PC, 10 BD/DVD,
+# 11 STRM BOX, 12 TV, 22 PHONO, 23 TV/CD, 24 FM, 2B NET, 80 SOURCE.
+on_start = []
+
+# What to send when playback stops.
+#
+# EMPTY IS A REAL ANSWER, not an unfinished one. Powering the receiver off
+# underneath somebody who paused to answer the door is helpfulness nobody thanks
+# you for, and leaving it on costs a few watts. `["eiscp://192.0.2.50/PWR00"]` is
+# one line away for anyone who disagrees.
+#
+# A stop only fires after playback has been over for a couple of seconds, so a
+# track change -- which stops and restarts the session -- never triggers one.
+on_stop = []
+
+# How long to wait for the receiver to answer, in milliseconds.
+#
+# A receiver that is off does not REFUSE a connection, it ignores it, and the
+# operating system's own patience is around 21 seconds. This is the number that
+# bounds how long a shutdown can take.
+connect_timeout_ms = 1500
+
+# After a failed errand, do not try again for this long, in seconds.
+#
+# Without it, an absent receiver costs a full timeout at every start and stop for
+# the life of the process. With it, it costs one a minute and one log line.
+cooldown_seconds = 60
+
+# REPLACING eISCP ENTIRELY is an edit to a value, not a change of shape -- which
+# is the point of errands being URIs. A Home Assistant webhook would read:
+#
+#   on_start = ["http://192.0.2.60:8123/api/webhook/holocron_start"]
+#
+# `http` is NOT implemented yet and is refused by name, with a message saying the
+# shape is right and the encoder is what is missing. The seam is what M7 asked
+# for; the second backend is a day's work when somebody wants it.

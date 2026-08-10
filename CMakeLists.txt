@@ -487,6 +487,7 @@ add_library(holocron_plex STATIC
     # on both CI platforms with no receiver present -- which matters, because
     # there is not one.
     src/plex/eiscp.cpp
+    src/plex/herald.cpp
     src/plex/companion_server.cpp
     src/plex/plex_link.cpp
     src/plex/https_client.cpp

@@ -58,6 +58,7 @@
 #include <holocron/text_render.hpp>
 #include <holocron/track_context.hpp>
 #include <holocron/gdm_responder.hpp>
+#include <holocron/herald.hpp>
 #include <holocron/plex_device.hpp>
 #include <holocron/plex_link.hpp>
 #include <holocron/render_target.hpp>
@@ -177,6 +178,11 @@ struct Options {
     // file tests the SHIPPED BINARY rather than a build artifact, which is the
     // only version of that check that covers what somebody actually receives.
     bool        notices = false;
+
+    // Do not send the receiver any errands this run, whatever the config says.
+    // Same family as --no-audio and --no-discover: a way to override a file
+    // without editing it.
+    bool        no_herald = false;
 
     // Which on-screen surfaces start visible, comma separated:
     //     --overlay nowplaying,lyrics,colophon
@@ -353,6 +359,8 @@ Options parse(int argc, char** argv)
             o.no_discover = true;
         } else if (std::strcmp(a, "--no-audio") == 0) {
             o.no_audio = true;
+        } else if (std::strcmp(a, "--no-herald") == 0) {
+            o.no_herald = true;
         } else if (std::strcmp(a, "--no-watch") == 0) {
             o.no_watch = true;
         } else if (std::strcmp(a, "--no-compositor") == 0) {
@@ -427,6 +435,7 @@ void usage()
         "                 Prints every request the phone makes. Ctrl-C to stop\n"
         "  --no-discover  do not announce during this run, whatever the config says\n"
         "  --no-audio     decode and draw, but open no audio device\n"
+        "  --no-herald    do not send the receiver any errands this run\n"
         "  --debug-facet  draw every AudioFrame field as bars and markers instead\n"
         "                 of a crystal. The instrument that answers whether the\n"
         "                 analysis is producing anything sane\n"
@@ -2848,6 +2857,40 @@ int main(int argc, char** argv)
     ArtworkLoader artwork;
     LyricsLoader  lyrics;
 
+    // -- the herald: M7 --------------------------------------------------------
+    //
+    // Errands for the receiver when playback starts and stops. Constructed here
+    // and started immediately, because it owns a thread and the destructor joins
+    // it -- so its lifetime has to enclose the render loop rather than be created
+    // inside one.
+    //
+    // A FAILURE TO CONFIGURE IT NEVER STOPS THE PLAYER. `start` reports what it
+    // could not parse and runs whatever it could, which is a deliberate exception
+    // to the loader's "a live key holding a bad value is fatal" rule -- and the
+    // only honest one available for a facility whose whole premise is that a
+    // failure here never blocks playback. See herald.hpp.
+    Herald herald;
+    {
+        HeraldConfig hc;
+        if (!opt.no_herald) {
+            hc.on_start           = cfg.herald_on_start;
+            hc.on_stop            = cfg.herald_on_stop;
+            hc.connect_timeout_ms = cfg.herald_connect_timeout_ms;
+            hc.cooldown_seconds   = cfg.herald_cooldown_seconds;
+        }
+        std::string detail;
+        herald.start(hc, detail);
+        if (!detail.empty()) {
+            std::fprintf(stderr, "%s\n", detail.c_str());
+            std::fflush(stderr);
+        }
+        if (!opt.no_herald && !hc.on_start.empty()) {
+            std::printf("holocron: herald armed -- %zu errand(s) on start, %zu on stop\n",
+                        hc.on_start.size(), hc.on_stop.size());
+            std::fflush(stdout);
+        }
+    }
+
     // The neutral ramp until a sleeve arrives, and after one fails. A crystal
     // must never see a palette of zeroes -- see neutral_palette().
     const auto apply_palette = [&track_context](const Palette& p) {
@@ -3247,6 +3290,20 @@ int main(int argc, char** argv)
                 }
             }
         }
+
+        // -- the herald --------------------------------------------------------
+        //
+        // ONE CALL, EVERY FRAME, AND IT NEVER BLOCKS. It takes a lock, runs the
+        // edge detector and returns; every socket touches the herald's own
+        // thread. See herald.hpp for why a bare `playing && !was_playing` would
+        // fire once per TRACK rather than once per session -- PlaybackSession's
+        // start() calls stop() first, so the predicate dips at every boundary.
+        //
+        // PAUSED COUNTS AS NOT PLAYING. Somebody who pauses for the length of a
+        // conversation has stopped listening, and these errands are about the
+        // room rather than about the transport. The settle window is what stops
+        // a short pause from firing anything.
+        herald.observe(session.active() && !session.paused());
 
         // A pause or resume that arrived since the last frame. Applied here for
         // the same reason a play command is: this is the thread that owns the
@@ -4444,6 +4501,14 @@ int main(int argc, char** argv)
     std::printf("holocron: %d frames drawn, %llu analysis frames published\n",
                 rendered,
                 static_cast<unsigned long long>(session.frames_published()));
+    if (const std::uint64_t ran = herald.errands_run(), lost = herald.failures();
+        ran > 0 || lost > 0) {
+        // Reported because an absent receiver is otherwise visible only as log
+        // lines somebody scrolled past -- and absent is its normal state.
+        std::printf("holocron: herald ran %llu errand(s), %llu failed\n",
+                    static_cast<unsigned long long>(ran),
+                    static_cast<unsigned long long>(lost));
+    }
     if (const std::uint64_t hits = artwork.cache_hits(); hits > 0) {
         // Reported because the whole point of the cache is invisible otherwise:
         // a fetch that did not happen leaves no trace anywhere.
