@@ -78,8 +78,9 @@ what an author writes.
 **Crystal** — what an author writes. A crystal is two files that live together: a
 fragment shader that draws, and a manifest that declares the shader's uniforms and
 binds each one to a field on `AudioFrame` or `TrackContext`, with its own envelope
-settings. A binding looks like
-`u_flash = { source = "onset_strength", attack = 0.001, decay = 0.18 }`. Writing a
+settings. A binding is usually just a name — `u_bass = "bass_norm"` — and becomes a
+table when it wants an envelope of its own:
+`u_flash = { bind = "onset_strength", attack = 0.001, decay = 0.18 }`. Writing a
 crystal means writing GLSL and naming inputs — never writing C++, and never
 reaching outside the contract for data.
 

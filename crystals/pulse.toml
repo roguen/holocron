@@ -26,10 +26,44 @@ license = "GPL-3.0-or-later"
 #
 # The names are checked AT LOAD TIME against the contract. A typo here is an
 # error listing the valid vocabulary, not a uniform that silently stays zero.
+#
+# A value may also be a TABLE, which is how a uniform gets an envelope of its own.
+# `u_centroid` below is the one binding here that uses it, and the reason is
+# measured rather than aesthetic -- see the note under it. The two forms mean the
+# same thing where they overlap: `u_bass = "bass_norm"` is exactly
+# `{ bind = "bass_norm" }`.
 [uniforms]
 u_bass      = "bass_norm"
 u_treble    = "treble_norm"
 u_beat      = "beat_phase"
 u_onset     = "onset_strength"
 u_bands     = "band_norm"
-u_centroid  = "spectral_centroid"
+
+# THE ENVELOPE IS HERE BECAUSE spectral_centroid IS RAW.
+#
+# The analysis smooths bass, treble, the bands and the onset strength before they
+# ever reach a crystal -- `bass_norm` is already `auto_gain(envelope(bass))`. It
+# does NOT smooth the spectral descriptors, the stereo fields, `rms`, `peak`,
+# `band`, `fft_magnitude` or `waveform`. Those arrive raw, and until this feature
+# existed the only way to smooth one was to edit AnalysisConfig in C++.
+#
+# Measured over `01. Skrillex - First Of The Year (Equinox).flac` with
+# holocron-analyze, counting how often each field REVERSES DIRECTION frame to
+# frame -- which is what reads as flicker rather than as motion:
+#
+#     spectral_centroid   42.1 reversals per 100 frames        raw
+#     stereo_width        37.3                                 raw
+#     spectral_flux       60.8                                 raw
+#     bass_norm           11.1                                 enveloped
+#     treble_norm          8.2                                 enveloped
+#     onset_strength       8.8                                 enveloped
+#
+# At 93.75 Hz, 42 per 100 is the centroid changing its mind about forty times a
+# second. The mean step size is comparable across both groups -- it is the
+# reversal rate that separates them, and that is exactly what an envelope fixes.
+#
+# 0.05 / 0.25 is the "continuous motion" pair from docs/audio-frame.md section 4,
+# not the "slow wash" 0.05 / 1.5. A brightness cue that lags by a second and a
+# half stops corresponding to what you are hearing, which is a worse fault than
+# the flicker.
+u_centroid  = { bind = "spectral_centroid", attack = 0.05, decay = 0.25 }

@@ -33,13 +33,13 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ## Status: M1, M3, M4 and M5 are DONE. M2 is the only one still open.
 
-**`v0.5.0`.** M1 closed 2026-08-10, ten sessions after its last two criteria were
-first written down as open:
+**`v0.5.1`.** M1 closed 2026-08-10, ten sessions after its last two criteria were
+first written down as open, and M2's last unbuilt criterion closed the same day:
 
 | | |
 |---|---|
 | **M1** | **DONE, 8 of 8, 2026-08-10.** The two that had never been picked up in ten sessions both landed: `tests/fixtures/analysis-golden.csv` diffs 750 frames of a generated fixture against the harness's own CSV writer, and `tests/test_audio_callback.cpp` replaces the global `operator new` to count what the callback allocates — on a real device thread as well as directly. |
-| **M2** | **OPEN, 5 of 8.** Per-uniform envelope overrides (`attack`, `decay`, `mode = "accumulate"`) are **not built**. The rest is the visual language, which is the owner's call. |
+| **M2** | **ALL 8 CRITERIA MET, deliberately still open.** Per-uniform envelope overrides landed 2026-08-10 — the last unbuilt piece. What remains is the **visual language**, which is the owner's call and not a task anyone else can close, so the milestone is not ticked and the release was a patch rather than `v0.6.0`. |
 | **M5** | **DONE — all six criteria, one amended.** The last debt closed 2026-08-10 by measuring rather than building: the NAS answers a repeat sleeve in **1 ms**, so the art cache stays in memory (D-044). `artwork_cache.hpp` ships unused on purpose. |
 
 See the eight-row table at the top of the wiki
@@ -51,11 +51,12 @@ cast target and plays what it is sent, confirmed on the rack from the phone. M3
 — the compositor, at `v0.3.0`. M4 — projectM, at `v0.4.0`, all seven exit
 criteria met.
 
-**M2 is the only one still open, and it is the odd one out.** Its plumbing has
-been done since `v0.1.13`; what remains is per-uniform envelope overrides and
-the **visual language**, which is the owner's judgement and not a task anyone
-else can close. Three crystals and one archive ship. He has feedback outstanding
-on `duel` and on the lyric display.
+**M2 is the only one still open, and it is the odd one out.** Every one of its
+eight exit criteria is now met — the last, per-uniform envelope overrides, landed
+2026-08-10. What remains is the **visual language**, which is the owner's
+judgement and not a task anyone else can close, so the milestone stays unticked
+and the work shipped as a patch. Three crystals and one archive ship. He has
+feedback outstanding on `duel` and on the lyric display.
 
 **NOTHING FROM `v0.3.0` OR `v0.4.0` HAS BEEN SEEN ON THE PROJECTOR.** The
 compositor, archives, bloom, the lyric display and now the whole of projectM
@@ -127,6 +128,7 @@ tested:
 | Sink | `WasapiSink` — **exclusive mode verified bit-perfect on the rack**, 160-frame period, plus a shared-mode fallback. `SdlSink` behind it, exercised headless in CI through SDL's dummy driver. Chosen at runtime through the interface. |
 | Render | `Window` (GL 4.5 core, KHR_debug) and `DebugFacet`, drawing every field as bars and markers — **`--debug-facet`**, which it needs because the config's vault defaults to `crystals` and there was otherwise no command line that reached it (issue 144). |
 | Compositor | **M3's first step.** The picture is drawn into a `RenderTarget` — an FBO with one `GL_RGBA16F` colour texture — and a `Compositor` pass draws the stack onto the window. Float, not 8-bit, because crystals exceed 1.0 before their vignette and an 8-bit layer would clip differently depending on what else was on screen. **Measured at 0.06 ms per frame at 4K** on the RX 6800, against a 16.7 ms budget. `--no-compositor` draws straight to the window, which is also the fallback if a float framebuffer cannot be allocated. |
+| Envelope overrides | **M2's last unbuilt criterion, closed 2026-08-10.** A manifest binding may be a table — `u_wash = { bind = "spectral_centroid", attack = 0.05, decay = 1.5 }` — so an author picks a time constant per uniform with no C++. **The step is one ANALYSIS HOP, not one drawn frame**: the render thread skips and repeats analysis frames constantly, so a per-frame envelope would run at a rate set by the monitor and a nominal 0.4 s decay would really be 0.26 s at 144 Hz. `mode = "accumulate"` integrates into a phase in `[0,1)` — the only music-driven clock the format has, since `u_time` is constant-rate and a shader has no memory. **The key is `bind`, not `source`**; README and `docs/audio-frame.md` published `source` before it existed and were corrected, and the loader names the correction in its error. `crystals/pulse.toml` is the first real user, justified by measurement: raw fields reverse direction **37–61 times per 100 frames** against **8–11** for the analysis's own enveloped ones. |
 | Crystals | **M2's plumbing is done and three crystals ship.** A crystal is `<stem>.frag` + `<stem>.toml`; the manifest binds uniforms to `AudioFrame` fields BY NAME, validated at load. `pulse` is the reference instrument, `drift` is weather, `duel` is two stick figures fighting on the beat. A test loads the vault so it cannot rot. |
 | `duel` | **Reworked on the owner's feedback** ([#127](https://github.com/roguen/holocron/issues/127)). No necks — the head sits ON the shoulders, which broke every hand position near the face and needed `clear_head` to fix as a class rather than one at a time. Feet, thicker limbs, and rear knees that bend the right way. **Thirty moves as a table of numbers** rather than geometry per move, across boxing, karate, Muay Thai, taekwondo, capoeira and wrestling — including **four throws that pose BOTH fighters**, the only moves that do. **Reactive**: every beat has a landed/blocked/evaded outcome, so a block only appears against a strike that was blocked and never against a fighter lying on the floor. The fight **ranges across the stage** and the gap between them breathes. **A spin is a tilt, not a pirouette** — a picture-plane rotation in a side-on silhouette reads as falling over, so big rotations are only for bodies that really are horizontal. **4K cost 6.65 ms against 3.90 before**, three-point slope. |
 | Beat grid | **`beat_phase` lands ON the beat** — measured at 0.0 ms median against a real track, quartiles also zero. It was a per-track error of up to 100 ms until #94: the phase was nudged by every onset, so ordinary off-beat content dragged it. Now estimated by correlating seconds of onset history against a pulse train, with the analysis's own ~28 ms flux lag compensated. |
@@ -455,7 +457,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.5.0`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.5.1`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
