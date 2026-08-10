@@ -1067,6 +1067,23 @@ struct CastCommand {
         return asked;
     }
 
+    // The colophon. Tri-state for the same reason.
+    int colophon = 0;
+
+    void request_colophon(bool visible)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        colophon = visible ? 1 : 2;
+    }
+
+    int take_colophon()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const int asked = colophon;
+        colophon        = 0;
+        return asked;
+    }
+
     // The now-playing card. Tri-state for the same reason.
     int now_playing = 0;
 
@@ -2061,6 +2078,7 @@ int main(int argc, char** argv)
     });
     companion.set_projectm_lock_handler([&cast](bool on) { cast.request_projectm_lock(on); });
     companion.set_lyrics_handler([&cast](bool visible) { cast.request_lyrics(visible); });
+    companion.set_colophon_handler([&cast](bool visible) { cast.request_colophon(visible); });
     companion.set_now_playing_handler(
         [&cast](bool visible) { cast.request_now_playing(visible); });
     companion.set_trim_handler([&cast](double delta_ms) { cast.request_trim(delta_ms); });
@@ -3553,6 +3571,15 @@ int main(int argc, char** argv)
             std::printf("holocron: now-playing card %s\n", show_now_playing ? "on" : "off");
             std::fflush(stdout);
         }
+        if (const int asked = cast.take_colophon(); asked != 0) {
+            colophon_visible = asked == 1;
+            // Always from the first page. Somebody opening it from the phone is
+            // starting to read rather than resuming, and the first page carries
+            // the copyright that the rest of the document exists to support.
+            colophon_page = 0;
+            std::printf("holocron: colophon %s\n", colophon_visible ? "on" : "off");
+            std::fflush(stdout);
+        }
         {
             // DESCRIPTIVE FIELDS ONLY. `current` and the toggles are owned by the
             // control page's POST handlers -- pushing them from here every frame is
@@ -3672,6 +3699,12 @@ int main(int argc, char** argv)
         if (window.pressed(Key::kAbout)) {
             colophon_visible = !colophon_visible;
             colophon_page    = 0;
+            // TELL THE CONTROL PAGE, because F1 is a second source of an intent
+            // the server owns. Without this the phone would keep offering to turn
+            // on a panel that is already up -- two authorities disagreeing, which
+            // is worse than one being wrong. Only here, never every frame: see
+            // CompanionServer::set_colophon_visible.
+            companion.set_colophon_visible(colophon_visible);
             std::printf("holocron: colophon %s\n", colophon_visible ? "on" : "off");
             std::fflush(stdout);
         }
