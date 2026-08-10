@@ -111,6 +111,104 @@ failure that otherwise costs an afternoon.
 Arrays bind to arrays. `band_norm` is 32 floats, so declare
 `uniform float u_bands[32];`.
 
+### Giving a uniform its own envelope
+
+Some fields arrive **already smoothed** and some arrive **raw**. The analysis
+smooths `bass_env`, `mid_env`, `treble_env`, the whole `*_norm` family,
+`band_env`, `fft_smoothed` and `onset_strength`. It does not smooth the spectral
+descriptors, the stereo fields, `rms`, `peak`, `band`, `fft_magnitude` or
+`waveform` — those are exactly what happened in the last 42 ms and nothing else.
+
+Raw is jumpy in a specific way. Measured over a real track, counting how often a
+field **reverses direction** frame to frame:
+
+| | reversals per 100 frames | |
+|---|---|---|
+| `spectral_flux` | 60.8 | raw |
+| `spectral_centroid` | 42.1 | raw |
+| `stereo_width` | 37.3 | raw |
+| `bass_norm` | 11.1 | enveloped |
+| `onset_strength` | 8.8 | enveloped |
+| `treble_norm` | 8.2 | enveloped |
+
+At 93.75 frames a second, forty reversals per hundred frames is a value changing
+its mind about forty times a second. That reads as flicker rather than as motion.
+
+So a binding can be a **table** instead of a name, and ask for its own envelope:
+
+```toml
+[uniforms]
+u_bass     = "bass_norm"                                              # unchanged
+u_centroid = { bind = "spectral_centroid", attack = 0.05, decay = 0.25 }
+u_peak     = { bind = "peak", decay = 0.4 }
+u_spin     = { bind = "bass_norm", mode = "accumulate", scale = 0.25 }
+```
+
+`u_bass = "bass_norm"` is exactly `{ bind = "bass_norm" }`. Nothing you have
+already written changes.
+
+| key | | |
+|---|---|---|
+| `bind` | **required** | the field name, same vocabulary as ever |
+| `attack` | seconds to 63% while the value is **rising** | default 0, meaning instant |
+| `decay` | seconds to 63% while the value is **falling** | default 0, meaning instant |
+| `scale` | a gain on the value, applied **first** | default 1 |
+| `mode` | `"envelope"` (default) or `"accumulate"` | |
+
+Starting points, the same three the engine uses on itself: flashes
+`attack 0.001 / decay 0.18`; continuous motion `attack 0.01 / decay 0.25`; slow
+washes `attack 0.05 / decay 1.5`.
+
+**Leaving `attack` at 0 is a real setting, not an omission.** `{ bind = "peak",
+decay = 0.4 }` rises instantly and falls slowly, which is a peak meter.
+
+**Arrays get one envelope per element.** `{ bind = "band_norm", decay = 0.4 }` is
+32 independent envelopes, so each band smooths on its own rather than the whole
+array moving together.
+
+### `mode = "accumulate"` is a clock the music drives
+
+Everything above smooths *toward* a value. `accumulate` **integrates** it: the
+uniform becomes a phase in `[0, 1)` that advances at `scale * value` turns per
+second.
+
+```toml
+u_spin = { bind = "bass_norm", mode = "accumulate", scale = 0.25 }
+```
+
+`u_spin` goes round once every four seconds when the bass is at full, slower when
+it is not, and **never goes backwards**. That is the one thing a shader genuinely
+cannot do for itself — `u_time` runs at a constant rate, and a fragment shader has
+no memory between frames to integrate with.
+
+Use it with `sin(6.2831 * u_spin)` or `fract(u_spin + x)`; both take a phase
+directly. It wraps, so it is still exact after a three-hour album.
+
+`attack` and `decay` mean nothing to an integrator and setting one is an error
+rather than a silent no-op.
+
+### Two things about envelopes that are not guessable
+
+**An override on an already-smoothed field is a *second* envelope, not a
+replacement.** `{ bind = "bass_norm", decay = 1.5 }` follows the auto-gained bass
+with a slow wash on top; it cannot reach inside and change the engine's own
+0.01/0.25. That is allowed and sometimes exactly what you want. If you want *your*
+envelope rather than one stacked on the engine's, bind the **raw** field — `bass`
+rather than `bass_norm`.
+
+**Time is measured in analysis frames, not in drawn frames.** The analysis runs at
+a fixed 93.75 Hz and your monitor does not, so `decay = 0.4` means 0.4 seconds on
+a 60 Hz panel, on a 144 Hz panel, and on the projector. If it were stepped per
+drawn frame the same crystal would move differently on different displays, which
+is the whole reason the analysis rate is fixed in the first place. The cost is
+that between analysis frames the value is held — but every binding already
+behaves that way, so nothing new appears on screen.
+
+A new track **restarts** every envelope from the current value rather than gliding
+across the boundary, which is what the engine already does to its own enveloped
+fields: the analysis is rebuilt per track and `band_env` on the first frame of a
+new track is simply the raw value.
+
 ### A uniform your shader ignores is not an error
 
 GLSL compilers delete uniforms that do not affect the output, so a manifest entry

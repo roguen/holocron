@@ -7,12 +7,15 @@
 
 #include <holocron/audio_frame.hpp>
 #include <holocron/crystal.hpp>
+#include <holocron/envelope.hpp>
 #include <holocron/frame_binding.hpp>
 #include <holocron/track_context.hpp>
 
 #include <glad/glad.h>
 
 #include <chrono>
+#include <cmath>
+#include <utility>
 #include <vector>
 
 namespace holocron {
@@ -59,6 +62,48 @@ GLuint compile(GLenum stage, const char* src, std::string& log)
     return sh;
 }
 
+// Step one binding's envelope state forward.
+//
+// TWO alpha VALUES FOR THE WHOLE ARRAY, NOT TWO PER ELEMENT. The coefficient
+// depends only on (tau, hops), and there are only two taus -- one for rising and
+// one for falling. Computing them per element would be 2,048 `exp` calls a frame
+// for `fft_magnitude` instead of two.
+//
+// A NON-FINITE FIELD VALUE IS SKIPPED, AND THAT IS A NEW HAZARD THIS FEATURE
+// CREATES. Today a NaN in an AudioFrame field reaches a uniform for exactly one
+// frame and is gone when the next one arrives. With state behind it,
+// `y + alpha * (nan - y)` is nan and every later step keeps it -- permanently,
+// for the life of the facet, over a picture that has gone black with nothing to
+// say why. Holding the previous value instead turns that back into the
+// single-frame glitch it is now.
+void advance_envelope(std::vector<float>& state, const EnvelopeSpec& spec,
+                      const AudioFrame& frame, const Binding& binding, const HopStep& step)
+{
+    const bool   scalar = binding.kind == BindingKind::kScalar;
+    const float* src    = scalar ? nullptr : read_array(frame, binding);
+    const float  single = scalar ? read_scalar(frame, binding) : 0.0f;
+
+    const float attack_alpha = envelope_alpha(spec.attack, step.hops);
+    const float decay_alpha  = envelope_alpha(spec.decay, step.hops);
+
+    for (std::size_t i = 0; i < state.size(); ++i) {
+        const float raw = scalar ? single : src[i];
+        if (!std::isfinite(raw)) {
+            continue;
+        }
+        const float x = spec.scale * raw;
+
+        if (spec.mode == EnvelopeMode::kAccumulate) {
+            // A new track restarts the phase rather than carrying the previous
+            // one's position into it, which is the same choice the envelope
+            // branch makes and for the same reason.
+            state[i] = step.reseed ? 0.0f : accumulate_apply(state[i], x, step.hops);
+        } else {
+            state[i] = step.reseed ? x : envelope_apply(state[i], x, attack_alpha, decay_alpha);
+        }
+    }
+}
+
 }  // namespace
 
 struct CrystalFacet::Impl {
@@ -78,9 +123,24 @@ struct CrystalFacet::Impl {
     struct Bound {
         GLint          location;
         const Binding* binding;
+        EnvelopeSpec   envelope;
+
+        // The envelope's running value, one per element -- `binding->count` of
+        // them, so an array binding smooths bin by bin rather than as a whole.
+        // Empty when the spec is inactive, which is what keeps the zero-copy
+        // upload path for every crystal that does not ask for an envelope.
+        std::vector<float> state;
     };
     std::vector<Bound> bound;
     std::size_t        unused = 0;
+
+    // Where the analysis had got to when the envelopes were last advanced.
+    //
+    // `saw_any` is separate from `last_index` because THE FIRST FRAME OF EVERY
+    // TRACK HAS INDEX 0 -- see hops_between() in envelope.hpp. Without it the
+    // first frame compares 0 against 0, finds no change, and never seeds.
+    std::uint64_t last_index = 0;
+    bool          saw_any    = false;
 
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
 };
@@ -155,8 +215,27 @@ bool CrystalFacet::init(const Crystal& crystal, std::string& out_log)
         if (loc < 0) {
             ++impl_->unused;
         }
-        impl_->bound.push_back(Impl::Bound{loc, u.binding});
+        Impl::Bound b{loc, u.binding, u.envelope, {}};
+
+        // ALLOCATED HERE AND NEVER AGAIN. The envelope state is the only
+        // per-frame storage this facet has, and sizing it at init keeps draw()
+        // allocation-free -- which matters because draw() runs once per layer per
+        // frame and there are up to four layers.
+        //
+        // The largest case is `fft_magnitude` or `fft_smoothed` at 1024 floats,
+        // 4 KB. A crystal binding every array field is 10.4 KB, against a 66 MB
+        // layer, so there is no reason to refuse arrays here the way an archive's
+        // single-number opacity has to.
+        if (u.envelope.active()) {
+            b.state.assign(u.binding->count, 0.0f);
+        }
+        impl_->bound.push_back(std::move(b));
     }
+
+    // A fresh program has drawn nothing, so the first frame it sees must seed
+    // rather than step, whatever index that frame carries.
+    impl_->last_index = 0;
+    impl_->saw_any    = false;
 
     glCreateVertexArrays(1, &impl_->vao);
     impl_->start = std::chrono::steady_clock::now();
@@ -175,6 +254,13 @@ void CrystalFacet::shutdown()
     }
     impl_->bound.clear();
     impl_->unused = 0;
+
+    // CLEARED ALONGSIDE `bound`, because init() calls shutdown() first. Left
+    // behind, a re-init on a live object would leave a stale index beside a
+    // freshly sized state array, and the first frame after it would step from
+    // the old track's position instead of seeding.
+    impl_->last_index = 0;
+    impl_->saw_any    = false;
 }
 
 bool CrystalFacet::ready() const { return impl_->program != 0 && impl_->vao != 0; }
@@ -243,11 +329,34 @@ void CrystalFacet::draw(const AudioFrame& frame, const TrackContext& track, int 
         glUniform1i(impl_->u_album_art, 0);
     }
 
-    for (const Impl::Bound& b : impl_->bound) {
+    // -- the author's own envelopes ------------------------------------------
+    //
+    // ADVANCED ONCE PER DRAW AND GATED ON frame_index, not on wall clock. See
+    // envelope.hpp: the render thread skips and repeats analysis frames
+    // constantly, so anything stepped per drawn frame would run at a rate set by
+    // the monitor.
+    //
+    // Every layer of a stack keeps its own `last_index`, so during a crossfade
+    // both facets advance by the same number of hops off the same frame. The
+    // incoming one has `saw_any` false and therefore SEEDS on its first draw --
+    // without which a `decay = 1.5` uniform would climb out of zero for 1.5 s
+    // while the 0.4 s fade completed, and the new crystal would arrive wrong.
+    const HopStep step = hops_between(impl_->last_index, frame.frame_index, impl_->saw_any);
+    impl_->last_index  = frame.frame_index;
+    impl_->saw_any     = true;
+
+    for (Impl::Bound& b : impl_->bound) {
+        if (!b.state.empty()) {
+            advance_envelope(b.state, b.envelope, frame, *b.binding, step);
+        }
         if (b.location < 0) {
             continue;   // compiler removed it; not an error, see the header
         }
-        if (b.binding->kind == BindingKind::kScalar) {
+        if (!b.state.empty()) {
+            // The enveloped value lives here rather than in the frame, so this
+            // is the one binding kind that uploads from our own storage.
+            glUniform1fv(b.location, static_cast<GLsizei>(b.state.size()), b.state.data());
+        } else if (b.binding->kind == BindingKind::kScalar) {
             glUniform1f(b.location, read_scalar(frame, *b.binding));
         } else {
             // The array is contiguous inside AudioFrame, so it uploads directly

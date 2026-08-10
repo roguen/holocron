@@ -28,6 +28,27 @@
 // stays zero and a visual that mysteriously does nothing -- which is the failure
 // mode that would otherwise cost an author an afternoon.
 //
+// A BINDING MAY ALSO BE A TABLE, which is how an author gets an envelope of
+// their own without touching C++:
+//
+//     [uniforms]
+//     u_wash = { bind = "spectral_centroid", attack = 0.05, decay = 1.5 }
+//     u_spin = { bind = "bass_norm", mode = "accumulate", scale = 0.25 }
+//
+// The two forms mean the same thing where they overlap: `u_bass = "bass_norm"`
+// is exactly `{ bind = "bass_norm" }`. See envelope.hpp for what the keys do and
+// why the step is measured in analysis hops rather than drawn frames.
+//
+// THE KEY IS `bind`, AND README.md AND docs/audio-frame.md USED TO SAY `source`.
+// Both were corrected in the change that built this. `bind` is the spelling that
+// already existed in shipped code -- `crystals/storm.toml` binds a layer's
+// opacity with `opacity = { bind = "bass_norm", min = 0.35, max = 1.0 }` -- and
+// both sites resolve through the same `find_binding()`, so two spellings for one
+// mechanism would be drift between two manifest formats an author edits side by
+// side. `source` is also taken one layer up, by `ArchiveLayer::source`. The doc
+// lines were specification written ahead of the code and nothing could depend on
+// them, because the loader rejected every table outright until now.
+//
 // LOADING IS SEPARATE FROM RENDERING, ON PURPOSE
 //
 // Nothing in this header touches GL. A crystal can be loaded, validated and
@@ -40,6 +61,7 @@
 
 #pragma once
 
+#include <holocron/envelope.hpp>
 #include <holocron/frame_binding.hpp>
 
 #include <cstdint>
@@ -57,6 +79,7 @@ enum class CrystalError : std::uint8_t {
     kManifestIncomplete,    // valid TOML, missing something required
     kUnknownField,          // a uniform bound to a name the contract does not have
     kDuplicateUniform,      // the same uniform name bound twice
+    kBadEnvelope,           // an envelope override with a key or a value it cannot have
 };
 
 const char* to_string(CrystalError e);
@@ -66,6 +89,12 @@ const char* to_string(CrystalError e);
 struct UniformBinding {
     std::string    uniform;   // the GLSL uniform name, e.g. "u_bass"
     const Binding* binding;   // what feeds it, from frame_binding.hpp
+
+    // The author's own envelope, if they asked for one. Default-constructed --
+    // and therefore `active() == false` -- for the bare-string form, which is
+    // what keeps the existing zero-copy upload path for every crystal that does
+    // not ask. See envelope.hpp.
+    EnvelopeSpec envelope;
 };
 
 // WHERE A CRYSTAL CAME FROM.

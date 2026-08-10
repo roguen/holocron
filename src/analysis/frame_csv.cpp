@@ -30,12 +30,22 @@ struct ArrayDigest {
 // golden file full of `nan` on the first three seconds of every fixture would be
 // useless -- and worse, `nan != nan`, so every comparison would fail rather than
 // the file simply recording that there was nothing there.
+// MAX STARTS AT THE FIRST ELEMENT, NOT AT ZERO, and that is not pedantry. The
+// `waveform` array is bipolar, so a window that happens to sit entirely below
+// zero has a real maximum that is negative -- and a max seeded at 0.0 would
+// report 0 for every such window regardless of what the samples were. Two
+// different waveforms would fingerprint identically on that column, which is the
+// one thing a digest must not do.
 template <std::size_t N>
 ArrayDigest digest(const std::array<float, N>& a)
 {
+    static_assert(N > 1, "the centroid divides by N - 1");
+
     ArrayDigest d;
-    double      energy   = 0.0;
-    double      weighted = 0.0;
+    d.max = a[0];
+
+    double energy   = 0.0;
+    double weighted = 0.0;
 
     for (std::size_t i = 0; i < N; ++i) {
         const double v = double(a[i]);

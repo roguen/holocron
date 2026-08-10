@@ -7,6 +7,7 @@
 
 #include <toml++/toml.hpp>
 
+#include <cmath>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -23,6 +24,7 @@ const char* to_string(CrystalError e)
     case CrystalError::kManifestIncomplete: return "manifest is missing a required key";
     case CrystalError::kUnknownField:       return "uniform bound to an unknown contract field";
     case CrystalError::kDuplicateUniform:   return "the same uniform is bound twice";
+    case CrystalError::kBadEnvelope:        return "envelope override is not valid";
     }
     return "unknown";
 }
@@ -105,6 +107,129 @@ bool read_file(const std::string& path, std::string& out)
     std::ostringstream ss;
     ss << in.rdbuf();
     out = ss.str();
+    return true;
+}
+
+// One numeric envelope key, validated.
+//
+// REFUSES NON-FINITE, NOT JUST NEGATIVE, and that is not defensive padding. TOML
+// spells `nan` and `inf` directly and toml++ returns them happily. `nan < 0` is
+// false, so a negative-only test passes it through; then `std::max(tau, 1e-6f)`
+// is `(a < b) ? b : a`, which returns nan; then alpha is nan, and the uniform is
+// nan for the life of the facet with nothing anywhere to explain it. The
+// analysis's own note is that one NaN reaching a shader "takes the whole visual
+// with it and is very hard to trace back".
+//
+// `inf` is harmless in itself -- alpha becomes 0, meaning "never moves" -- but it
+// is refused by the same test rather than reasoned about at the call site.
+bool read_envelope_number(const toml::node& node, const char* key, const std::string& where,
+                          const std::string& uniform_name, float& out, std::string& out_detail)
+{
+    const auto v = node.value<double>();
+    if (!v) {
+        out_detail = where + ": uniform `" + uniform_name + "` has `" + key +
+                     "`, which must be a number";
+        return false;
+    }
+    const float f = static_cast<float>(*v);
+    if (!std::isfinite(f) || f < 0.0f) {
+        out_detail = where + ": uniform `" + uniform_name + "` has `" + key +
+                     "` = " + std::to_string(*v) +
+                     ", which must be a finite number and not negative";
+        return false;
+    }
+    out = f;
+    return true;
+}
+
+// Parse the table form of a binding: `{ bind = "...", attack = ..., ... }`.
+//
+// UNKNOWN KEYS ARE AN ERROR, NOT IGNORED. This is the one place in the manifest
+// where a typo would otherwise be perfectly silent -- `decy = 0.4` parses, binds,
+// draws, and produces a uniform that simply never smooths. The whole reason the
+// field name is validated at load is to spare an author that afternoon, and the
+// same argument applies with more force here because the wrong result still
+// looks like a picture.
+bool parse_envelope_table(const toml::table& t, const std::string& where,
+                          const std::string& uniform_name, std::string& out_field,
+                          EnvelopeSpec& out, std::string& out_detail)
+{
+    for (const auto& [k, v] : t) {
+        const std::string key(k.str());
+
+        if (key == "bind") {
+            const auto* s = v.as_string();
+            if (s == nullptr) {
+                out_detail = where + ": uniform `" + uniform_name +
+                             "` has `bind`, which must be a field NAME as a string";
+                return false;
+            }
+            out_field = s->get();
+        } else if (key == "attack") {
+            if (!read_envelope_number(v, "attack", where, uniform_name, out.attack, out_detail)) {
+                return false;
+            }
+        } else if (key == "decay") {
+            if (!read_envelope_number(v, "decay", where, uniform_name, out.decay, out_detail)) {
+                return false;
+            }
+        } else if (key == "scale") {
+            if (!read_envelope_number(v, "scale", where, uniform_name, out.scale, out_detail)) {
+                return false;
+            }
+        } else if (key == "mode") {
+            const auto* s = v.as_string();
+            const std::string mode = (s != nullptr) ? s->get() : std::string{};
+            if (mode == "envelope") {
+                out.mode = EnvelopeMode::kSmooth;
+            } else if (mode == "accumulate") {
+                out.mode = EnvelopeMode::kAccumulate;
+            } else {
+                out_detail = where + ": uniform `" + uniform_name + "` has `mode` = \"" + mode +
+                             "\".\nValid modes:\n"
+                             "  \"envelope\"     smooth toward the value (the default)\n"
+                             "  \"accumulate\"   integrate the value into a phase in [0,1)";
+                return false;
+            }
+        } else {
+            // `source` is named explicitly because README.md and
+            // docs/audio-frame.md both published it before this was built, and
+            // somebody arriving from either will write it.
+            const std::string hint =
+                (key == "source") ? "\nThe key is `bind`, not `source` -- the same spelling an "
+                                    "archive's layer opacity uses. README.md and "
+                                    "docs/audio-frame.md said `source` and were wrong."
+                                  : "";
+            out_detail = where + ": uniform `" + uniform_name + "` has unknown key `" + key +
+                         "`.\nValid keys:\n"
+                         "  bind     the AudioFrame field name (required)\n"
+                         "  attack   seconds to 63% while rising\n"
+                         "  decay    seconds to 63% while falling\n"
+                         "  scale    gain on the value, applied first\n"
+                         "  mode     \"envelope\" or \"accumulate\"" +
+                         hint;
+            return false;
+        }
+    }
+
+    if (out_field.empty()) {
+        out_detail = where + ": uniform `" + uniform_name +
+                     "` is a table but does not say what it binds to.\n"
+                     "Add `bind = \"<field>\"`.";
+        return false;
+    }
+
+    // ATTACK AND DECAY MEAN NOTHING TO AN INTEGRATOR, and silently ignoring them
+    // is the failure this whole schema is built to avoid: the author would see a
+    // uniform that does not smooth and no reason why.
+    if (out.mode == EnvelopeMode::kAccumulate && (out.attack > 0.0f || out.decay > 0.0f)) {
+        out_detail = where + ": uniform `" + uniform_name +
+                     "` sets `attack` or `decay` with `mode = \"accumulate\"`.\n"
+                     "An accumulator integrates rather than smoothing, so it has no attack or "
+                     "decay. Use `scale` to set its rate in turns per second.";
+        return false;
+    }
+
     return true;
 }
 
@@ -218,15 +343,28 @@ CrystalError load_crystal(const std::string& stem_path, Crystal& out, std::strin
                 return CrystalError::kDuplicateUniform;
             }
 
-            const auto* field = value.as_string();
-            if (field == nullptr) {
+            // THREE-WAY, AND DELIBERATELY NOT `!is_string() && !is_table()`.
+            // Anything that is neither still lands in the final branch with the
+            // message it had before, so `u_bass = 3` and `u_bass = [1, 2]` fail
+            // exactly as they did.
+            std::string  field_name;
+            EnvelopeSpec envelope;
+
+            if (const auto* field = value.as_string()) {
+                field_name = field->get();
+            } else if (const auto* table = value.as_table()) {
+                if (!parse_envelope_table(*table, manifest_path, uniform_name, field_name,
+                                          envelope, out_detail)) {
+                    return CrystalError::kBadEnvelope;
+                }
+            } else {
                 out_detail = manifest_path + ": uniform `" + uniform_name +
-                             "` must be bound to a field NAME as a string";
+                             "` must be bound to a field NAME as a string, or to a table "
+                             "like { bind = \"bass_norm\", decay = 0.4 }";
                 return CrystalError::kManifestIncomplete;
             }
 
-            const std::string field_name = field->get();
-            const Binding*    b          = find_binding(field_name);
+            const Binding* b = find_binding(field_name);
             if (b == nullptr) {
                 // The whole reason validation happens at load. Naming the
                 // vocabulary here is the difference between a five-second fix
@@ -239,7 +377,7 @@ CrystalError load_crystal(const std::string& stem_path, Crystal& out, std::strin
                 return CrystalError::kUnknownField;
             }
 
-            out.uniforms.push_back(UniformBinding{uniform_name, b});
+            out.uniforms.push_back(UniformBinding{uniform_name, b, envelope});
         }
     }
 
