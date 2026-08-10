@@ -78,8 +78,12 @@ enum class CrystalError : std::uint8_t {
     kManifestUnparseable,   // not valid TOML
     kManifestIncomplete,    // valid TOML, missing something required
     kUnknownField,          // a uniform bound to a name the contract does not have
-    kDuplicateUniform,      // the same uniform name bound twice
     kBadEnvelope,           // an envelope override with a key or a value it cannot have
+
+    // There is deliberately no kDuplicateUniform. toml++ rejects a repeated key
+    // while parsing, so a manifest binding one uniform twice fails as
+    // kManifestUnparseable with the key and the line named -- see the note in
+    // load_crystal. The value existed and could never be returned.
 };
 
 const char* to_string(CrystalError e);

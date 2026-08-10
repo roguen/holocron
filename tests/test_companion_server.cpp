@@ -464,6 +464,39 @@ TEST_CASE("the control page lists the vault and marks what is running",
     REQUIRE(res->body.find("class=\"on\" type=\"submit\">drift<") == std::string::npos);
 }
 
+TEST_CASE("the control page marks nothing current while the beat instrument is up",
+          "[plex][companion][control]")
+{
+    // `sync_showing` existed and was read ONLY by the tuning page, so the main
+    // page went on highlighting whichever vault entry was current before
+    // --calibrate took the screen. The field's own comment in the header had said
+    // what that meant since the day it was added: "the page has to say so or it
+    // claims a crystal is running that is not".
+    //
+    // It stayed invisible because the two PAGES disagreed rather than a page
+    // disagreeing with the screen, and nobody reads both at once.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_info({"drift", "pulse"}, "", "", false);
+    s.server.set_current_crystal(1);
+    s.server.set_control_tuning(-90.0, 250.0, /*sync_showing=*/true, "gatekeeper.toml");
+
+    auto res = s.client().Get("/control");
+    REQUIRE(res);
+    REQUIRE(res->status == 200);
+
+    // Still offered -- they are how you get back.
+    REQUIRE(res->body.find(">drift<") != std::string::npos);
+    REQUIRE(res->body.find(">pulse<") != std::string::npos);
+
+    // But neither is claimed to be running.
+    CHECK(res->body.find("class=\"on\" type=\"submit\">pulse<") == std::string::npos);
+    CHECK(res->body.find("class=\"on\" type=\"submit\">drift<") == std::string::npos);
+
+    // And it says why, rather than leaving a list with nothing lit looking broken.
+    CHECK(res->body.find("beat instrument") != std::string::npos);
+}
+
 TEST_CASE("the control page is served as HTML, not XML", "[plex][companion][control]")
 {
     // Every other route on this server answers XML. A browser handed
