@@ -39,6 +39,8 @@ add_executable(holocron_tests
     test_image_decode.cpp
     test_projectm_api.cpp
     test_artwork_cache.cpp
+    test_notices.cpp
+    test_notices_view.cpp
 )
 
 # The shipped vault's location, baked in rather than searched for relative to the
@@ -67,6 +69,7 @@ target_link_libraries(holocron_tests
         holocron::plex
         holocron::visual
         holocron::projectm
+        holocron::notices
         holocron::warnings
         Catch2::Catch2WithMain
         # The Companion tests drive a real server over loopback, so they need an

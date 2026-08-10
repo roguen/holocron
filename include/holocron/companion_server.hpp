@@ -169,6 +169,15 @@ public:
 
         bool now_playing_visible = false;
         bool lyrics_visible      = false;
+
+        // The licence panel. INTENT, owned by the POST handler like the other
+        // two toggles.
+        //
+        // It is on the phone as well as on F1 because the owner is never at the
+        // keyboard (D-029) -- and on F1 as well as the phone because this panel
+        // discharges a licence term and a route through the Companion port is a
+        // route that a machine off the LAN does not have.
+        bool colophon_visible    = false;
         bool has_art        = false;
 
         // "off", "track" or "timer", and how long the timer waits.
@@ -291,6 +300,21 @@ public:
 
     void set_select_crystal_handler(SelectCrystalHandler handler);
     void set_lyrics_handler(LyricsHandler handler);
+    void set_colophon_handler(LyricsHandler handler);
+
+    // A CORRECTION, NOT A PUSH, and the distinction is the whole of D-034.
+    //
+    // `colophon_visible` is intent and belongs to the POST handler. But F1 at
+    // the machine is a SECOND source of that intent which the server cannot see,
+    // so without this the page would keep offering to turn on a panel that was
+    // already up -- two authorities disagreeing, which is strictly worse than one
+    // authority being wrong.
+    //
+    // Called only when the key actually toggles it, never every frame. Pushing it
+    // continuously is exactly what made the page race against itself and
+    // flip-flop on alternate taps, because a toggle button carries the state it
+    // wants to move TO.
+    void set_colophon_visible(bool visible);
     void set_now_playing_handler(NowPlayingHandler handler);
     void set_trim_handler(TrimHandler handler);
     void set_sync_handler(SyncHandler handler);

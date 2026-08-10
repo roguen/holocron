@@ -51,6 +51,8 @@
 #include <holocron/final_pass.hpp>
 #include <holocron/image_decode.hpp>
 #include <holocron/lyrics.hpp>
+#include <holocron/notices.hpp>
+#include <holocron/notices_view.hpp>
 #include <holocron/overlay_facet.hpp>
 #include <holocron/palette.hpp>
 #include <holocron/text_render.hpp>
@@ -97,6 +99,12 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+
+#if defined(_WIN32)
+// For putting stdout into binary mode before --notices writes the file's bytes.
+#include <fcntl.h>
+#include <io.h>
+#endif
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -155,6 +163,43 @@ struct Options {
     // which is otherwise only discoverable by reading frame_binding.hpp or by
     // making a typo on purpose.
     bool        list_bindings = false;
+
+    // Print THIRD-PARTY-NOTICES.md and exit.
+    //
+    // NOT A CONVENIENCE. The about panel is how LGPL-2.1 section 6 is
+    // discharged on screen, and a panel needs a GL context, a window, a working
+    // OverlayFacet and -- for the phone to summon it -- a reachable port.
+    // OverlayFacet::init failing is deliberately non-fatal, so there is a real
+    // configuration in which the panel is the only notices path and it is not
+    // there. This path needs none of that: it is the bytes and stdout.
+    //
+    // It is also the CI drift check. `holocron --notices | diff -` against the
+    // file tests the SHIPPED BINARY rather than a build artifact, which is the
+    // only version of that check that covers what somebody actually receives.
+    bool        notices = false;
+
+    // Which on-screen surfaces start visible, comma separated:
+    //     --overlay nowplaying,lyrics,colophon
+    //
+    // EXISTS BECAUSE NONE OF THEM COULD BE SCREENSHOT BEFORE. show_now_playing
+    // and lyrics_visible both start false and are reachable only over HTTP, so
+    // every `--frames N --shot` in this project's history has captured a picture
+    // with no overlay on it at all -- and racing a POST against a fixed-frame
+    // run is not a repeatable way to fix that.
+    //
+    // So this covers all three rather than only the new one. The colophon is
+    // the reason it was written and the card and the lyric are the reason it is
+    // not called --colophon.
+    const char* overlay = nullptr;
+
+    // Which page the colophon opens on, 1-based.
+    //
+    // A VERIFICATION AID, and it exists because there is no other way to see
+    // page four. The panel is paged with the arrow keys and from the phone, and
+    // `--frames N --shot` cannot press either -- so without this the only page
+    // any screenshot could ever contain is the first one, and the notices
+    // themselves would be unverifiable exactly like the card and the lyric were.
+    int colophon_page_arg = 1;
     bool        no_audio = false;
     // Announce over GDM and serve the Companion endpoints, then wait. No track,
     // no window, no audio device. This is how discovery is checked from the
@@ -236,7 +281,7 @@ struct Options {
 const char* const kValueOptions[] = {
     "--shot", "--frames", "--width", "--height", "--crystal",
     "--vault", "--config", "--trim-ms", "--sink",
-    "--projectm", "--projectm-lib",
+    "--projectm", "--projectm-lib", "--overlay", "--colophon-page",
 };
 
 bool takes_a_value(const char* a)
@@ -314,6 +359,12 @@ Options parse(int argc, char** argv)
             o.no_compositor = true;
         } else if (std::strcmp(a, "--debug-facet") == 0) {
             o.debug_facet = true;
+        } else if (std::strcmp(a, "--colophon-page") == 0 && i + 1 < argc) {
+            o.colophon_page_arg = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--overlay") == 0 && i + 1 < argc) {
+            o.overlay = argv[++i];
+        } else if (std::strcmp(a, "--notices") == 0) {
+            o.notices = true;
         } else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
             o.help = true;
         } else if (a[0] != '-' && o.path == nullptr) {
@@ -385,6 +436,13 @@ void usage()
         "                 allocate a float framebuffer takes anyway, reachable on\n"
         "                 purpose so it can be tested and so the compositor's\n"
         "                 cost can be measured\n"
+        "  --overlay LIST comma-separated surfaces to start visible:\n"
+        "                 nowplaying, lyrics, colophon. Without this they are\n"
+        "                 all off and only the phone can turn them on, which is\n"
+        "                 why no screenshot could ever contain one\n"
+        "  --notices      print the third-party licence notices and exit. The\n"
+        "                 text is compiled into the binary, so it needs no file\n"
+        "                 on disk, no window and no working directory\n"
         "  --frames N     render exactly N frames then exit\n"
         "  --shot PATH    write the last rendered frame to PATH as a BMP\n"
         "  --width W      window width in pixels (default 1280)\n"
@@ -395,6 +453,32 @@ void usage()
 }
 
 // ---------------------------------------------------------------------------
+
+// The colour every overlay draws its words in.
+//
+// ONE PLACE, BECAUSE THIS IS ISSUE 179'S FIX AND IT IS COPYABLE. The card and
+// the lyric each had their own copy of this block, and the about panel would
+// have been a third. Four copies drift, and a drift here reopens 179 in the
+// worst possible way: no compiler error, no wrong-looking string, just words
+// that turn out to be the same hue as whatever is moving behind them, on a
+// projector, in a dark room.
+//
+// readable_ink brightens and then lifts to a luminance floor -- BRIGHTNESS IS
+// NOT LUMINANCE, and a brightened pure blue is still 0.072, which is darker than
+// most of any picture it would be drawn over. linear_to_srgb rather than a
+// hand-rolled pow(x, 1/2.2): it is the real piecewise curve, it is tested, and
+// it is the exact inverse of what extract_palette applied on the way in.
+//
+// Falls back to a plain near-white when there is no art, because the palette is
+// then whatever the last record left behind or nothing at all.
+glm::vec3 overlay_ink(const TrackContext& track)
+{
+    if (!track.has_art) {
+        return glm::vec3(0.95f);
+    }
+    const glm::vec3 lit = readable_ink(track.palette_accent, kReadableInkLuminance);
+    return glm::vec3(linear_to_srgb(lit.r), linear_to_srgb(lit.g), linear_to_srgb(lit.b));
+}
 
 // What was loaded and how much of it the shader actually uses.
 //
@@ -980,6 +1064,23 @@ struct CastCommand {
         const std::lock_guard<std::mutex> lock(mutex);
         const int asked = lyrics;
         lyrics          = 0;
+        return asked;
+    }
+
+    // The colophon. Tri-state for the same reason.
+    int colophon = 0;
+
+    void request_colophon(bool visible)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        colophon = visible ? 1 : 2;
+    }
+
+    int take_colophon()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const int asked = colophon;
+        colophon        = 0;
         return asked;
     }
 
@@ -1816,6 +1917,24 @@ int main(int argc, char** argv)
         return 2;
     }
 
+    // BEFORE EVERYTHING, INCLUDING --help. A licence notice that can be
+    // suppressed by another flag on the same line is not reliably available,
+    // and this path deliberately touches no window, no device and no network.
+    //
+    // Written with fwrite through a stdout put into BINARY MODE on Windows,
+    // because the point is to reproduce the file byte for byte: in text mode
+    // the CRT would turn every '\n' into "\r\n", and the working tree's file is
+    // already CRLF, so each line would gain a second carriage return and the CI
+    // diff would fail on a difference this program invented.
+    if (opt.notices) {
+#if defined(_WIN32)
+        _setmode(_fileno(stdout), _O_BINARY);
+#endif
+        const std::string_view text = notices_text();
+        std::fwrite(text.data(), 1, text.size(), stdout);
+        return 0;
+    }
+
     // Before the track check on purpose -- asking what you may bind is a
     // question about the contract, not about a file.
     if (opt.list_bindings) {
@@ -1959,6 +2078,7 @@ int main(int argc, char** argv)
     });
     companion.set_projectm_lock_handler([&cast](bool on) { cast.request_projectm_lock(on); });
     companion.set_lyrics_handler([&cast](bool visible) { cast.request_lyrics(visible); });
+    companion.set_colophon_handler([&cast](bool visible) { cast.request_colophon(visible); });
     companion.set_now_playing_handler(
         [&cast](bool visible) { cast.request_now_playing(visible); });
     companion.set_trim_handler([&cast](double delta_ms) { cast.request_trim(delta_ms); });
@@ -2646,6 +2766,78 @@ int main(int argc, char** argv)
     // that silently does nothing is the failure `controllable` avoids on the
     // Plex side.
     bool lyrics_visible = false;
+
+    // -- the colophon: M6's fourth exit criterion -----------------------------
+    //
+    // The licence panel. See notices.hpp for why it exists at all -- LGPL-2.1
+    // section 6 makes displaying the shipped libraries' copyright notices
+    // conditional on this program displaying its own, and this panel is what
+    // makes that condition true.
+    //
+    // PAGED MANUALLY AND NEVER ON A TIMER. An auto-advancing legal notice is a
+    // notice nobody can read: a page of this document is around 300 words, and
+    // turning it every ten seconds would demand about 1,800 words a minute.
+    // Whatever is on screen stays there until somebody turns it.
+    //
+    // The pages are built ONCE, on the first frame the panel is visible, because
+    // the line budget depends on the window height and the window can be
+    // resized. `colophon_built_for` is that height: a resize rebuilds, a hundred
+    // frames at the same size do not.
+    bool        colophon_visible    = false;
+    std::size_t colophon_page       = 0;
+    int         colophon_built_for  = 0;
+    std::vector<std::string> colophon_pages;
+
+    // The rasterized page currently on screen, and which page it is. Rebuilt
+    // only when the page or the size changes -- the same discipline the lyric
+    // line uses, and for the same reason: rasterizing a 40-line page every frame
+    // would be tens of milliseconds of GDI in a 16.7 ms budget.
+    TextureHandle colophon_texture = 0;
+    int           colophon_tex_w   = 0;
+    int           colophon_tex_h   = 0;
+    std::size_t   colophon_tex_page = 0;
+    bool          colophon_tex_valid = false;
+
+    // The footer, keyed on its own text so it rebuilds when the page number
+    // changes and not when anything else does.
+    TextureHandle colophon_footer_texture = 0;
+    int           colophon_footer_w       = 0;
+    int           colophon_footer_h       = 0;
+    std::string   colophon_footer_text;
+
+    // --overlay nowplaying,lyrics,colophon
+    //
+    // Applied here, where all three flags are in scope. An unknown name is a
+    // warning rather than a failure: this is a diagnostic switch, and refusing to
+    // start because somebody typed `lyric` would be the wrong trade for one.
+    if (opt.overlay != nullptr) {
+        const std::string names(opt.overlay);
+        std::size_t       at = 0;
+        while (at <= names.size()) {
+            std::size_t end = names.find(',', at);
+            if (end == std::string::npos) {
+                end = names.size();
+            }
+            const std::string name = names.substr(at, end - at);
+            at                     = end + 1;
+            if (name.empty()) {
+                continue;
+            }
+            if (name == "nowplaying") {
+                show_now_playing = true;
+            } else if (name == "lyrics") {
+                lyrics_visible = true;
+            } else if (name == "colophon" || name == "about") {
+                colophon_visible = true;
+                colophon_page    = std::size_t(std::max(1, opt.colophon_page_arg) - 1);
+            } else {
+                std::fprintf(stderr,
+                             "holocron: --overlay `%s` is not a surface -- expected "
+                             "nowplaying, lyrics or colophon\n",
+                             name.c_str());
+            }
+        }
+    }
 
     // -- what is playing, for the crystals ------------------------------------
     //
@@ -3379,6 +3571,15 @@ int main(int argc, char** argv)
             std::printf("holocron: now-playing card %s\n", show_now_playing ? "on" : "off");
             std::fflush(stdout);
         }
+        if (const int asked = cast.take_colophon(); asked != 0) {
+            colophon_visible = asked == 1;
+            // Always from the first page. Somebody opening it from the phone is
+            // starting to read rather than resuming, and the first page carries
+            // the copyright that the rest of the document exists to support.
+            colophon_page = 0;
+            std::printf("holocron: colophon %s\n", colophon_visible ? "on" : "off");
+            std::fflush(stdout);
+        }
         {
             // DESCRIPTIVE FIELDS ONLY. `current` and the toggles are owned by the
             // control page's POST handlers -- pushing them from here every frame is
@@ -3483,7 +3684,50 @@ int main(int argc, char** argv)
         // the frame works out how many layers it needs. With this after the bind,
         // the first frame of every transition showed the incoming crystal at full
         // opacity: a flash of the new picture, then the old one coming back.
-        if (drawing_crystal) {
+        // -- the colophon takes the arrow keys while it is up --------------------
+        //
+        // Read BEFORE the crystal switcher, and it consumes the presses rather
+        // than sharing them. A panel that could be paged while the picture behind
+        // it changed would mean one key doing two things at once, and the visible
+        // half would be the one the reader is not looking at.
+        //
+        // There is no focus model here and this is not the beginning of one:
+        // exactly one surface can be up, so "what has focus" has one answer and
+        // needs no machinery to represent it. D-034's Option B -- an on-screen UI
+        // with a focus model and an HID remote -- is still not built, and this
+        // does not start it.
+        if (window.pressed(Key::kAbout)) {
+            colophon_visible = !colophon_visible;
+            colophon_page    = 0;
+            // TELL THE CONTROL PAGE, because F1 is a second source of an intent
+            // the server owns. Without this the phone would keep offering to turn
+            // on a panel that is already up -- two authorities disagreeing, which
+            // is worse than one being wrong. Only here, never every frame: see
+            // CompanionServer::set_colophon_visible.
+            companion.set_colophon_visible(colophon_visible);
+            std::printf("holocron: colophon %s\n", colophon_visible ? "on" : "off");
+            std::fflush(stdout);
+        }
+
+        bool colophon_took_arrows = false;
+        if (colophon_visible && !colophon_pages.empty()) {
+            const bool prev = window.pressed(Key::kLeft);
+            const bool next = window.pressed(Key::kRight);
+            if (prev || next) {
+                colophon_took_arrows = true;
+                // CLAMPED, NOT WRAPPED, which is the opposite of what the vault
+                // does with the same two keys. A document has a first page and a
+                // last one; wrapping from the end back to the copyright page
+                // would make it impossible to tell that the notices had finished.
+                if (next && colophon_page + 1 < colophon_pages.size()) {
+                    ++colophon_page;
+                } else if (prev && colophon_page > 0) {
+                    --colophon_page;
+                }
+            }
+        }
+
+        if (drawing_crystal && !colophon_took_arrows) {
             // Switching, then reloading, both here rather than on their own
             // thread: building a program needs the GL context, which belongs to
             // this thread.
@@ -3874,25 +4118,12 @@ int main(int argc, char** argv)
             // the picture.
             overlay.scrim(block_h + pad * 2, 0.72f, sw, sh);
 
-            // Tinted from the record, THROUGH readable_ink. The text was rasterized
-            // white with the coverage in alpha precisely so this costs nothing.
-            //
-            // The raw accent was used here until issue 179. An accent is chosen for
-            // contrast against the PRIMARY, which says nothing about contrast
-            // against a crystal -- and the crystals tint from the same palette, so
-            // the words were often the same hue as what was moving behind them.
-            //
-            // linear_to_srgb rather than a hand-rolled pow(x, 1/2.2). It is the
-            // real piecewise sRGB curve, it is tested, and it is the exact inverse
-            // of what extract_palette used on the way in -- three reasons to reuse
-            // it, and it also avoided needing <cmath> here, which GCC noticed and
-            // MSVC did not.
-            const glm::vec3 lit = readable_ink(track_context.palette_accent,
-                                               kReadableInkLuminance);
-            const glm::vec3 ink = track_context.has_art
-                                      ? glm::vec3(linear_to_srgb(lit.r), linear_to_srgb(lit.g),
-                                                  linear_to_srgb(lit.b))
-                                      : glm::vec3(0.95f);
+            // Tinted from the record. The text was rasterized white with the
+            // coverage in alpha precisely so this costs nothing. The raw accent
+            // was used here until issue 179 -- see overlay_ink, which is where
+            // that fix lives now so the card, the lyric and the colophon cannot
+            // drift apart.
+            const glm::vec3 ink = overlay_ink(track_context);
 
             // draw_text, not draw: the outline is what actually makes this readable.
             // The scrim above helps and cannot be relied on -- its gradient has
@@ -3978,14 +4209,192 @@ int main(int argc, char** argv)
                 // The outline does the job locally instead, so the box goes. A lyric
                 // sits in the middle of the frame where a panel is at its most
                 // intrusive, and subtitles have never needed one.
-                const glm::vec3 lit = readable_ink(track_context.palette_accent,
-                                                   kReadableInkLuminance);
-                const glm::vec3 ink =
-                    track_context.has_art
-                        ? glm::vec3(linear_to_srgb(lit.r), linear_to_srgb(lit.g),
-                                    linear_to_srgb(lit.b))
-                        : glm::vec3(0.97f);
+                const glm::vec3 ink = overlay_ink(track_context);
                 overlay.draw_text(lyric_texture, x, y, w, h, ink, 1.0f, sw, sh);
+            }
+        }
+
+        // -- the colophon -------------------------------------------------------
+        //
+        // M6's fourth exit criterion, and the reason it is a criterion at all is
+        // in notices.hpp: this panel is what makes LGPL-2.1 section 6's condition
+        // true, so from here on the shipped libraries' copyright notices have to
+        // be on screen with Holocron's own.
+        //
+        // LAST, so it sits over the card and the lyric -- and it SUPPRESSES
+        // neither, deliberately. Both are drawn above it in the frame and both
+        // are outside the column this draws in, so nothing overlaps and the
+        // music keeps announcing itself while somebody reads the licence.
+        if (overlay_ready && colophon_visible) {
+            const int sw = window.width();
+            const int sh = window.height();
+
+            // SIZED FROM THE WINDOW, unlike the card and the lyric, which use
+            // absolute pixels. Those are one or two lines and a fixed size is a
+            // legibility floor for them; this is a document whose PAGE COUNT
+            // depends on how much fits, so the type has to scale or a 4K page
+            // would hold four times the lines of a 720p one at the same physical
+            // size.
+            //
+            // sh/54 is 40 px at 2160. On a 100-inch 16:9 screen at ten feet that
+            // is about 26 arcminutes of character height, against roughly 20 for
+            // comfortable reading of unfamiliar text -- so it has margin, which a
+            // legal notice should. Clamped at the bottom because a small debug
+            // window must not produce type nothing can read.
+            const int em     = std::clamp(sh / 54, 16, 44);
+            const int line_h = (em * 4) / 3;
+
+            const int margin_y = sh / 12;
+            const int col_w    = (sw * 58) / 100;
+            const int col_x    = (sw - col_w) / 2;
+
+            const int footer_h = line_h * 2;
+            const int body_h   = sh - (margin_y * 2) - footer_h;
+            const auto lines_per_page =
+                static_cast<std::size_t>(std::max(1, body_h / std::max(1, line_h)));
+
+            // Built once per window size. A resize changes how much fits, so the
+            // pagination is no longer the same document.
+            if (colophon_pages.empty() || colophon_built_for != sh) {
+                std::vector<std::string> lines = flatten_notices(notices_text());
+                colophon_pages = paginate_notices(lines, lines_per_page);
+                // The authored first page goes in front -- see
+                // colophon_first_page: it is Holocron's own GPL-3 notice, and it
+                // is that page appearing which makes section 6 apply to the ones
+                // after it.
+                colophon_pages.insert(colophon_pages.begin(),
+                                      colophon_first_page(HOLOCRON_VERSION));
+                colophon_built_for = sh;
+                colophon_tex_valid = false;
+                if (colophon_page >= colophon_pages.size()) {
+                    colophon_page = 0;
+                }
+            }
+
+            if (!colophon_pages.empty()) {
+                // Rasterized only when the page changes. The lyric path
+                // established this discipline and a page of forty lines is a far
+                // better reason for it: rasterizing one every frame would be tens
+                // of milliseconds of GDI inside a 16.7 ms budget.
+                if (!colophon_tex_valid || colophon_tex_page != colophon_page) {
+                    if (colophon_texture != 0) {
+                        release_art(colophon_texture);
+                        colophon_texture = 0;
+                    }
+                    TextRequest req;
+                    req.text         = colophon_pages[colophon_page];
+                    req.pixel_height = em;
+                    req.bold         = false;
+                    req.wrap_width   = col_w;
+
+                    ImageRgba8  bitmap;
+                    std::string detail;
+                    if (render_text(req, bitmap, detail) == TextError::kOk) {
+                        colophon_texture = upload_art(bitmap);
+                        colophon_tex_w   = bitmap.width;
+                        colophon_tex_h   = bitmap.height;
+                    } else {
+                        colophon_tex_w = colophon_tex_h = 0;
+                    }
+                    colophon_tex_page  = colophon_page;
+                    colophon_tex_valid = true;
+                }
+
+                // A DARKENED COLUMN, NOT A BLACKED-OUT FRAME. The music is still
+                // playing and the picture is the product; leaving the flanks
+                // visible reads as a document laid over the visualization rather
+                // than as the visualization having stopped.
+                //
+                // 0.92 rather than the card's 0.72 gradient, and `fill` rather
+                // than `scrim`: scrim is bottom-anchored and full-width, and its
+                // alpha falls off as pow(y, 1.6), so by the height a paragraph
+                // sits at it has faded to almost nothing. The seam a hard-edged
+                // fill cuts -- which scrim's own comment warns about -- is the
+                // right trade for a modal document and the wrong one for a lyric.
+                //
+                // Behind 0.92 of near-black even a blown-out crystal contributes
+                // about 0.08 luminance, against near-white ink at 0.89. That is
+                // roughly 8:1, where the 0.42 box the lyric used to draw gave
+                // about 1.5:1.
+                const int pad = em;
+                overlay.fill(col_x - pad, 0, col_w + pad * 2, sh, glm::vec3(0.02f), 0.92f, sw,
+                             sh);
+
+                if (colophon_texture != 0 && colophon_tex_w > 0) {
+                    int w = colophon_tex_w;
+                    int h = colophon_tex_h;
+
+                    // SCALED TO FIT, NEVER REFUSED. The line budget is computed
+                    // from a line height, and the rasterizer wraps long lines on
+                    // its own, so a page can come back taller than the box was
+                    // sized for. Refusing to draw it -- or refusing to advance
+                    // past it -- would put a licence notice out of reach, which
+                    // is a compliance problem; drawing it slightly smaller is a
+                    // legibility one, and the smaller of the two.
+                    if (h > body_h && h > 0) {
+                        w = w * body_h / h;
+                        h = body_h;
+                    }
+                    // `draw`, NOT `draw_text`, AND THAT IS THE ONE PLACE IN THIS
+                    // FILE WHERE THE OUTLINE IS WRONG.
+                    //
+                    // draw_text sizes its outline as height/22, which is right
+                    // for everything it was written for -- a title, an artist
+                    // line, a lyric -- because for those `height` IS the height
+                    // of one line of type. Here `height` is a whole page: 848
+                    // pixels of it, so the offset comes out at 38 and the eight
+                    // outline passes paint a second copy of the entire page 38
+                    // pixels away in every direction. It looked like a ghost
+                    // image bleeding out of the left edge of the panel, and it
+                    // was found by rendering a page and looking at it.
+                    //
+                    // The outline is not needed here anyway, which is why this is
+                    // a fix rather than a workaround. It exists (D-043) because
+                    // text over a CRYSTAL cannot rely on a scrim -- behind 0.42
+                    // of black a bright crystal still leaves 0.58 luminance. This
+                    // text is over a deliberate 0.92 panel, which leaves about
+                    // 0.08 and gives roughly 8:1 against near-white ink. The
+                    // outline was compensating for exactly the thing the panel
+                    // already does.
+                    overlay.draw(colophon_texture, col_x, margin_y, w, h, glm::vec3(0.95f),
+                                 1.0f, sw, sh);
+                }
+
+                // The footer names the key that closes it. Escape is consumed by
+                // Window::pump and quits the player, so somebody reaching for the
+                // obvious key from a couch would stop the music mid-track -- one
+                // line of text is the cheapest possible way to remove that trap.
+                std::string footer = "page " + std::to_string(colophon_page + 1) + " of " +
+                                     std::to_string(colophon_pages.size()) +
+                                     "   --   F1 closes, left and right turn the page";
+                if (footer != colophon_footer_text) {
+                    if (colophon_footer_texture != 0) {
+                        release_art(colophon_footer_texture);
+                        colophon_footer_texture = 0;
+                    }
+                    TextRequest req;
+                    req.text         = footer;
+                    req.pixel_height = std::max(12, (em * 3) / 4);
+                    req.bold         = false;
+
+                    ImageRgba8  bitmap;
+                    std::string detail;
+                    if (render_text(req, bitmap, detail) == TextError::kOk) {
+                        colophon_footer_texture = upload_art(bitmap);
+                        colophon_footer_w       = bitmap.width;
+                        colophon_footer_h       = bitmap.height;
+                    }
+                    colophon_footer_text = footer;
+                }
+                if (colophon_footer_texture != 0) {
+                    // One line, so draw_text's outline would be correctly sized
+                    // here -- but it sits on the same panel as the body and would
+                    // be the only outlined thing on it. `draw`, for consistency
+                    // and for the same contrast reason.
+                    overlay.draw(colophon_footer_texture, col_x, sh - margin_y + line_h / 2,
+                                 colophon_footer_w, colophon_footer_h, glm::vec3(0.72f),
+                                 0.95f, sw, sh);
+                }
             }
         }
 

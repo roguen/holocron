@@ -14,7 +14,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(holocron
-    VERSION 0.5.1
+    VERSION 0.5.2
     DESCRIPTION "GPU music visualization engine that is also the music player"
     LANGUAGES CXX
 )
@@ -80,6 +80,48 @@ target_include_directories(holocron_contract INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 target_compile_features(holocron_contract INTERFACE cxx_std_20)
+
+# ---------------------------------------------------------------------------
+# Third-party notices, compiled in
+#
+# THIRD-PARTY-NOTICES.md becomes a byte array in the binary. See
+# include/holocron/notices.hpp for why a licence notice must not depend on
+# finding a file at runtime, and cmake/embed_notices.cmake for why it is hex
+# rather than a string literal.
+#
+# DEPENDS on the notices file, so editing it regenerates on the next build
+# rather than at the next configure. A generated copy that only refreshes when
+# somebody happens to reconfigure is the stale-copy problem this was meant to
+# remove.
+# ---------------------------------------------------------------------------
+
+set(HOLOCRON_NOTICES_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/THIRD-PARTY-NOTICES.md")
+set(HOLOCRON_NOTICES_GENERATED "${CMAKE_CURRENT_BINARY_DIR}/generated/notices_data.cpp")
+
+add_custom_command(
+    OUTPUT "${HOLOCRON_NOTICES_GENERATED}"
+    COMMAND ${CMAKE_COMMAND}
+            -DINPUT=${HOLOCRON_NOTICES_SOURCE}
+            -DOUTPUT=${HOLOCRON_NOTICES_GENERATED}
+            -DTEMPLATE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/notices_data.cpp.in
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_notices.cmake
+    DEPENDS "${HOLOCRON_NOTICES_SOURCE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_notices.cmake"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/notices_data.cpp.in"
+    COMMENT "Embedding THIRD-PARTY-NOTICES.md"
+    VERBATIM
+)
+
+add_library(holocron_notices STATIC
+    "${HOLOCRON_NOTICES_GENERATED}"
+    # Flattening the Markdown for display. Pure string work with no GL in it, so
+    # it lives HERE rather than with the render library -- which is what lets the
+    # pagination properties be proven on Linux CI, where there is no rasterizer
+    # and the render library is not even linked into the tests.
+    src/render/notices_view.cpp
+)
+add_library(holocron::notices ALIAS holocron_notices)
+target_link_libraries(holocron_notices PUBLIC holocron::contract PRIVATE holocron::warnings)
 
 # ---------------------------------------------------------------------------
 # Analysis stage

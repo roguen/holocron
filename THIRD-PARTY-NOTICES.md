@@ -37,6 +37,64 @@ rather than assumed.
 
 ---
 
+---
+
+## Copyright notices
+
+**These exist because of one conditional clause, and the condition is about to
+become true.** LGPL-2.1 §6, in the copy shipped at
+[`licenses/ffmpeg-LGPL-2.1.txt`](licenses/ffmpeg-LGPL-2.1.txt):
+
+> If the work during execution displays copyright notices, you must include the
+> copyright notice for the Library among them, as well as a reference directing
+> the user to the copy of this License.
+
+Until M6 nothing in Holocron displayed a copyright notice during execution, so
+the clause did not bite and this file — which records **licences and linkage**
+— was enough. The about panel displays Holocron's own copyright, which makes the
+condition true. From that moment the shipped libraries' copyright notices have to
+appear too, and a file that names licences but no copyright holders would satisfy
+the *reference* limb of §6 while omitting the *notice* limb.
+
+So they are recorded here, verbatim from each package's own licence text in
+[`licenses/`](licenses/), and the panel displays this file. One source, no second
+copy to drift.
+
+**Angle brackets are spelled out rather than escaped** in the table below. The
+about panel renders this file as plain text, so a Markdown escape like `&lt;`
+would reach the projector as those five characters rather than as `<`. SDL's
+notice therefore carries its maintainer's address in parentheses. It is the one
+place where what this file has to look like on a projector overrides what it
+would look like on GitHub, and it is recorded here so the next person to tidy it
+does not put the escape back.
+
+| Library | Copyright notice, as the package states it |
+|---|---|
+| FFmpeg | Copyright (c) the FFmpeg developers. Held collectively, with per-file notices in the source — e.g. `libavutil/avutil.h`: "copyright (c) 2006 Michael Niedermayer". The package ships no single project-wide line, so the collective form is used rather than a year range this repository cannot verify from the artifact it links against. |
+| SDL3 | Copyright (C) 1997-2026 Sam Lantinga (slouken@libsdl.org) |
+| libebur128 | Copyright (c) 2011 Jan Kokemüller |
+| glad | Copyright (c) 2013-2021 David Herberth |
+| pocketfft | Copyright (C) 2010-2018 Max-Planck-Society |
+| glm | Copyright (c) 2005 - G-Truc Creation |
+
+**FFmpeg is the only shipped dependency under the LGPL**, so it is the only one
+§6 governs. The rest are permissive — MIT, BSD-3-Clause, Zlib — and every one of
+those licences independently requires the copyright notice to be reproduced in
+binary distributions, which is the other reason this table is not FFmpeg-only.
+
+**What each limb of §6 is satisfied by**, stated so a reader does not have to
+reconstruct it:
+
+| | |
+|---|---|
+| "prominent notice … that the Library is used" | the table under *Distributed with the binary*, displayed by the about panel |
+| "the copyright notice for the Library among them" | this table |
+| "a reference directing the user to the copy of this License" | the `licenses/…` path in each row above, which the panel renders as text rather than as a hyperlink |
+| §6(b), replacing the library with a modified version | the DLL boundary — see *FFmpeg is LGPL* above |
+
+**This is a reasoned position, not advice.** It is recorded so that the reasoning
+can be checked and corrected rather than re-derived.
+
 ## FFmpeg is LGPL, and that is a deliberate configuration
 
 `vcpkg.json` pins FFmpeg with **`default-features: false`** and an explicit
