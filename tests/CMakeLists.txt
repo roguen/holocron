@@ -25,6 +25,7 @@ add_executable(holocron_tests
     test_frame_history.cpp
     test_frame_binding.cpp
     test_envelope.cpp
+    test_queue_walk.cpp
     test_crystal.cpp
     test_crystal_watch.cpp
     test_vault.cpp
