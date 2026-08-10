@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// GENERATED FILE -- DO NOT EDIT.
+//
+// Written by cmake/embed_notices.cmake from @NOTICES_SOURCE@ at build time.
+// Edit the notices file; this regenerates.
+
+#include <holocron/notices.hpp>
+
+namespace holocron {
+namespace {
+
+const unsigned char kNoticesBytes[] = {
+    @NOTICES_BYTES@
+};
+
+}  // namespace
+
+std::string_view notices_text()
+{
+    return std::string_view(reinterpret_cast<const char*>(kNoticesBytes), @NOTICES_COUNT@);
+}
+
+}  // namespace holocron
