@@ -483,6 +483,10 @@ find_package(httplib CONFIG REQUIRED)
 add_library(holocron_plex STATIC
     src/plex/plex_device.cpp
     src/plex/gdm_responder.cpp
+    # M7. Pure framing with no socket in it, so the wire format is golden-tested
+    # on both CI platforms with no receiver present -- which matters, because
+    # there is not one.
+    src/plex/eiscp.cpp
     src/plex/companion_server.cpp
     src/plex/plex_link.cpp
     src/plex/https_client.cpp
