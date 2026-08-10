@@ -234,6 +234,36 @@ void OverlayFacet::draw(TextureHandle texture, int x, int y, int width, int heig
     glDisable(GL_BLEND);
 }
 
+void OverlayFacet::draw_text(TextureHandle texture, int x, int y, int width, int height,
+                             const glm::vec3& tint, float alpha, int screen_width,
+                             int screen_height)
+{
+    if (!ready() || texture == 0 || width <= 0 || height <= 0 || alpha <= 0.0f) {
+        return;
+    }
+
+    // Scaled to the type, so the same call works for a 96-pixel title at 4K and a
+    // 30-pixel one at 720p. At least one pixel, or small text loses the outline
+    // entirely at exactly the size where it needs it most.
+    const int o = std::max(1, height / 22);
+
+    // EIGHT OFFSETS, NOT FOUR. Four leaves the diagonals of a stroke unprotected --
+    // the corner of a capital A ends up with the background showing through the
+    // notch. Eight is the smallest set that closes it, and a ninth buys nothing.
+    const int dx[8] = {-o, 0, o, -o, o, -o, 0, o};
+    const int dy[8] = {-o, -o, -o, 0, 0, o, o, o};
+
+    // Near-black rather than black. Pure black against a dark crystal reads as a
+    // hole punched in the picture; a trace of light keeps it looking like an edge.
+    const glm::vec3 edge(0.03f);
+
+    for (int i = 0; i < 8; ++i) {
+        draw(texture, x + dx[i], y + dy[i], width, height, edge, alpha, screen_width,
+             screen_height);
+    }
+    draw(texture, x, y, width, height, tint, alpha, screen_width, screen_height);
+}
+
 void OverlayFacet::fill(int x, int y, int width, int height, const glm::vec3& colour,
                         float alpha, int screen_width, int screen_height)
 {
