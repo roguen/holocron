@@ -407,3 +407,205 @@ TEST_CASE("every binding name appears in the printed vocabulary", "[crystal]")
         CHECK(vocab.find(std::string(kBindings[i].name)) != std::string::npos);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Envelope overrides. The table form of a binding.
+//
+// The rejections carry the weight here for the same reason they do above, and
+// with one addition: an envelope typo produces a PICTURE. A misspelled field
+// name gives a uniform that stays zero and a crystal that visibly does nothing,
+// which is at least a symptom. `decy = 0.4` would parse, bind, draw, and give a
+// uniform that simply never smooths -- a crystal that looks slightly wrong
+// forever, with nothing to point at.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a bare string binding has no envelope", "[crystal][envelope]")
+{
+    // Every uniform in the shipped vault is this form. If it ever stopped
+    // producing an inactive spec, every crystal would start copying and
+    // enveloping per frame without anybody asking for it.
+    Scratch s;
+    s.write("plain.frag", kMinimalFrag);
+    s.write("plain.toml", "name = \"plain\"\n[uniforms]\nu_bass = \"bass_norm\"\n");
+
+    Crystal     c;
+    std::string detail;
+    REQUIRE(load_crystal(s.stem("plain"), c, detail) == CrystalError::kOk);
+    REQUIRE(c.uniforms.size() == 1);
+    CHECK_FALSE(c.uniforms[0].envelope.active());
+}
+
+TEST_CASE("a table binding carries its envelope", "[crystal][envelope]")
+{
+    Scratch s;
+    s.write("env.frag", kMinimalFrag);
+    s.write("env.toml",
+            "name = \"env\"\n"
+            "[uniforms]\n"
+            "u_wash = { bind = \"spectral_centroid\", attack = 0.05, decay = 1.5 }\n"
+            "u_spin = { bind = \"bass_norm\", mode = \"accumulate\", scale = 0.25 }\n");
+
+    Crystal     c;
+    std::string detail;
+    INFO(detail);
+    REQUIRE(load_crystal(s.stem("env"), c, detail) == CrystalError::kOk);
+    REQUIRE(c.uniforms.size() == 2);
+
+    for (const UniformBinding& u : c.uniforms) {
+        if (u.uniform == "u_wash") {
+            CHECK(u.binding->name == "spectral_centroid");
+            CHECK(u.envelope.active());
+            CHECK(u.envelope.mode == EnvelopeMode::kSmooth);
+            CHECK(u.envelope.attack == 0.05f);
+            CHECK(u.envelope.decay == 1.5f);
+            CHECK(u.envelope.scale == 1.0f);
+        } else {
+            CHECK(u.uniform == "u_spin");
+            CHECK(u.envelope.mode == EnvelopeMode::kAccumulate);
+            CHECK(u.envelope.scale == 0.25f);
+        }
+    }
+}
+
+TEST_CASE("a table binding validates its field name like any other", "[crystal][envelope]")
+{
+    // The same error, the same vocabulary listing. An author who mistypes a field
+    // must not get a different diagnostic depending on which form they used.
+    Scratch s;
+    s.write("bad.frag", kMinimalFrag);
+    s.write("bad.toml",
+            "name = \"bad\"\n[uniforms]\nu_x = { bind = \"bass_normal\", decay = 0.4 }\n");
+
+    Crystal     c;
+    std::string detail;
+    CHECK(load_crystal(s.stem("bad"), c, detail) == CrystalError::kUnknownField);
+    INFO(detail);
+    CHECK(detail.find("bass_normal") != std::string::npos);
+    CHECK(detail.find("bass_norm ") != std::string::npos);   // the vocabulary listing
+}
+
+TEST_CASE("a table binding with no field is rejected", "[crystal][envelope]")
+{
+    Scratch s;
+    s.write("nofield.frag", kMinimalFrag);
+    s.write("nofield.toml", "name = \"nofield\"\n[uniforms]\nu_x = { decay = 0.4 }\n");
+
+    Crystal     c;
+    std::string detail;
+    CHECK(load_crystal(s.stem("nofield"), c, detail) == CrystalError::kBadEnvelope);
+    INFO(detail);
+    CHECK(detail.find("bind") != std::string::npos);
+}
+
+TEST_CASE("an unknown envelope key is rejected rather than ignored", "[crystal][envelope]")
+{
+    // THE CASE THIS SCHEMA EXISTS FOR. Ignoring it would give a uniform that
+    // draws and never smooths.
+    Scratch s;
+    s.write("typo.frag", kMinimalFrag);
+    s.write("typo.toml", "name = \"typo\"\n[uniforms]\nu_x = { bind = \"bass_norm\", decy = 0.4 }\n");
+
+    Crystal     c;
+    std::string detail;
+    CHECK(load_crystal(s.stem("typo"), c, detail) == CrystalError::kBadEnvelope);
+    INFO(detail);
+    CHECK(detail.find("decy") != std::string::npos);
+    CHECK(detail.find("decay") != std::string::npos);   // the valid keys are listed
+}
+
+TEST_CASE("source is rejected with the spelling that replaced it", "[crystal][envelope]")
+{
+    // README.md and docs/audio-frame.md both published `source` before this was
+    // built. Anyone arriving from either will write it, and the error is the only
+    // place that can tell them.
+    Scratch s;
+    s.write("src.frag", kMinimalFrag);
+    s.write("src.toml",
+            "name = \"src\"\n[uniforms]\nu_x = { source = \"onset_strength\", decay = 0.18 }\n");
+
+    Crystal     c;
+    std::string detail;
+    CHECK(load_crystal(s.stem("src"), c, detail) == CrystalError::kBadEnvelope);
+    INFO(detail);
+    CHECK(detail.find("`bind`, not `source`") != std::string::npos);
+}
+
+TEST_CASE("a negative or non-finite time constant is rejected", "[crystal][envelope]")
+{
+    // NAN IS THE ONE THAT MATTERS. It passes a `< 0` test, survives
+    // std::max(tau, 1e-6f) -- which returns nan, because the comparison is false
+    // -- and produces alpha = nan, so the uniform is nan for the life of the
+    // facet. A single NaN reaching a shader takes the whole visual with it.
+    Scratch s;
+    s.write("nf.frag", kMinimalFrag);
+
+    struct Case {
+        const char* label;
+        const char* value;
+    };
+    const Case cases[] = {
+        {"negative", "-0.5"},
+        {"nan", "nan"},
+        {"inf", "inf"},
+    };
+
+    for (const Case& k : cases) {
+        const std::string toml = std::string("name = \"nf\"\n[uniforms]\nu_x = { bind = "
+                                             "\"bass_norm\", decay = ") +
+                                 k.value + " }\n";
+        s.write("nf.toml", toml);
+
+        Crystal     c;
+        std::string detail;
+        INFO(k.label << " -> " << detail);
+        CHECK(load_crystal(s.stem("nf"), c, detail) == CrystalError::kBadEnvelope);
+    }
+}
+
+TEST_CASE("attack or decay with accumulate is rejected", "[crystal][envelope]")
+{
+    // An integrator has no attack and no decay. Accepting them and ignoring them
+    // would leave the author watching a uniform that does not smooth and no
+    // reason why -- the same silent failure the unknown-key check prevents.
+    Scratch s;
+    s.write("mix.frag", kMinimalFrag);
+    s.write("mix.toml",
+            "name = \"mix\"\n[uniforms]\n"
+            "u_x = { bind = \"bass_norm\", mode = \"accumulate\", decay = 0.4 }\n");
+
+    Crystal     c;
+    std::string detail;
+    CHECK(load_crystal(s.stem("mix"), c, detail) == CrystalError::kBadEnvelope);
+    INFO(detail);
+    CHECK(detail.find("accumulate") != std::string::npos);
+}
+
+TEST_CASE("an unknown mode is rejected and the valid ones listed", "[crystal][envelope]")
+{
+    Scratch s;
+    s.write("mode.frag", kMinimalFrag);
+    s.write("mode.toml",
+            "name = \"mode\"\n[uniforms]\nu_x = { bind = \"bass_norm\", mode = \"integrate\" }\n");
+
+    Crystal     c;
+    std::string detail;
+    CHECK(load_crystal(s.stem("mode"), c, detail) == CrystalError::kBadEnvelope);
+    INFO(detail);
+    CHECK(detail.find("accumulate") != std::string::npos);
+    CHECK(detail.find("envelope") != std::string::npos);
+}
+
+TEST_CASE("a binding that is neither a string nor a table still fails as before",
+          "[crystal][envelope]")
+{
+    // Guarding the three-way dispatch. Loosening it to "not a string means table"
+    // would turn `u_bass = [1, 2]` into a confusing envelope error instead of the
+    // plain one it has always given.
+    Scratch s;
+    s.write("arr.frag", kMinimalFrag);
+    s.write("arr.toml", "name = \"arr\"\n[uniforms]\nu_bass = [1.0, 2.0]\n");
+
+    Crystal     c;
+    std::string detail;
+    CHECK(load_crystal(s.stem("arr"), c, detail) == CrystalError::kManifestIncomplete);
+}

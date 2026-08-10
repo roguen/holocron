@@ -198,7 +198,22 @@ y     = y_prev + alpha * (x - y_prev)
 
 Defaults live in `gatekeeper.toml` and are never hardcoded. Crystal manifests may
 override attack/decay per uniform — that is what
-`u_flash = { source = "onset_strength", attack = 0.001, decay = 0.18 }` means.
+`u_flash = { bind = "onset_strength", attack = 0.001, decay = 0.18 }` means.
+
+> **This line said `source` until 2026-08-10 and the key is `bind`.** It was
+> written as specification before the feature existed, and nothing could depend on
+> it because the loader rejected every table outright. `bind` is the spelling
+> already shipping in `crystals/storm.toml`, where an archive layer's opacity binds
+> the same way through the same `find_binding()`; two spellings for one mechanism
+> would be drift between two manifest formats an author edits side by side. The
+> loader names this correction in the error when it sees `source`.
+>
+> **The step is one ANALYSIS HOP, not one drawn frame.** §1 above says the render
+> thread skips and repeats analysis frames constantly, so an envelope advanced per
+> drawn frame would run at a rate set by the monitor — a nominal 0.4 s decay would
+> really be 0.26 s at 144 Hz and 0.62 s at 60 Hz. Overrides are gated on
+> `frame_index`, so `attack` and `decay` in a manifest mean exactly what they mean
+> here and in `gatekeeper.toml`. See `include/holocron/envelope.hpp`.
 
 Sane starting points: flashes `attack 0.001 / decay 0.18`; continuous motion
 `attack 0.01 / decay 0.25`; slow washes `attack 0.05 / decay 1.5`.

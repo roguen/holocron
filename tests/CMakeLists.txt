@@ -24,6 +24,7 @@ add_executable(holocron_tests
     test_wasapi_sink.cpp
     test_frame_history.cpp
     test_frame_binding.cpp
+    test_envelope.cpp
     test_crystal.cpp
     test_crystal_watch.cpp
     test_vault.cpp
