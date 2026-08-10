@@ -65,6 +65,29 @@ public:
     void draw(TextureHandle texture, int x, int y, int width, int height,
               const glm::vec3& tint, float alpha, int screen_width, int screen_height);
 
+    // Draw a text mask with a dark outline around it.
+    //
+    // USE THIS FOR EVERY PIECE OF TEXT. `draw` is for album art and for anything
+    // whose contrast is already somebody else's problem.
+    //
+    // WHY AN OUTLINE AND NOT A BIGGER SCRIM. A partial scrim cannot guarantee
+    // anything: behind 0.42 of black a blown-out crystal still leaves 0.58
+    // luminance, which no coloured ink beats, and raising it until it does means a
+    // black panel over the picture. The gradient `scrim` draws is worse than it
+    // looks for this -- its alpha falls off as pow(y, 1.6), so at 4K the title sits
+    // where the darkening has already faded to about 0.08. The line with the least
+    // protection was the one drawn in the record's own colour.
+    //
+    // An outline is local, costs eight small quads, and works against any
+    // background -- which is why every subtitle renderer does it. The mask is
+    // already a coverage map in alpha, so the outline is the same texture drawn
+    // offset in near-black; nothing has to be re-rasterized.
+    //
+    // The width is derived from `height` rather than passed in, so two callers
+    // cannot disagree about it and neither has to think about it.
+    void draw_text(TextureHandle texture, int x, int y, int width, int height,
+                   const glm::vec3& tint, float alpha, int screen_width, int screen_height);
+
     // A filled rectangle in one colour, for the scrim behind text.
     //
     // NOT DECORATION. Antialiased type over a moving visualization is illegible

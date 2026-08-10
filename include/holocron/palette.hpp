@@ -113,4 +113,48 @@ float linear_to_srgb(float channel);
 // transfer functions: a wrong coefficient here is invisible in the output.
 float relative_luminance(const glm::vec3& linear_rgb);
 
+// The floor a palette colour is lifted to before it is used as text.
+//
+// LOW ON PURPOSE, BECAUSE IT IS A BACKSTOP RATHER THAN THE MECHANISM. The thing
+// that actually makes overlay text readable is the outline the overlay draws
+// around it; this only stops a colour so dark that even outlined type disappears.
+// A higher floor would wash every accent towards white and throw away the point
+// of tinting from the record at all.
+//
+// 0.25 linear leaves a saturated red (0.213) very nearly alone and still lifts a
+// pure blue, which is the case that needs it most -- see readable_ink.
+constexpr float kReadableInkLuminance = 0.25f;
+
+// Turn a palette colour into one that can be read as text.
+//
+// TAKES AND RETURNS LINEAR RGB. The caller applies linear_to_srgb on the way to
+// the screen, exactly as it did with the raw accent.
+//
+// WHY THIS EXISTS. The now-playing card and the lyric line were tinted straight
+// from `palette_accent`, with nothing guaranteeing it was light enough to see.
+// An accent is chosen for contrast against the PRIMARY, which says nothing about
+// contrast against a crystal -- and the crystals are tinted from the same palette,
+// so the text was frequently the same hue as the thing moving behind it. On a dark
+// sleeve it vanished. Reported from the rack as issue 179.
+//
+// `duel.frag` hit this first and fixed it with a `brighten()` that scales the
+// brightest channel to 1. That is the right first step and it is not sufficient:
+// brightness is not luminance. A pure blue brightened is still (0, 0, 1), whose
+// relative luminance is 0.072 -- darker than most of any picture it will be drawn
+// over. Hence two steps:
+//
+//   1. scale so the brightest channel is 1, which preserves the hue exactly and
+//      rescues anything merely dim
+//   2. mix towards white only as far as needed to reach `min_luminance`
+//
+// Step 2 desaturates, which is the cost, so step 1 comes first to keep it as
+// small as possible. Mixing in LINEAR space is what makes the arithmetic exact:
+// luminance is linear in the channels, so the required amount is solvable rather
+// than iterated.
+//
+// A colour that is already bright enough comes back untouched, which matters --
+// most sleeves yield an accent that needs nothing done to it, and this must not
+// quietly repaint those.
+glm::vec3 readable_ink(const glm::vec3& linear_rgb, float min_luminance);
+
 }  // namespace holocron
