@@ -46,6 +46,7 @@
 #endif
 
 #include <holocron/android_jni.hpp>
+#include <holocron/asset_seed.hpp>
 #include <holocron/platform_paths.hpp>
 
 #include <SDL3/SDL_filesystem.h>
@@ -232,6 +233,29 @@ int main(int argc, char** argv)
     std::printf("holocron: data directory %s\n",
                 holocron::data_directory().empty() ? "(none -- using the working directory)"
                                                    : holocron::data_directory().c_str());
+
+    // THE SHIPPED VAULT, OUT OF THE APK AND ONTO THE FILESYSTEM.
+    //
+    // Before the config is read and before anything scans, because the vault
+    // path resolves against the data directory that was just set and
+    // `scan_vault` walks a real directory -- an APK asset is a zip entry and is
+    // invisible to it.
+    //
+    // Nothing already there is overwritten, so a crystal the owner edited or
+    // added survives an upgrade. See asset_seed.hpp.
+    //
+    // The default vault path rather than the configured one, deliberately: the
+    // config has not been read yet, and a user who has pointed `[paths] vault`
+    // somewhere else has a vault already and does not want this one unpacked on
+    // top of it. Seeding the default is what makes a FIRST run work.
+    if (!holocron::data_directory().empty()) {
+        const holocron::SeedReport seed =
+            holocron::seed_vault_from_assets(holocron::resolve_data_path("crystals"));
+        if (seed.state != holocron::SeedState::kUnsupported) {
+            std::printf("holocron: %s -- %d copied, %d already there\n",
+                        holocron::to_string(seed.state), seed.copied, seed.skipped);
+        }
+    }
 
     return holocron_main(argc, argv);
 }
