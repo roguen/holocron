@@ -181,6 +181,7 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     read_int(tbl, "render", "width", out.width, bad);
     read_int(tbl, "render", "height", out.height, bad);
     read_bool(tbl, "render", "vsync", out.vsync, bad);
+    read_bool(tbl, "render", "fullscreen", out.fullscreen, bad);
     read_bool(tbl, "render", "gl_debug", out.gl_debug, bad);
     read_double(tbl, "render", "scale", out.render_scale, bad);
     read_double(tbl, "render", "bloom", out.bloom, bad);

@@ -5,6 +5,16 @@
 
 #include <holocron/window.hpp>
 
+// BEFORE glad, and only on Windows. glad defines APIENTRY itself if nothing has,
+// and windows.h arriving afterwards would redefine it. WIN32_LEAN_AND_MEAN keeps
+// winsock and the shell headers out of a translation unit that only wants
+// SetProcessDpiAwarenessContext; NOMINMAX keeps the min/max macros away from glm.
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 #include <glad/glad.h>
 
 #include <SDL3/SDL_error.h>
@@ -12,6 +22,7 @@
 #include <SDL3/SDL_init.h>
 #include <SDL3/SDL_video.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -65,6 +76,35 @@ struct Window::Impl {
     {
         SDL_GetWindowSizeInPixels(window, &width, &height);
     }
+
+    // What the window is in PIXELS versus what it is in the desktop's own
+    // coordinates, and the ratio between them.
+    //
+    // REPORTED BECAUSE EVERY WAY OF GETTING THIS WRONG IS SILENT, and they are
+    // not distinguishable from each other without the numbers.
+    //
+    // A picture can arrive at a 4K projector as 1080p in at least three ways: the
+    // desktop is set to 1080p and the driver upscales, the desktop is 4K but
+    // scaled and this process is not DPI-aware, or the window is simply not
+    // fullscreen. All three look identical from the couch -- softness that is
+    // easy to blame on the projector -- and none produces an error or a log line.
+    //
+    // Establishing which one it was cost most of a session. This line is what
+    // makes the next occurrence a glance instead.
+    //
+    // It matters most for the judgements the theatre exists to make: whether the
+    // overlay's outline reads as an outline or a smudge is a question about
+    // pixels, and asking it of an upscaled render answers a different question.
+    void report_density() const
+    {
+        int wlogical = 0, hlogical = 0;
+        SDL_GetWindowSize(window, &wlogical, &hlogical);
+        const float density = SDL_GetWindowPixelDensity(window);
+        std::printf("holocron: window %dx%d logical, %dx%d pixels, density %.2f%s\n", wlogical,
+                    hlogical, width, height, static_cast<double>(density),
+                    (wlogical != width || hlogical != height) ? "" : " (no scaling)");
+        std::fflush(stdout);
+    }
 };
 
 Window::Window() : impl_(std::make_unique<Impl>()) {}
@@ -79,6 +119,48 @@ WindowError Window::open(const WindowConfig& cfg)
     if (impl_->open) {
         return WindowError::kOk;
     }
+
+#ifdef _WIN32
+    // DECLARE DPI AWARENESS BEFORE SDL TOUCHES THE DISPLAY, or the display this
+    // process is told about is not the one the projector is showing.
+    //
+    // Windows virtualises a scaled desktop for any process that has not declared
+    // awareness, and it does so BEFORE SDL asks -- so SDL_GetWindowSizeInPixels
+    // reports the reduced size with a pixel density of 1.00 and looks entirely
+    // healthy. SDL_WINDOW_HIGH_PIXEL_DENSITY cannot help, because there is no
+    // high density left to see by the time SDL runs.
+    //
+    // THIS IS LATENT ON THE RACK TODAY AND WAS ADDED ANYWAY. The desktop there is
+    // currently 1920x1080 upscaled to a 4K HDMI signal by the driver, so there is
+    // no scaling for this to see through and `--fullscreen` reports 1920x1080
+    // with or without it -- checked, both ways, same binary. It starts mattering
+    // the moment the desktop is set to 3840x2160, which on a projector almost
+    // certainly means scaling above 100%, and at that point the failure is a
+    // picture rendered at half resolution with nothing anywhere saying so.
+    //
+    // Resolved by name rather than linked. SetProcessDpiAwarenessContext needs
+    // Windows 10 1703, and this project already resolves projectM and GLEW this
+    // way for the same reason: a missing symbol becomes a lost feature rather
+    // than a process that will not start.
+    //
+    // Failure is deliberately SILENT. A player that refuses to open a window
+    // because the desktop is scaled is worse than a slightly soft picture, and
+    // report_density() prints the numbers either way -- which is what makes this
+    // diagnosable rather than merely handled.
+    {
+        using SetCtxFn = BOOL(WINAPI*)(void*);
+        if (HMODULE user32 = GetModuleHandleW(L"user32.dll"); user32 != nullptr) {
+            const auto set_ctx = reinterpret_cast<SetCtxFn>(
+                reinterpret_cast<void*>(GetProcAddress(user32, "SetProcessDpiAwarenessContext")));
+            if (set_ctx != nullptr) {
+                // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 == (HANDLE)-4.
+                // Spelled as a literal because the constant needs a newer SDK
+                // header than this translation unit is guaranteed.
+                set_ctx(reinterpret_cast<void*>(static_cast<std::intptr_t>(-4)));
+            }
+        }
+    }
+#endif
 
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
         // Headless CI and a machine with no display both land here. It is a
@@ -101,6 +183,24 @@ WindowError Window::open(const WindowConfig& cfg)
     SDL_WindowFlags flags = SDL_WINDOW_OPENGL;
     if (cfg.resizable) {
         flags |= SDL_WINDOW_RESIZABLE;
+    }
+    if (cfg.fullscreen) {
+        // Takes the display's CURRENT mode rather than setting one. See the note
+        // in window.hpp: the mode belongs to the driver and to whatever the HDMI
+        // link negotiated, and a player that changed it would make that setting
+        // invisible and invalidate the measured trim.
+        flags |= SDL_WINDOW_FULLSCREEN;
+
+        // Ask for a backbuffer at the display's real pixel count rather than at
+        // its logical size. Paired with the DPI-awareness call above: that one
+        // stops Windows lying to the process, this one stops SDL rounding the
+        // truth away afterwards. Neither is sufficient alone.
+        //
+        // Like that call, this changes nothing on the rack as it stands, because
+        // the desktop there is 1920x1080 with no scaling. Both exist so that
+        // setting the desktop to 4K is a display-settings change and not also a
+        // debugging session.
+        flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
     }
 
     impl_->window = SDL_CreateWindow(cfg.title, cfg.width, cfg.height, flags);
@@ -155,6 +255,7 @@ WindowError Window::open(const WindowConfig& cfg)
     SDL_GL_SetSwapInterval(cfg.vsync ? 1 : 0);
 
     impl_->refresh_size();
+    impl_->report_density();
     impl_->open = true;
     impl_->quit = false;
     return WindowError::kOk;

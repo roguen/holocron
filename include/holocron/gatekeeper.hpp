@@ -81,6 +81,13 @@ struct Gatekeeper {
     bool vsync    = true;
     bool gl_debug = true;
 
+    // Fill the display, ignoring width and height. See window.hpp for why this
+    // takes the display's CURRENT mode rather than setting one.
+    //
+    // Off by default because the desk is where every test run happens. The
+    // theatre asks for it, by config or by --fullscreen (issue 219).
+    bool fullscreen = false;
+
     // The final pass, which belongs to the DISPLAY rather than to any crystal.
     //
     // `grain` is on by default and the others are not, and the difference is that
