@@ -11,6 +11,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 
@@ -494,4 +495,221 @@ TEST_CASE("the degenerate projectM archive is one layer with no files")
     // has its own schedule for them.
     CHECK(a.watch_paths.empty());
     CHECK(a.manifest_path.empty());
+}
+
+// ---------------------------------------------------------------------------
+// A layer's opacity can smooth its binding. Issue 199.
+//
+// v0.5.1 gave crystal manifests per-uniform envelope overrides; archive
+// manifests bind the same fields through the same find_binding() and did not get
+// them, so the same field was smoothable in one manifest and not in the other.
+// The last case here is the only one that says the feature is worth having.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("an opacity table accepts attack and decay", "[archive][envelope]")
+{
+    const std::string stem = write_manifest("env_keys", R"(
+name = "smoothed"
+
+[[layer]]
+crystal = "drift"
+opacity = { bind = "spectral_flux", min = 0.2, max = 0.9, attack = 0.05, decay = 0.6 }
+)");
+
+    Archive     a;
+    std::string detail;
+    REQUIRE(load_archive(stem, a, detail) == ArchiveError::kOk);
+    REQUIRE(a.layers.size() == 1);
+
+    const LayerOpacity& o = a.layers[0].opacity;
+    CHECK(o.attack == 0.05f);
+    CHECK(o.decay == 0.6f);
+    CHECK(o.enveloped());
+
+    // The range map is untouched by the addition, which is the point of keeping
+    // min/max here rather than borrowing the crystal side's `scale`: they are
+    // two shapes because they are two jobs.
+    CHECK(o.min == 0.2f);
+    CHECK(o.max == 0.9f);
+}
+
+TEST_CASE("an opacity with no attack or decay is not enveloped", "[archive][envelope]")
+{
+    // Every archive written before issue 199 is this one -- including the only
+    // shipped archive, which binds a field the analysis already envelopes -- and
+    // it has to keep reading raw.
+    const std::string stem = write_manifest("env_absent", R"(
+name = "storm-shaped"
+
+[[layer]]
+crystal = "drift"
+opacity = { bind = "bass_norm", min = 0.35, max = 1.0 }
+)");
+
+    Archive     a;
+    std::string detail;
+    REQUIRE(load_archive(stem, a, detail) == ArchiveError::kOk);
+    CHECK_FALSE(a.layers[0].opacity.enveloped());
+
+    // And the two-argument call is unchanged: no state, no step, same answer it
+    // gave before this feature existed.
+    AudioFrame frame{};
+    frame.bass_norm  = 0.5f;
+    const float v    = layer_opacity(a.layers[0].opacity, frame);
+    CHECK(v > 0.674f);
+    CHECK(v < 0.676f);
+}
+
+TEST_CASE("a negative opacity time constant is refused", "[archive][envelope]")
+{
+    // Not slow smoothing -- an exponential that runs away from the signal.
+    // Refused rather than clamped, for the same reason the inverted range beside
+    // it is refused rather than swapped.
+    const std::string stem = write_manifest("env_negative", R"(
+name = "bad"
+
+[[layer]]
+crystal = "drift"
+opacity = { bind = "bass_norm", decay = -0.5 }
+)");
+
+    Archive     a;
+    std::string detail;
+    CHECK(load_archive(stem, a, detail) == ArchiveError::kBadRange);
+}
+
+TEST_CASE("an enveloped opacity seeds rather than climbing out of zero",
+          "[archive][envelope]")
+{
+    // The first frame of EVERY track has frame_index 0, because PlaybackSession
+    // builds a fresh AnalysisStage on each start(). A layer that faded up from
+    // nothing at every track boundary would be inventing a transition the music
+    // does not have.
+    const std::string stem = write_manifest("env_seed", R"(
+name = "seeded"
+
+[[layer]]
+crystal = "drift"
+opacity = { bind = "bass_norm", decay = 1.0 }
+)");
+
+    Archive     a;
+    std::string detail;
+    REQUIRE(load_archive(stem, a, detail) == ArchiveError::kOk);
+
+    AudioFrame frame{};
+    frame.bass_norm   = 0.8f;
+    frame.frame_index = 0;
+
+    float       state = 0.0f;
+    const float first = layer_opacity(a.layers[0].opacity, frame, &state,
+                                      hops_between(0, frame.frame_index, /*saw_any=*/false));
+
+    CHECK(first > 0.79f);
+    CHECK(first < 0.81f);
+    CHECK(state > 0.79f);
+    CHECK(state < 0.81f);
+}
+
+TEST_CASE("an enveloped opacity is calmer than a raw one, measurably",
+          "[archive][envelope]")
+{
+    // THE CASE THAT SAYS THE FEATURE IS WORTH HAVING, and it is the measurement
+    // the issue was filed on: bound raw, `spectral_flux` reverses direction 60.8
+    // times per 100 frames against `bass_norm`'s 11.1. At 93.75 Hz that is a
+    // whole layer's opacity changing direction forty times a second.
+    //
+    // THE SIGNAL IS JITTER ON A SLOW SWELL, AND A SQUARE WAVE WOULD BE THE WRONG
+    // TEST -- which this was, first time round. It failed, and it was right to.
+    //
+    // A one-pole envelope always moves toward its input, so it reverses when the
+    // input CROSSES it, not when the input reverses. Against a strict alternation
+    // every sample is a crossing, so smoothing cuts the swing and leaves the
+    // reversal count exactly where it was -- measured, 197 either way. That is
+    // not a defect in the envelope, it is what the metric measures. Real spectral
+    // flux is jitter around a slowly moving level, where runs sit above or below
+    // the envelope for several frames at a time.
+    //
+    // Deterministic jitter rather than random: a test whose input changes per run
+    // cannot have a threshold that means anything.
+    const std::string stem = write_manifest("env_flips", R"(
+name = "flips"
+
+[[layer]]
+crystal = "drift"
+opacity = { bind = "spectral_flux" }
+
+[[layer]]
+crystal = "drift"
+opacity = { bind = "spectral_flux", attack = 0.2, decay = 0.2 }
+)");
+
+    Archive     a;
+    std::string detail;
+    REQUIRE(load_archive(stem, a, detail) == ArchiveError::kOk);
+    REQUIRE(a.layers.size() == 2);
+    REQUIRE_FALSE(a.layers[0].opacity.enveloped());
+    REQUIRE(a.layers[1].opacity.enveloped());
+
+    struct Trace {
+        int   flips;
+        float mean_step;
+    };
+
+    const auto walk = [](const LayerOpacity& o) {
+        AudioFrame frame{};
+        float      state    = 0.0f;
+        float      previous = 0.0f;
+        float      swing    = 0.0f;
+        int        sign     = 0;
+        int        flips    = 0;
+
+        for (std::uint64_t i = 0; i < 400; ++i) {
+            frame.frame_index = i;
+
+            // A slow swell with hash-derived jitter on top. The swell is what an
+            // envelope should follow; the jitter is what it should ignore.
+            const std::uint32_t h = static_cast<std::uint32_t>(i) * 1103515245u + 12345u;
+            const float jitter = (static_cast<float>((h >> 16) & 0xFFu) / 255.0f) - 0.5f;
+            frame.spectral_flux =
+                0.5f + 0.30f * std::sin(static_cast<float>(i) * 0.05f) + 0.40f * jitter;
+
+            const float v =
+                layer_opacity(o, frame, &state, hops_between(i == 0 ? 0 : i - 1, i, i != 0));
+
+            if (i > 1) {
+                const int dir = (v > previous) ? 1 : (v < previous ? -1 : 0);
+                if (dir != 0 && sign != 0 && dir != sign) {
+                    ++flips;
+                }
+                if (dir != 0) {
+                    sign = dir;
+                }
+                swing += std::fabs(v - previous);
+            }
+            previous = v;
+        }
+        return Trace{flips, swing / 398.0f};
+    };
+
+    const Trace raw      = walk(a.layers[0].opacity);
+    const Trace smoothed = walk(a.layers[1].opacity);
+
+    INFO("raw " << raw.flips << " reversals, mean step " << raw.mean_step << " -- smoothed "
+                << smoothed.flips << " reversals, mean step " << smoothed.mean_step);
+
+    // The raw binding follows every wiggle: it reverses on nearly half the frames
+    // of a 400-frame run.
+    CHECK(raw.flips > 150);
+
+    // Reversals roughly halve. A RATIO rather than an absolute, so a change to
+    // kHopSeconds moves both and the test keeps meaning what it says.
+    CHECK(smoothed.flips * 3 < raw.flips * 2);
+
+    // AND THE COUNT UNDERSTATES IT, WHICH IS WHY THE SECOND MEASURE IS HERE.
+    // Jitter around a slowly moving level crosses the envelope roughly half the
+    // time whatever the time constant is, so the reversal count can only fall so
+    // far. What collapses is the SIZE of each move, which is what an eye actually
+    // sees on a layer's opacity.
+    CHECK(smoothed.mean_step * 5.0f < raw.mean_step);
 }

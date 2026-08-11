@@ -226,6 +226,24 @@ ArchiveError load_archive(const std::string& stem_path, Archive& out, std::strin
             if (const auto* hi = (*bound)["max"].as_floating_point()) {
                 layer.opacity.max = static_cast<float>(hi->get());
             }
+            // Issue 199. Same two keys, same units and the same meaning as a
+            // crystal manifest's per-uniform override -- an author who has
+            // written one has already learned this one.
+            if (const auto* at = (*bound)["attack"].as_floating_point()) {
+                layer.opacity.attack = static_cast<float>(at->get());
+            }
+            if (const auto* de = (*bound)["decay"].as_floating_point()) {
+                layer.opacity.decay = static_cast<float>(de->get());
+            }
+            if (layer.opacity.attack < 0.0f || layer.opacity.decay < 0.0f) {
+                // A negative time constant is not slow smoothing, it is an
+                // exponential that runs away from the signal. Refused rather
+                // than clamped, for the reason the inverted range below is.
+                out_detail = manifest_path + ": layer " + std::to_string(i) +
+                             " has a negative opacity attack or decay";
+                return ArchiveError::kBadRange;
+            }
+
             if (!(layer.opacity.max > layer.opacity.min)) {
                 // REFUSED RATHER THAN SWAPPED. An inverted range is very likely
                 // an author meaning to invert the response, and silently
@@ -300,12 +318,32 @@ Archive archive_of_projectm(const std::string& name)
     return a;
 }
 
-float layer_opacity(const LayerOpacity& o, const AudioFrame& frame)
+float layer_opacity(const LayerOpacity& o, const AudioFrame& frame, float* state, HopStep step)
 {
     if (o.binding == nullptr) {
         return std::clamp(o.fixed, 0.0f, 1.0f);
     }
-    const float value = std::clamp(read_scalar(frame, *o.binding), 0.0f, 1.0f);
+    float value = std::clamp(read_scalar(frame, *o.binding), 0.0f, 1.0f);
+
+    // THE ENVELOPE RUNS ON THE FIELD, BEFORE THE RANGE MAP. See the header: this
+    // is what makes `decay = 0.4` mean the same thing here as in a crystal
+    // manifest and in gatekeeper.toml, instead of meaning something that shifts
+    // with `min` and `max`.
+    if (o.enveloped() && state != nullptr) {
+        if (step.reseed) {
+            // Straight to the current reading rather than climbing out of zero.
+            // The first frame of every track has frame_index 0 -- PlaybackSession
+            // builds a fresh AnalysisStage on every start() -- and a layer that
+            // faded up from nothing at each track boundary would be inventing a
+            // transition the music does not have.
+            *state = value;
+        } else {
+            *state = envelope_apply(*state, value, envelope_alpha(o.attack, step.hops),
+                                    envelope_alpha(o.decay, step.hops));
+        }
+        value = std::clamp(*state, 0.0f, 1.0f);
+    }
+
     return std::clamp(o.min + (o.max - o.min) * value, 0.0f, 1.0f);
 }
 

@@ -98,6 +98,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -581,6 +582,23 @@ struct ProjectMContext {
 struct LiveStack {
     Archive                              archive;
     std::vector<std::unique_ptr<Facet>>  facets;
+
+    // One envelope value per layer, for an opacity that smooths its binding.
+    // Issue 199.
+    //
+    // ON THE STACK RATHER THAN BESIDE IT, because the stack is rebuilt exactly
+    // when this state should be discarded: a switch, a reload, a crossfade. A
+    // value kept somewhere longer-lived would carry the previous archive's
+    // opacity into the new one, and would have to be told when to stop.
+    //
+    // `opacity_seen` is the frame_index the envelope last advanced on, and
+    // `opacity_primed` distinguishes "no frame yet" from "frame 0" -- which is
+    // not pedantry: the first frame of EVERY track is index 0, because
+    // PlaybackSession builds a fresh AnalysisStage on each start(). See
+    // hops_between, which makes the same distinction for the same reason.
+    std::array<float, kMaxArchiveLayers> opacity_env{};
+    std::uint64_t                        opacity_seen   = 0;
+    bool                                 opacity_primed = false;
 
     // The projectM facet in this stack, if it has one, borrowed from `facets`.
     //
@@ -5195,9 +5213,21 @@ int main(int argc, char** argv)
             LayerState states[kMaxArchiveLayers]{};
             std::size_t n = 0;
 
+            // ONE HOP STEP PER STACK PER FRAME, computed before the loop and
+            // shared by every layer in it. Each layer carries its own value but
+            // they all advance by the same number of analysis frames, and asking
+            // hops_between once per layer would mark the index as seen on the
+            // first layer and hand every later one a step of zero.
+            const HopStep live_step =
+                hops_between(live_stack.opacity_seen, frame.frame_index,
+                             live_stack.opacity_primed);
+            live_stack.opacity_seen   = frame.frame_index;
+            live_stack.opacity_primed = true;
+
             for (std::size_t i = 0; i < live_stack.size() && n < kMaxArchiveLayers; ++i, ++n) {
                 const ArchiveLayer& spec = live_stack.archive.layers[i];
-                states[n].opacity = layer_opacity(spec.opacity, frame);
+                states[n].opacity =
+                    layer_opacity(spec.opacity, frame, &live_stack.opacity_env[i], live_step);
                 states[n].blend   = spec.blend;
                 states[n].live    = true;
             }
@@ -5210,10 +5240,24 @@ int main(int argc, char** argv)
             // them all to normal was the alternative and it makes an additive
             // layer flash as it leaves.
             if (fading) {
+                // The outgoing stack keeps stepping its own envelopes for the
+                // 0.4 s it is still on screen. Freezing them instead would stop
+                // the leaving picture responding to the music halfway through a
+                // transition, which is the one moment both pictures are being
+                // looked at.
+                const HopStep out_step =
+                    hops_between(outgoing_stack.opacity_seen, frame.frame_index,
+                                 outgoing_stack.opacity_primed);
+                outgoing_stack.opacity_seen   = frame.frame_index;
+                outgoing_stack.opacity_primed = true;
+
                 for (std::size_t j = 0; j < outgoing_stack.size() && n < kMaxArchiveLayers;
                      ++j, ++n) {
                     const ArchiveLayer& spec = outgoing_stack.archive.layers[j];
-                    states[n].opacity = layer_opacity(spec.opacity, frame) * fade;
+                    states[n].opacity =
+                        layer_opacity(spec.opacity, frame, &outgoing_stack.opacity_env[j],
+                                      out_step) *
+                        fade;
                     states[n].blend   = spec.blend;
                     states[n].live    = true;
                 }
