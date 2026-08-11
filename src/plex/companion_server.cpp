@@ -108,6 +108,19 @@ std::string control_page(const CompanionServer::ControlState& state)
 
     out += "<!doctype html><html><head><meta charset=\"utf-8\">"
            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+           // TEN SECONDS, AND THE OWNER SAID YES TO THE COST. Issue 214.
+           //
+           // The vault is re-scanned while the player runs, so a crystal can
+           // arrive while this page is open -- and a page with no JavaScript in it
+           // has exactly one mechanism for showing that. The alternative was a
+           // fetch loop, which would mean this document stops being the
+           // self-contained no-JavaScript thing that makes it impossible to get
+           // out of step with the player.
+           //
+           // It costs the scroll position every ten seconds. On the tuning page
+           // that would be intolerable -- you are watching the picture and nudging
+           // a number -- which is why it is here and not there.
+           "<meta http-equiv=\"refresh\" content=\"10\">"
            "<title>Holocron</title><style>"
            "body{background:#0b0b0d;color:#e8e8ea;font:16px/1.5 system-ui,sans-serif;"
            "margin:0;padding:20px;-webkit-text-size-adjust:100%}"
@@ -119,6 +132,10 @@ std::string control_page(const CompanionServer::ControlState& state)
            ".np .t{font-size:18px;font-weight:600}"
            ".np .a{color:#a0a0a8}"
            ".sub{color:#8a8a92;font-size:13px}"
+           // The same amber the tuning page warns in and the toast draws a
+           // failure in. Three surfaces, one meaning: something did not work.
+           ".warn{color:#ffb26b}"
+           ".warn .sub{color:#d59a63}"
            // Two buttons on one line, for the preset pair. The tuning page
            // already has this rule; it is repeated rather than shared because the
            // two pages have separate style blocks on purpose -- they are served
@@ -171,10 +188,63 @@ std::string control_page(const CompanionServer::ControlState& state)
             const bool on = !state.sync_showing && i == state.current;
             out += "<form method=\"post\" action=\"/control/crystal\">";
             out += "<input type=\"hidden\" name=\"index\" value=\"" + std::to_string(i) + "\">";
+            // WHICH LIST THIS INDEX BELONGS TO. See ControlState::vault_generation:
+            // the vault is sorted by name and can be re-scanned underneath an open
+            // page, so an index without one of these is a number that used to mean
+            // something.
+            out += "<input type=\"hidden\" name=\"gen\" value=\"" +
+                   std::to_string(state.vault_generation) + "\">";
             out += "<button class=\"";
             out += on ? "on" : "";
             out += "\" type=\"submit\">" + html_escape(state.crystals[i]) + "</button></form>";
         }
+    }
+
+    // -- what the vault could not load ----------------------------------------
+    //
+    // ESCAPED, like every other value on this page. A problem's text contains a
+    // path and a compiler's own words, and a shader whose filename or error
+    // message contains a bracket would otherwise break the markup -- from a file
+    // the player was handed rather than one it wrote.
+    //
+    // Shown near the list because that is the question it answers: "I copied a
+    // crystal in and it is not here." Before this, the reason was on a terminal
+    // in another room.
+    if (!state.vault_problems.empty()) {
+        out += "<div class=\"np warn\"><div><b>";
+        out += std::to_string(state.vault_problems.size());
+        out += state.vault_problems.size() == 1 ? " crystal did not load</b></div>"
+                                                : " crystals did not load</b></div>";
+        for (const std::string& p : state.vault_problems) {
+            out += "<div class=\"sub\">" + html_escape(p) + "</div>";
+        }
+        out += "</div>";
+    }
+
+    if (!state.last_error.empty()) {
+        out += "<div class=\"np warn\"><div class=\"sub\">last failure</div><div>";
+        out += html_escape(state.last_error);
+        out += "</div></div>";
+    }
+
+    // Hidden when there is no directory to read -- see vault_rescannable. When it
+    // is there it is unconditional, because the reasons to press it are the ones
+    // the scanner cannot see. See CompanionServer::RescanHandler.
+    if (state.vault_rescannable) {
+        out += "<form method=\"post\" action=\"/control/rescan\">"
+               "<button type=\"submit\">Look for new crystals</button></form>";
+
+        // Beside the rescan button, because the two are the same thought a beat
+        // apart: find what arrived, and put it up. Off by default -- see
+        // ControlState::follow_new for why, and for what would replace it.
+        out += "<form method=\"post\" action=\"/control/follownew\">";
+        out += "<input type=\"hidden\" name=\"on\" value=\"";
+        out += state.follow_new ? "0" : "1";
+        out += "\"><button class=\"";
+        out += state.follow_new ? "on" : "";
+        out += "\" type=\"submit\">Show new ones as they arrive</button></form>";
+        out += "<div class=\"sub\">For authoring. Leave it off while somebody is "
+               "listening -- it changes the picture mid-track.</div>";
     }
 
     // -- projectM, only when one is actually drawing --------------------------
@@ -480,6 +550,8 @@ struct CompanionServer::Impl {
     CompanionServer::SeekHandler          seek_handler;
     CompanionServer::RefreshQueueHandler  refresh_queue_handler;
     CompanionServer::SelectCrystalHandler select_crystal_handler;
+    CompanionServer::RescanHandler        rescan_handler;
+    CompanionServer::FollowNewHandler     follow_new_handler;
     CompanionServer::LyricsHandler        lyrics_handler;
     CompanionServer::LyricsHandler        colophon_handler;
     CompanionServer::NowPlayingHandler    now_playing_handler;
@@ -946,6 +1018,43 @@ void CompanionServer::Impl::install_routes()
         const auto index = req.get_param_value("index");
         if (!index.empty()) {
             const std::int64_t chosen = parse_int64(index, -1);
+
+            // WAS THIS PAGE LOOKING AT THE LIST WE HAVE? Issue 214.
+            //
+            // Checked HERE, on the HTTP worker and under the same lock that the
+            // optimistic write below takes -- not on the render thread. The render
+            // thread would see the request one frame later, after this handler has
+            // already written its guess into the page's state and redirected.
+            //
+            // A request with no `gen` at all is accepted. This is a staleness
+            // guard, not an authentication mechanism: the page always sends one,
+            // and there is nothing on this port for a check like that to protect
+            // -- refusing would only break a curl somebody uses to script the
+            // thing, while stopping nobody.
+            bool          stale     = false;
+            std::uint64_t posted_gen = 0;
+            if (const std::string gen = req.get_param_value("gen"); !gen.empty()) {
+                posted_gen = static_cast<std::uint64_t>(parse_int64(gen, 0));
+                const std::lock_guard<std::mutex> lock(self->control_mutex);
+                stale = posted_gen != self->control.vault_generation;
+            }
+
+            if (stale) {
+                // NOT CLAMPED, NOT GUESSED AT, AND NOT SILENT. The vault is sorted
+                // by display name, so an index from an older list does not point
+                // at nothing -- it points at the wrong crystal, and obeying it
+                // would switch to something nobody asked for. The 303 below
+                // re-renders the list as it is now, which is the only useful thing
+                // to do with a tap on a row that has moved.
+                std::fprintf(stderr,
+                             "control: ignoring crystal %lld -- the vault changed under that "
+                             "page\n",
+                             static_cast<long long>(chosen));
+                std::fflush(stderr);
+                redirect_to_control(res);
+                return;
+            }
+
             if (chosen >= 0) {
                 std::printf("control: crystal %lld\n", static_cast<long long>(chosen));
                 std::fflush(stdout);
@@ -961,9 +1070,51 @@ void CompanionServer::Impl::install_routes()
                     }
                 }
                 if (self->select_crystal_handler) {
-                    self->select_crystal_handler(static_cast<std::size_t>(chosen));
+                    self->select_crystal_handler(static_cast<std::size_t>(chosen), posted_gen);
                 }
             }
+        }
+        redirect_to_control(res);
+    });
+
+    // Registered here, with the rest of the control surface and well before the
+    // `/player/.*` catch-all. Routes match in REGISTRATION ORDER -- the ordering
+    // is load-bearing and test_companion_server.cpp already asserts it for the
+    // timeline and refreshPlayQueue, both of which were shadowed once.
+    self->server.Post("/control/rescan", [self, redirect_to_control](const httplib::Request&,
+                                                                     httplib::Response& res) {
+        self->decorate(res);
+        std::printf("control: rescan the vault\n");
+        std::fflush(stdout);
+        if (self->rescan_handler) {
+            self->rescan_handler();
+        }
+        // NOTHING IS WRITTEN OPTIMISTICALLY HERE, unlike the crystal handler.
+        // There is no state to guess at: a scan takes as long as it takes, and
+        // the page that comes back from this redirect is honestly the one from
+        // before it finished. The auto-refresh shows the result a few seconds
+        // later, which is what it is for.
+        redirect_to_control(res);
+    });
+
+    self->server.Post("/control/follownew", [self, redirect_to_control](
+                                                const httplib::Request& req,
+                                                httplib::Response&      res) {
+        self->decorate(res);
+        const bool on = req.get_param_value("on") == "1";
+
+        // WRITTEN HERE AND NOT PUSHED FROM THE RENDER LOOP. This is a toggle, so
+        // the button carries the state it wants to move TO -- a page rendered from
+        // a stale read would send the wrong target and the control would
+        // flip-flop on alternate taps. Same ownership split as the overlays.
+        {
+            const std::lock_guard<std::mutex> lock(self->control_mutex);
+            self->control.follow_new = on;
+        }
+        std::printf("control: follow new crystals %s\n", on ? "on" : "off");
+        std::fflush(stdout);
+        if (self->follow_new_handler) {
+            self->follow_new_handler(on);
         }
         redirect_to_control(res);
     });
@@ -1348,6 +1499,16 @@ void CompanionServer::set_select_crystal_handler(SelectCrystalHandler handler)
     impl_->select_crystal_handler = std::move(handler);
 }
 
+void CompanionServer::set_rescan_handler(RescanHandler handler)
+{
+    impl_->rescan_handler = std::move(handler);
+}
+
+void CompanionServer::set_follow_new_handler(FollowNewHandler handler)
+{
+    impl_->follow_new_handler = std::move(handler);
+}
+
 void CompanionServer::set_lyrics_handler(LyricsHandler handler)
 {
     impl_->lyrics_handler = std::move(handler);
@@ -1414,15 +1575,35 @@ void CompanionServer::set_control_tuning(double trim_ms, double headroom_ms, boo
     // delta -- so there is nothing for a stale page to get wrong.
 }
 
-void CompanionServer::set_control_info(const std::vector<std::string>& crystals,
-                                       const std::string& title, const std::string& artist,
+void CompanionServer::set_vault_rescannable(bool rescannable)
+{
+    const std::lock_guard<std::mutex> lock(impl_->control_mutex);
+    impl_->control.vault_rescannable = rescannable;
+}
+
+void CompanionServer::set_control_diagnostics(const std::vector<std::string>& problems,
+                                              const std::string&              last_error)
+{
+    const std::lock_guard<std::mutex> lock(impl_->control_mutex);
+    impl_->control.vault_problems = problems;
+    impl_->control.last_error     = last_error;
+}
+
+void CompanionServer::set_control_vault(const std::vector<std::string>& crystals,
+                                        std::uint64_t generation)
+{
+    const std::lock_guard<std::mutex> lock(impl_->control_mutex);
+    impl_->control.crystals         = crystals;
+    impl_->control.vault_generation = generation;
+}
+
+void CompanionServer::set_control_info(const std::string& title, const std::string& artist,
                                        bool has_art)
 {
     const std::lock_guard<std::mutex> lock(impl_->control_mutex);
-    impl_->control.crystals = crystals;
-    impl_->control.title    = title;
-    impl_->control.artist   = artist;
-    impl_->control.has_art  = has_art;
+    impl_->control.title   = title;
+    impl_->control.artist  = artist;
+    impl_->control.has_art = has_art;
 
     // `current` and the toggles are deliberately NOT touched. See the header: they
     // are intent, owned by the POST handlers, and overwriting them from here every

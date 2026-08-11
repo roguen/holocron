@@ -88,7 +88,24 @@ struct VaultProblem {
 // not exist, or is not a directory, yields no entries and one problem -- rather
 // than an empty vault, which would look identical to a directory that is simply
 // empty and is a far more likely thing for someone to have got wrong.
+//
+// `out_readable` DISTINGUISHES "I READ IT AND IT IS EMPTY" FROM "I COULD NOT READ
+// IT", and a caller that replaces a live vault with the result must check it.
+//
+// The two are the same return value and completely different facts. An empty
+// directory is something a person creates by deleting their last crystal, and
+// adopting it is correct. A directory that could not be read is a share that
+// blinked -- and adopting THAT strips every crystal off the phone and leaves the
+// arrow keys nowhere to go, on a machine nobody is sitting at. Issue 214 put this
+// on a timer and on a button, so what used to happen once at startup can now
+// happen at any moment.
+//
+// It is false for a path that is not a directory, for an enumeration that fails
+// partway through, and never for a crystal that merely failed to LOAD -- one
+// broken crystal is a problem, not an unreadable vault, which is the whole
+// premise of the header above.
 std::vector<VaultEntry> scan_vault(const std::string& dir,
-                                   std::vector<VaultProblem>& out_problems);
+                                   std::vector<VaultProblem>& out_problems,
+                                   bool* out_readable = nullptr);
 
 }  // namespace holocron

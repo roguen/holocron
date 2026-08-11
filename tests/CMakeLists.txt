@@ -29,6 +29,7 @@ add_executable(holocron_tests
     test_crystal.cpp
     test_crystal_watch.cpp
     test_vault.cpp
+    test_vault_watch.cpp
     test_gatekeeper.cpp
     test_plex_device.cpp
     test_eiscp.cpp

@@ -339,9 +339,9 @@ when you catch it. `onset_strength` is the enveloped version and decays.
 This is the part worth internalising, because it is the whole reason the format
 looks the way it does.
 
-**Leave the player running and save the file.** Hot reload is on by default with
-`--crystal`. Saving either the `.frag` or the `.toml` rebuilds the crystal in
-place, against the music that is already playing.
+**Leave the player running and save the file.** Hot reload is on by default in
+every mode, not only with `--crystal`. Saving either the `.frag` or the `.toml`
+rebuilds the crystal in place, against the music that is already playing.
 
 **A broken shader does not take the picture down.** The new program is compiled
 beside the running one and swapped only if it links. A stray semicolon prints the
@@ -358,7 +358,44 @@ That matters more than it sounds. A shader is broken for most of the time you ar
 editing it, and a loop that blanks the screen on every keystroke is worse than
 restarting.
 
+**The result is also said on the picture**, in the top-left corner for two
+seconds: `reloaded mine`, or the first line of the error in amber. That exists
+because the terminal is often not where you are — on the rack it is a machine in
+another room, and from the vault's own seat "not noticed yet", "did not compile"
+and "compiled and changed nothing visible" are otherwise the same event. Two of
+those are bugs in your shader and one is not.
+
 `--no-watch` turns it off.
+
+### Adding a crystal without restarting
+
+**Copy a `.toml` and a `.frag` into the vault and they appear**, on the arrow keys
+and on the phone, in about three seconds. There is nothing to press. The
+directory is watched as well as the loaded files, so a crystal that did not exist
+when the player started is still reachable.
+
+Three seconds because a change has to be seen twice a second apart before it is
+acted on. That is not caution for its own sake: copying a crystal in is *two*
+writes, and re-scanning the instant the `.toml` lands would load a manifest whose
+shader is still being written and report your working crystal as broken.
+
+It notices a **deletion** too, including of the crystal you are looking at — which
+keeps drawing, because a blank screen is a worse answer than a stale one, but is
+no longer somewhere the arrows can return to. The player says so.
+
+Two controls on the phone's `/control` page, both only when a vault is loaded:
+
+| | |
+|---|---|
+| **Look for new crystals** | Scan now. The watcher already notices files arriving, so this is for what it cannot see — something that was broken when it was scanned and has since been fixed, or a share that was remounted. |
+| **Show new ones as they arrive** | Switch to a crystal the moment it appears. **Off by default**, and leave it off while somebody is listening: it changes the picture mid-track. On is the right setting while you are authoring. |
+
+Anything the vault could not load is named on that page, with the reason, rather
+than only in the terminal.
+
+`--no-watch` turns this off along with the file watch: one switch, one meaning.
+`--crystal`, `--calibrate` and `--debug-facet` have no vault directory, so there
+is nothing to scan and the two buttons do not appear.
 
 ### Working on several at once
 
