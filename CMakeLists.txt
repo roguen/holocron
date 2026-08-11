@@ -142,6 +142,7 @@ target_link_libraries(holocron_notices PUBLIC holocron::contract PRIVATE holocro
 
 add_library(holocron_platform STATIC
     src/platform/android_jni.cpp
+    src/platform/platform_paths.cpp
 )
 add_library(holocron::platform ALIAS holocron_platform)
 

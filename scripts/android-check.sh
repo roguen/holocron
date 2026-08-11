@@ -4,7 +4,7 @@
 #
 # scripts/android-check.sh
 #
-# Compile every translation unit in src/ for aarch64-linux-android, under the
+# Compile every translation unit in src/ and tools/ for aarch64-linux-android, under the
 # project's own warning discipline, and fail if any of them does not build.
 #
 # WHY THIS EXISTS
@@ -155,6 +155,15 @@ if [ -n "${HOLOCRON_ANDROID_INCLUDE:-}" ]; then
     includes+=(-isystem "$HOLOCRON_ANDROID_INCLUDE")
 fi
 
+# HOLOCRON_VERSION is a compile definition CMake supplies to two targets, and the
+# colophon's first page will not compile without it. Read out of CMakeLists.txt
+# rather than written here, because issue 38 is already about the version living
+# in three places and this must not become a fourth.
+version="$(sed -n 's/^[[:space:]]*VERSION[[:space:]]\+\([0-9][0-9.]*\)[[:space:]]*$/\1/p' \
+    CMakeLists.txt | head -1)"
+[ -n "$version" ] || version="0.0.0"
+defines=(-DHOLOCRON_VERSION="\"$version\"")
+
 objdir="$(mktemp -d)"
 trap 'rm -rf "$objdir"' EXIT
 
@@ -171,7 +180,7 @@ failed_list=""
 
 while IFS= read -r src; do
     obj="$objdir/$(echo "$src" | tr '/' '_').o"
-    if out="$("$cxx" --target="$target" -std=c++20 -c "${warnings[@]}" "${includes[@]}" \
+    if out="$("$cxx" --target="$target" -std=c++20 -c "${warnings[@]}" "${includes[@]}" "${defines[@]}" \
                     "$src" -o "$obj" 2>&1)"; then
         compiled=$((compiled + 1))
         continue
@@ -188,7 +197,7 @@ while IFS= read -r src; do
 
     failed=$((failed + 1))
     failed_list="${failed_list}--- $src"$'\n'"$out"$'\n'
-done < <(find src -name '*.cpp' | sort)
+done < <(find src tools -name '*.cpp' | sort)
 
 echo
 echo "android-check: $compiled compiled, $skipped skipped, $failed failed"
@@ -206,7 +215,7 @@ fi
 # that would make it worthless.
 # ---------------------------------------------------------------------------
 
-android_sources="$(grep -rl '__ANDROID__' src --include='*.cpp' 2>/dev/null | sort || true)"
+android_sources="$(grep -rl '__ANDROID__' src tools --include='*.cpp' 2>/dev/null | sort || true)"
 uncovered=""
 for src in $android_sources; do
     case "$skipped_list" in
@@ -238,5 +247,6 @@ fi
 echo
 echo "android-check: OK -- these translation units COMPILE for $target."
 echo "  What that says: every name they use, GL included, exists in ES 3.2 core."
-echo "  What it does not: that anything links, packages, or runs. A declaration"
-echo "  existing is not a driver implementing it, and nothing has run on a device."
+echo "  What it does not: that any of it links, packages, or behaves. This is a"
+echo "  compile check and nothing more -- scripts/android-apk.sh builds the app,"
+echo "  and running it on the device is the only thing that proves behaviour."
