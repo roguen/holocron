@@ -2912,8 +2912,23 @@ int main(int argc, char** argv)
             std::fflush(stderr);
         }
         if (!opt.no_herald && !hc.on_start.empty()) {
-            std::printf("holocron: herald armed -- %zu errand(s) on start, %zu on stop\n",
-                        hc.on_start.size(), hc.on_stop.size());
+            // COMMANDS COUNTED SEPARATELY FROM WAITS, because the run summary
+            // counts only commands and the two numbers sit next to each other in
+            // the log.
+            //
+            // Verified against the real receiver 2026-08-10: a four-errand
+            // on_start containing one `wait://` armed as "4" and finished as
+            // "ran 3", which reads as one errand lost when in fact all three
+            // commands landed. A wait is not counted as run on purpose -- if it
+            // were, an absent receiver would still report 1 and the counter would
+            // stop meaning "something reached the amplifier".
+            const auto waits = static_cast<std::size_t>(
+                std::count_if(hc.on_start.begin(), hc.on_start.end(), [](const std::string& u) {
+                    return u.rfind("wait://", 0) == 0;
+                }));
+            std::printf("holocron: herald armed -- %zu errand(s) on start (%zu command(s), "
+                        "%zu wait(s)), %zu on stop\n",
+                        hc.on_start.size(), hc.on_start.size() - waits, waits, hc.on_stop.size());
             std::fflush(stdout);
         }
     }
@@ -4607,9 +4622,13 @@ int main(int argc, char** argv)
     }
     if (const std::uint64_t ran = herald.errands_run(), lost = herald.failures();
         ran > 0 || lost > 0) {
-        // Reported because an absent receiver is otherwise visible only as log
-        // lines somebody scrolled past -- and absent is its normal state.
-        std::printf("holocron: herald ran %llu errand(s), %llu failed\n",
+        // Reported because a receiver that is not listening is otherwise visible
+        // only as log lines somebody scrolled past.
+        //
+        // COMMANDS, not errands -- a `wait://` is not counted, so that this
+        // number keeps meaning "reached the amplifier". The arming line above
+        // breaks its total down the same way so the two agree.
+        std::printf("holocron: herald sent %llu command(s), %llu failed\n",
                     static_cast<unsigned long long>(ran),
                     static_cast<unsigned long long>(lost));
     }
