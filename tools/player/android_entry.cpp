@@ -175,6 +175,25 @@ int main(int argc, char** argv)
         if (env->GetJavaVM(&vm) == JNI_OK && vm != nullptr) {
             holocron::android::set_java_vm(vm);
         }
+
+        // THE ACTIVITY, which is the process's only Context, and a Context is
+        // what getSystemService hangs off. The multicast lock needs one; nothing
+        // else does yet.
+        //
+        // SDL HANDS BACK A LOCAL REFERENCE AND SAYS SO IN ITS OWN HEADER: "The
+        // jobject returned by the function is a local reference and must be
+        // released by the caller." A local reference is valid on one thread
+        // until the native call that produced it returns, so it is promoted to a
+        // global inside set_activity -- and deleted here, because promoting it
+        // does not consume it.
+        //
+        // AFTER set_java_vm, not before: the promotion needs a ScopedEnv, and a
+        // ScopedEnv with no VM yields nothing.
+        if (jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
+            activity != nullptr) {
+            holocron::android::set_activity(activity);
+            env->DeleteLocalRef(activity);
+        }
     }
 
     // WHERE gatekeeper.toml AND THE VAULT LIVE, because cwd is `/`.
