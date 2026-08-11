@@ -209,6 +209,35 @@ across the boundary, which is what the engine already does to its own enveloped
 fields: the analysis is rebuilt per track and `band_env` on the first frame of a
 new track is simply the raw value.
 
+### The same two keys work on an archive layer's opacity
+
+An archive layer can bind its opacity to a field, and that binding takes `attack`
+and `decay` exactly as a uniform does — same units, same analysis-hop clock, same
+restart at a track boundary:
+
+```toml
+[[layer]]
+crystal = "duel"
+opacity = { bind = "spectral_flux", min = 0.2, max = 0.9, decay = 0.6 }
+```
+
+**It keeps `min`/`max` and does not take `scale`**, and that is deliberate rather
+than an omission. `min`/`max` is a range map and `scale` is a gain; they are two
+shapes because they are two jobs, and a gain cannot give you the offset that
+`loudness_short` (−70…0 LUFS) or `bpm` (60…180) need. If a uniform ever wants a
+range map, `min`/`max` is the spelling to copy.
+
+**The envelope runs on the field, before the range map**, so `decay = 0.6`
+describes the field falling rather than the mapped output — which would otherwise
+mean something different for every choice of `min` and `max`.
+
+Worth doing whenever the bound field is raw. Measured over a real track,
+`spectral_flux` reverses direction **60.8 times per 100 frames** against
+`bass_norm`'s 11.1; at 93.75 Hz that is a whole layer's opacity changing
+direction forty times a second. Smoothing roughly halves the reversals — and,
+more to the point, shrinks each step by more than five to one, which is the part
+an eye actually notices.
+
 ### A uniform your shader ignores is not an error
 
 GLSL compilers delete uniforms that do not affect the output, so a manifest entry
