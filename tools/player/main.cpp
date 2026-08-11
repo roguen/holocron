@@ -50,6 +50,7 @@
 #include <holocron/crystal.hpp>
 #include <holocron/final_pass.hpp>
 #include <holocron/image_decode.hpp>
+#include <holocron/last_good.hpp>
 #include <holocron/lyrics.hpp>
 #include <holocron/notices.hpp>
 #include <holocron/notices_view.hpp>
@@ -72,6 +73,7 @@
 #include <holocron/debug_facet.hpp>
 #include <holocron/decoder.hpp>
 #include <holocron/playback_session.hpp>
+#include <holocron/queue_walk.hpp>
 #include <holocron/sdl_sink.hpp>
 #include <holocron/wasapi_sink.hpp>
 #include <holocron/triple_buffer.hpp>
@@ -2466,14 +2468,30 @@ int main(int argc, char** argv)
 
     // -- render loop ---------------------------------------------------------
 
-    // The frame currently on screen. Kept across iterations because "nothing
-    // new to show" is the normal case, not an error: at 144 fps against 93.75 Hz
-    // analysis the same frame is drawn repeatedly by design, and a failed
-    // select() means exactly the same thing.
-    AudioFrame    frame{};
-    int           rendered    = 0;
-    std::uint64_t lead_sum_us = 0;   // what the newest-wins frame would have led by
-    std::uint64_t lead_n      = 0;
+    // The frame currently on screen, and the slot the next candidate is read
+    // into. Kept across iterations because "nothing new to show" is the normal
+    // case, not an error: at 144 fps against 93.75 Hz analysis the same frame is
+    // drawn repeatedly by design, and a failed select() means the same thing.
+    //
+    // TWO SLOTS RATHER THAN ONE, because a failed select() has already written
+    // into the frame it was given -- the history copies first and verifies after,
+    // which is what keeps this thread from ever blocking. With one frame there
+    // was nothing for the check to protect and the loop drew the torn copy
+    // (issue 198). See last_good.hpp; promoting costs an index flip, not a copy.
+    LastGood<AudioFrame> tap;
+    int                  rendered    = 0;
+    std::uint64_t        lead_sum_us = 0;   // what newest-wins would have led by
+    std::uint64_t        lead_n      = 0;
+
+    // Reads the producer lapped, EXCLUDING the ones that simply predate the
+    // first published frame.
+    //
+    // Reported in the run summary because this is otherwise completely
+    // invisible: one frame of the previous picture is not something an eye can
+    // catch, and until now there was no number anywhere saying it had happened.
+    // A count that suddenly stops being zero is the only way anybody finds out
+    // the render thread is stalling past the 1.37 s the history holds.
+    std::uint64_t lapped_reads = 0;
 
     // The device rate is no longer needed here: converting the clock into
     // microseconds is the session's job, since it is the thing that knows which
@@ -2520,6 +2538,15 @@ int main(int argc, char** argv)
     // Edge detector for the end of a track, so the log says once that it
     // happened rather than every frame afterwards.
     bool was_ended = false;
+
+    // Whose turn it is in the album, and whether the album is still going during
+    // the frames when nothing is playing.
+    //
+    // A SEPARATE OBJECT BECAUSE THE INTENT HAS TO OUTLIVE THE SESSION. Everything
+    // else about the queue can be read off `session`; this cannot, because the
+    // one case that needs it -- a track that will not open -- is exactly the case
+    // where the session has been stopped. See queue_walk.hpp and issue 202.
+    QueueWalk walk;
 
     // -- the now-playing card -------------------------------------------------
     //
@@ -2885,8 +2912,23 @@ int main(int argc, char** argv)
             std::fflush(stderr);
         }
         if (!opt.no_herald && !hc.on_start.empty()) {
-            std::printf("holocron: herald armed -- %zu errand(s) on start, %zu on stop\n",
-                        hc.on_start.size(), hc.on_stop.size());
+            // COMMANDS COUNTED SEPARATELY FROM WAITS, because the run summary
+            // counts only commands and the two numbers sit next to each other in
+            // the log.
+            //
+            // Verified against the real receiver 2026-08-10: a four-errand
+            // on_start containing one `wait://` armed as "4" and finished as
+            // "ran 3", which reads as one errand lost when in fact all three
+            // commands landed. A wait is not counted as run on purpose -- if it
+            // were, an absent receiver would still report 1 and the counter would
+            // stop meaning "something reached the amplifier".
+            const auto waits = static_cast<std::size_t>(
+                std::count_if(hc.on_start.begin(), hc.on_start.end(), [](const std::string& u) {
+                    return u.rfind("wait://", 0) == 0;
+                }));
+            std::printf("holocron: herald armed -- %zu errand(s) on start (%zu command(s), "
+                        "%zu wait(s)), %zu on stop\n",
+                        hc.on_start.size(), hc.on_start.size() - waits, waits, hc.on_stop.size());
             std::fflush(stdout);
         }
     }
@@ -3075,10 +3117,16 @@ int main(int argc, char** argv)
                     // still name a track that is no longer playing.
                     timeline = TimelineState{};
                     forget_track();
+                    // Somebody pressed stop while the loop was stepping over
+                    // tracks that would not open. The walk must not resume.
+                    walk.reset();
                     std::printf("holocron: stopped\n");
                     std::fflush(stdout);
                     want_play = false;
                 } else if (want_play) {
+                    // Whatever the walk wanted, this command supersedes it.
+                    walk.reset();
+
                     std::string        detail;
                     const SessionError serr = session.start(url, offset, what, detail);
                     if (serr != SessionError::kOk) {
@@ -3088,6 +3136,17 @@ int main(int argc, char** argv)
                         timeline = TimelineState{};
                         std::fprintf(stderr, "holocron: %s -- \"%s\"\n%s\n", to_string(serr),
                                      what.title.c_str(), detail.c_str());
+
+                        // AN ALBUM WHOSE FIRST TRACK WILL NOT OPEN IS THE SAME
+                        // BUG AS ONE WHOSE THIRD WILL NOT: without this the walk
+                        // never begins and the cast is simply dead. Only when
+                        // THIS command brought the queue -- a bare playMedia that
+                        // fails must not start walking a queue left over from an
+                        // earlier cast, which would skip a track nobody asked to
+                        // skip.
+                        if (!new_queue.empty()) {
+                            walk.failed();
+                        }
                     } else {
                         // Carried through from the REQUEST rather than
                         // remembered separately: a controller matches the
@@ -3181,6 +3240,10 @@ int main(int argc, char** argv)
                                             "skipped to")) {
                     at_in_queue = target;
                     begin_track(queue_request, queue.tracks[target], session.now_playing());
+
+                    // A skip lands where it was told to. Any pending walk was
+                    // heading somewhere else and is now wrong.
+                    walk.reset();
                 }
             }
         }
@@ -3303,7 +3366,18 @@ int main(int argc, char** argv)
         // conversation has stopped listening, and these errands are about the
         // room rather than about the transport. The settle window is what stops
         // a short pause from firing anything.
-        herald.observe(session.active() && !session.paused());
+        //
+        // AND SO DOES A SESSION THAT IS BETWEEN TRACKS BECAUSE THE LAST ONE
+        // WOULD NOT OPEN -- which is why the predicate is not `session.active()`
+        // alone. What the herald is being asked is whether the album is playing,
+        // not whether a session object is alive, and the two differ for exactly
+        // as long as the walk is stepping over unplayable tracks. Each attempt
+        // can cost a connect timeout, so a few in a row exceed the 2.5 s settle
+        // window and would latch a falling edge -- powering the receiver down
+        // between two tracks of the same album, and back up when one finally
+        // opened. A stop caused by a failure and a stop caused by the album
+        // ending are different events; `walk.pending()` is what tells them apart.
+        herald.observe((session.active() || walk.pending()) && !session.paused());
 
         // A pause or resume that arrived since the last frame. Applied here for
         // the same reason a play command is: this is the thread that owns the
@@ -3351,30 +3425,47 @@ int main(int argc, char** argv)
         }
         was_ended = track_ended;
 
-        if (cast_mode && track_ended) {
-            if (!queue.empty() && at_in_queue + 1 < queue.tracks.size()) {
-                if (play_queue_track(session, queue, queue_request, at_in_queue + 1, timeline,
-                                     "next --")) {
-                    ++at_in_queue;
-                    begin_track(queue_request, queue.tracks[at_in_queue], session.now_playing());
-                } else {
-                    // One unplayable track must not end the album.
-                    ++at_in_queue;
-                    session.stop();
-                    forget_track();
-                }
+        // THE END OF A TRACK AND THE WANT OF THE NEXT ONE ARE DIFFERENT FACTS,
+        // and conflating them is what made one unplayable track end the album
+        // (issue 202). `track_ended` is read off the session and needs it to be
+        // active; the want has to survive `session.stop()`, so it lives in
+        // `walk`. The queue is walked one attempt per frame -- see
+        // queue_walk.hpp for why this is not a loop.
+        const bool has_next = !queue.empty() && at_in_queue + 1 < queue.tracks.size();
+        const QueueStep queue_step =
+            cast_mode ? walk.step(track_ended, has_next) : QueueStep::kNothing;
+
+        if (queue_step == QueueStep::kPlayNext) {
+            if (play_queue_track(session, queue, queue_request, at_in_queue + 1, timeline,
+                                 "next --")) {
+                ++at_in_queue;
+                begin_track(queue_request, queue.tracks[at_in_queue], session.now_playing());
             } else {
-                // Nothing left. SAYING SO IS THE POINT: a controller learns
-                // playback is over by seeing the player go from playing to
-                // stopped, and until the timeline reported anything but
-                // `stopped` that transition never happened at all.
+                // One unplayable track must not end the album -- and now it does
+                // not. The index moves past the track that failed and the walk
+                // stays pending, so the frame after this one tries the track
+                // after it. Before, this branch called stop() and made the
+                // condition that would have retried unreachable for good.
+                ++at_in_queue;
                 session.stop();
-                timeline = TimelineState{};
-                queue    = PlexQueue{};
                 forget_track();
-                std::printf("holocron: queue finished\n");
-                std::fflush(stdout);
+                walk.failed();
             }
+        } else if (queue_step == QueueStep::kFinished) {
+            // Nothing left. SAYING SO IS THE POINT: a controller learns
+            // playback is over by seeing the player go from playing to
+            // stopped, and until the timeline reported anything but
+            // `stopped` that transition never happened at all.
+            //
+            // Reached both when the last track played out and when the last
+            // few would not open. Those are the same event as far as the
+            // controller and the receiver are concerned: the album is over.
+            session.stop();
+            timeline = TimelineState{};
+            queue    = PlexQueue{};
+            forget_track();
+            std::printf("holocron: queue finished\n");
+            std::fflush(stdout);
         } else if (timeline.state != TransportState::kStopped) {
             const std::int64_t at = session.track_position_ms();
             if (at > 0) {
@@ -3478,10 +3569,16 @@ int main(int argc, char** argv)
         std::uint64_t played_us_raw = 0;
         const bool    have_clock    = session.played_us(played_us_raw);
 
+        // READ INTO THE SLOT THAT IS NOT ON SCREEN. Whichever branch runs below,
+        // it may overwrite this one with a partially-written frame and then say
+        // so; nothing has been shown until take() promotes it.
+        bool have_frame = false;
+
         if (have_clock) {
             const auto         played_us = static_cast<std::int64_t>(played_us_raw);
             const std::int64_t target    = played_us - trim_us;
-            session.select_frame(target > 0 ? static_cast<std::uint64_t>(target) : 0, frame);
+            have_frame = session.select_frame(target > 0 ? static_cast<std::uint64_t>(target) : 0,
+                                              tap.scratch());
 
             // Measure what the OLD behaviour would have shown, so the fix is
             // quantified rather than asserted. The newest frame's position
@@ -3509,8 +3606,20 @@ int main(int argc, char** argv)
             // No clock to place anything against -- muted, or a sink that
             // cannot report a position. Newest-wins is correct here, and is
             // exactly what the player did everywhere before #53.
-            session.newest_frame(frame);
+            have_frame = session.newest_frame(tap.scratch());
         }
+
+        // A READ THAT FAILED BECAUSE NOTHING HAS BEEN PUBLISHED YET IS NOT A
+        // LAPSE. That is the first few render frames of every track, before the
+        // analysis has produced anything, and counting it would put a number in
+        // the summary that means "the album had twelve tracks".
+        if (!have_frame && session.frames_published() != 0) {
+            ++lapped_reads;
+        }
+
+        // The promotion. On failure this hands back the frame that was already
+        // on screen, unchanged -- which is what the loop does constantly anyway.
+        const AudioFrame& frame = tap.take(have_frame);
 
         // Per O-005 / #16 the render thread works on its OWN copy and never
         // writes into shared storage; FrameHistory hands out copies for the
@@ -4501,11 +4610,25 @@ int main(int argc, char** argv)
     std::printf("holocron: %d frames drawn, %llu analysis frames published\n",
                 rendered,
                 static_cast<unsigned long long>(session.frames_published()));
+    if (lapped_reads > 0) {
+        // Only when it happened, and loudly when it did. The history holds about
+        // 1.37 seconds at 93.75 Hz, so a non-zero count here means this thread
+        // stalled for longer than that -- a driver reset, a long GPU hitch or a
+        // debugger break. Each one cost a repeated frame, which is invisible; the
+        // number is the only evidence the stall occurred at all (issue 198).
+        std::printf("holocron: %llu analysis read(s) lapped by the producer and discarded "
+                    "-- the render thread stalled past the history window\n",
+                    static_cast<unsigned long long>(lapped_reads));
+    }
     if (const std::uint64_t ran = herald.errands_run(), lost = herald.failures();
         ran > 0 || lost > 0) {
-        // Reported because an absent receiver is otherwise visible only as log
-        // lines somebody scrolled past -- and absent is its normal state.
-        std::printf("holocron: herald ran %llu errand(s), %llu failed\n",
+        // Reported because a receiver that is not listening is otherwise visible
+        // only as log lines somebody scrolled past.
+        //
+        // COMMANDS, not errands -- a `wait://` is not counted, so that this
+        // number keeps meaning "reached the amplifier". The arming line above
+        // breaks its total down the same way so the two agree.
+        std::printf("holocron: herald sent %llu command(s), %llu failed\n",
                     static_cast<unsigned long long>(ran),
                     static_cast<unsigned long long>(lost));
     }
