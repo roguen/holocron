@@ -38,6 +38,12 @@ using namespace holocron;
 
 namespace {
 
+// The vault generation these tests push and post with.
+//
+// Deliberately not 0 and not 1: a guard compared against a default-constructed
+// field, or against a hardcoded "first" value, would pass for the wrong reason.
+constexpr std::uint64_t kGen = 7;
+
 PlexDevice fixture()
 {
     PlexDevice d;
@@ -447,7 +453,7 @@ TEST_CASE("the control page lists the vault and marks what is running",
 {
     RunningServer s(fixture());
     REQUIRE(s.error == CompanionError::kOk);
-    s.server.set_control_info({"drift", "pulse"}, "", "", false);
+    s.server.set_control_vault({"drift", "pulse"}, kGen);
     s.server.set_current_crystal(1);
 
     auto res = s.client().Get("/control");
@@ -477,7 +483,7 @@ TEST_CASE("the control page marks nothing current while the beat instrument is u
     // disagreeing with the screen, and nobody reads both at once.
     RunningServer s(fixture());
     REQUIRE(s.error == CompanionError::kOk);
-    s.server.set_control_info({"drift", "pulse"}, "", "", false);
+    s.server.set_control_vault({"drift", "pulse"}, kGen);
     s.server.set_current_crystal(1);
     s.server.set_control_tuning(-90.0, 250.0, /*sync_showing=*/true, "gatekeeper.toml");
 
@@ -516,7 +522,7 @@ TEST_CASE("choosing a crystal reaches the handler and redirects back",
     int         calls  = 0;
 
     RunningServer s(fixture(), [&](CompanionServer& srv) {
-        srv.set_select_crystal_handler([&](std::size_t index) {
+        srv.set_select_crystal_handler([&](std::size_t index, std::uint64_t) {
             chosen = index;
             ++calls;
         });
@@ -547,7 +553,7 @@ TEST_CASE("a crystal index that is not a number is ignored",
     bool called = false;
 
     RunningServer s(fixture(), [&](CompanionServer& srv) {
-        srv.set_select_crystal_handler([&](std::size_t) { called = true; });
+        srv.set_select_crystal_handler([&](std::size_t, std::uint64_t) { called = true; });
     });
     REQUIRE(s.error == CompanionError::kOk);
 
@@ -560,6 +566,277 @@ TEST_CASE("a crystal index that is not a number is ignored",
         REQUIRE(res->status == 303);
     }
     REQUIRE_FALSE(called);
+}
+
+TEST_CASE("a crystal chosen from a page the vault has moved past is refused",
+          "[plex][companion][control]")
+{
+    // ISSUE 214'S SHARPEST EDGE. The vault is re-scanned while the player runs
+    // and it is sorted by display name, so a crystal arriving pushes everything
+    // after it down one. An index from a page rendered before that does not point
+    // at nothing -- it points at the WRONG CRYSTAL, and obeying it switches to
+    // something nobody asked for, with no error anywhere.
+    std::size_t   chosen  = 999;
+    std::uint64_t saw_gen = 0;
+    int           calls   = 0;
+
+    RunningServer s(fixture(), [&](CompanionServer& srv) {
+        srv.set_select_crystal_handler([&](std::size_t index, std::uint64_t gen) {
+            chosen  = index;
+            saw_gen = gen;
+            ++calls;
+        });
+    });
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_vault({"drift", "pulse"}, kGen);
+
+    auto client = s.client();
+    client.set_follow_location(false);
+
+    // The page this tap came from was rendered before the last scan.
+    auto stale = client.Post("/control/crystal", "index=1&gen=" + std::to_string(kGen - 1),
+                             "application/x-www-form-urlencoded");
+    REQUIRE(stale);
+    REQUIRE(stale->status == 303);
+    REQUIRE(calls == 0);
+
+    // The same tap from a current page is obeyed, so the guard is refusing
+    // staleness rather than refusing everything -- which is the way this could
+    // pass while being useless.
+    auto fresh = client.Post("/control/crystal", "index=1&gen=" + std::to_string(kGen),
+                             "application/x-www-form-urlencoded");
+    REQUIRE(fresh);
+    REQUIRE(calls == 1);
+    REQUIRE(chosen == 1);
+
+    // AND THE GENERATION REACHES THE HANDLER, because checking it here is
+    // necessary and not sufficient: switching compiles a GL program, so the
+    // request is queued and performed a frame or more later -- after the render
+    // loop has drained any pending re-scan. The render thread re-checks this
+    // value against the list it is actually about to index.
+    REQUIRE(saw_gen == kGen);
+}
+
+TEST_CASE("a crystal post with no generation reaches the handler as zero",
+          "[plex][companion][control]")
+{
+    // Zero is the "no generation given" signal all the way down, and it is never
+    // a real generation -- they start at 1. The render thread relies on that to
+    // tell a scripted curl from a page whose list has moved.
+    std::uint64_t saw_gen = 99;
+    int           calls   = 0;
+
+    RunningServer s(fixture(), [&](CompanionServer& srv) {
+        srv.set_select_crystal_handler([&](std::size_t, std::uint64_t gen) {
+            saw_gen = gen;
+            ++calls;
+        });
+    });
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_vault({"drift", "pulse"}, kGen);
+
+    auto client = s.client();
+    client.set_follow_location(false);
+    client.Post("/control/crystal", "index=0", "application/x-www-form-urlencoded");
+
+    REQUIRE(calls == 1);
+    REQUIRE(saw_gen == 0);
+}
+
+TEST_CASE("a crystal post with no generation at all is still obeyed",
+          "[plex][companion][control]")
+{
+    // The guard is against a stale PAGE, not against unknown callers -- there is
+    // nothing on this port for authentication to protect and it has none. A curl
+    // somebody uses to script the player must keep working.
+    int calls = 0;
+
+    RunningServer s(fixture(), [&](CompanionServer& srv) {
+        srv.set_select_crystal_handler([&](std::size_t, std::uint64_t) { ++calls; });
+    });
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_vault({"drift", "pulse"}, kGen);
+
+    auto client = s.client();
+    client.set_follow_location(false);
+    auto res = client.Post("/control/crystal", "index=0",
+                           "application/x-www-form-urlencoded");
+    REQUIRE(res);
+    REQUIRE(calls == 1);
+}
+
+TEST_CASE("every crystal button carries the generation it was rendered from",
+          "[plex][companion][control]")
+{
+    // Without this the guard above can never fire in real use: the page would
+    // post no generation, every tap would take the accepted path, and the test
+    // that proves refusal would be testing a case the product never produces.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_vault({"drift", "pulse"}, kGen);
+
+    auto res = s.client().Get("/control");
+    REQUIRE(res);
+
+    std::size_t at = 0, seen = 0;
+    const std::string want = "name=\"gen\" value=\"7\"";
+    while ((at = res->body.find(want, at)) != std::string::npos) {
+        ++seen;
+        at += want.size();
+    }
+    REQUIRE(seen == 2);   // one per crystal, and no more
+}
+
+TEST_CASE("the control page reloads itself and the tuning page does not",
+          "[plex][companion][control]")
+{
+    // A crystal can arrive while the page is open, and a document with no
+    // JavaScript has exactly one way to show that. The tuning page is excluded on
+    // purpose: you use it while watching the picture and nudging a number, and
+    // losing the scroll position every ten seconds there would be intolerable.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto client  = s.client();
+    auto control = client.Get("/control");
+    REQUIRE(control);
+    REQUIRE(control->body.find("http-equiv=\"refresh\"") != std::string::npos);
+
+    auto tuning = client.Get("/control/tuning");
+    REQUIRE(tuning);
+    REQUIRE(tuning->body.find("http-equiv=\"refresh\"") == std::string::npos);
+}
+
+TEST_CASE("a crystal that would not load is named on the page, escaped",
+          "[plex][companion][control]")
+{
+    // "I copied a crystal in and it is not in the list" was answerable only at a
+    // terminal in another room. The text is a path and a compiler's own words,
+    // both from a file the player was handed rather than one it wrote, so it goes
+    // through html_escape like every other value here.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_vault({"drift"}, kGen);
+    s.server.set_control_diagnostics({"a<b>.toml: cannot open a<b>.frag"}, "");
+
+    auto res = s.client().Get("/control");
+    REQUIRE(res);
+    REQUIRE(res->body.find("a&lt;b&gt;.toml") != std::string::npos);
+    REQUIRE(res->body.find("<b>.toml") == std::string::npos);
+}
+
+TEST_CASE("the last build failure stays on the page after the toast has gone",
+          "[plex][companion][control]")
+{
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_vault({"duel"}, kGen);
+    s.server.set_control_diagnostics({}, "duel: ERROR: 0:3: 'u_bas' & undeclared");
+
+    auto res = s.client().Get("/control");
+    REQUIRE(res);
+    REQUIRE(res->body.find("duel: ERROR: 0:3:") != std::string::npos);
+    REQUIRE(res->body.find("&amp; undeclared") != std::string::npos);
+}
+
+TEST_CASE("the rescan button appears only when there is a vault to re-read",
+          "[plex][companion][control]")
+{
+    // Hidden rather than shown and ignored, for the reason the projectM section
+    // is hidden when no projectM is drawing: --crystal, --calibrate and
+    // --no-watch all leave nothing to scan, and a control whose silence has to be
+    // interpreted is worse than no control.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_vault({"pulse"}, kGen);
+
+    auto client = s.client();
+    auto without = client.Get("/control");
+    REQUIRE(without);
+    REQUIRE(without->body.find("/control/rescan") == std::string::npos);
+
+    s.server.set_vault_rescannable(true);
+    auto with = client.Get("/control");
+    REQUIRE(with);
+    REQUIRE(with->body.find("/control/rescan") != std::string::npos);
+}
+
+TEST_CASE("the rescan button reaches the handler and is not shadowed by the catch-all",
+          "[plex][companion][control]")
+{
+    // Routes match in REGISTRATION ORDER. This one is a POST under /control, so
+    // the /player/.* catch-all cannot reach it -- but the timeline and
+    // refreshPlayQueue were both shadowed once, and the cost of asserting it here
+    // is one request.
+    int calls = 0;
+
+    RunningServer s(fixture(), [&](CompanionServer& srv) {
+        srv.set_rescan_handler([&] { ++calls; });
+    });
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto client = s.client();
+    client.set_follow_location(false);
+    auto res = client.Post("/control/rescan", "", "application/x-www-form-urlencoded");
+
+    REQUIRE(res);
+    REQUIRE(res->status == 303);
+    REQUIRE(res->get_header_value("Location") == "/control");
+    REQUIRE(calls == 1);
+}
+
+TEST_CASE("following new crystals is off until asked for, and toggles both ways",
+          "[plex][companion][control]")
+{
+    // DEFAULT OFF is the decision, not an accident of initialisation -- an
+    // unwanted switch mid-track is disruptive and unexplainable to anyone else in
+    // the room, while a missed one costs a tap. Asserted on the rendered page
+    // rather than on the field, because what the button SENDS is the thing that
+    // can be wrong: a toggle carries the state it wants to move to, so an
+    // off-by-default control whose button also says "0" never turns on.
+    std::vector<bool> asked;
+
+    RunningServer s(fixture(), [&](CompanionServer& srv) {
+        srv.set_follow_new_handler([&](bool on) { asked.push_back(on); });
+    });
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_vault({"pulse"}, kGen);
+    s.server.set_vault_rescannable(true);
+
+    auto client = s.client();
+    auto before = client.Get("/control");
+    REQUIRE(before);
+    REQUIRE(before->body.find("action=\"/control/follownew\"><input type=\"hidden\" "
+                              "name=\"on\" value=\"1\"") != std::string::npos);
+
+    client.set_follow_location(false);
+    client.Post("/control/follownew", "on=1", "application/x-www-form-urlencoded");
+    client.Post("/control/follownew", "on=0", "application/x-www-form-urlencoded");
+
+    REQUIRE(asked.size() == 2);
+    REQUIRE(asked[0] == true);
+    REQUIRE(asked[1] == false);
+}
+
+TEST_CASE("the follow-new button offers the state it is not already in",
+          "[plex][companion][control]")
+{
+    // The failure this catches has bitten this page before: a toggle rendered
+    // from a stale read sends the wrong target and flip-flops on alternate taps.
+    // Turning it on must make the button offer "off".
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_vault({"pulse"}, kGen);
+    s.server.set_vault_rescannable(true);
+
+    auto client = s.client();
+    client.set_follow_location(false);
+    client.Post("/control/follownew", "on=1", "application/x-www-form-urlencoded");
+
+    auto after = client.Get("/control");
+    REQUIRE(after);
+    REQUIRE(after->body.find("action=\"/control/follownew\"><input type=\"hidden\" "
+                             "name=\"on\" value=\"0\"") != std::string::npos);
 }
 
 TEST_CASE("the lyrics toggle reaches the handler both ways",
@@ -590,7 +867,8 @@ TEST_CASE("a track title is escaped into the page", "[plex][companion][control]"
     RunningServer s(fixture());
     REQUIRE(s.error == CompanionError::kOk);
 
-    s.server.set_control_info({"drift", "pulse"}, "Forty Six & 2",
+    s.server.set_control_vault({"drift", "pulse"}, kGen);
+    s.server.set_control_info("Forty Six & 2",
                               "<script>alert(1)</script>", false);
 
     auto res = s.client().Get("/control");
@@ -649,7 +927,7 @@ TEST_CASE("the control page shows a change immediately, without waiting for the 
     // a render loop that never gets round to it. The page must still be correct.
     RunningServer s(fixture());
     REQUIRE(s.error == CompanionError::kOk);
-    s.server.set_control_info({"drift", "duel", "pulse"}, "", "", false);
+    s.server.set_control_vault({"drift", "duel", "pulse"}, kGen);
 
     auto client = s.client();
     client.set_follow_location(false);
@@ -680,7 +958,7 @@ TEST_CASE("an index the vault does not have leaves the page's selection alone",
     // disagreement as before, just in the other direction.
     RunningServer s(fixture());
     REQUIRE(s.error == CompanionError::kOk);
-    s.server.set_control_info({"drift", "pulse"}, "", "", false);
+    s.server.set_control_vault({"drift", "pulse"}, kGen);
     s.server.set_current_crystal(0);
 
     auto client = s.client();
@@ -705,7 +983,7 @@ TEST_CASE("the projectM section is absent unless one is drawing",
     // in words.
     RunningServer s(fixture());
     REQUIRE(s.error == CompanionError::kOk);
-    s.server.set_control_info({"drift", "pulse"}, "", "", false);
+    s.server.set_control_vault({"drift", "pulse"}, kGen);
 
     auto res = s.client().Get("/control");
     REQUIRE(res);
@@ -718,7 +996,7 @@ TEST_CASE("the projectM section names the preset and its place in the playlist",
 {
     RunningServer s(fixture());
     REQUIRE(s.error == CompanionError::kOk);
-    s.server.set_control_info({"drift", "projectM"}, "", "", false);
+    s.server.set_control_vault({"drift", "projectM"}, kGen);
     s.server.set_control_projectm(true, "Geiss - Cosmic Dust", 4021, 0);
 
     auto res = s.client().Get("/control");

@@ -163,12 +163,77 @@ public:
         std::vector<std::string> crystals;
         std::size_t              current = 0;
 
+        // WHICH LIST THOSE INDICES BELONG TO. Issue 214.
+        //
+        // The vault is re-scanned while the player runs, and it is sorted by
+        // display name -- so a crystal called `aurora` arriving pushes everything
+        // after it down one, and index 3 on a page rendered a moment ago now
+        // names a different crystal. Nothing about that is visible to the person
+        // holding the phone: they tap the row they can see and something else
+        // comes up.
+        //
+        // So every crystal button carries the generation of the list it was
+        // rendered from, and a POST whose generation no longer matches is
+        // REFUSED rather than obeyed against the wrong list. The redirect then
+        // shows them the list as it is now.
+        //
+        // It is bumped only when the entry SEQUENCE differs -- not when a file
+        // changed. The scanner re-scans on every ordinary shader save, and
+        // bumping there would make the page refuse taps throughout exactly the
+        // activity the hot vault exists to support.
+        std::uint64_t vault_generation = 0;
+
+        // What the last scan could not load, one line each, already flattened
+        // for display. Strings rather than VaultProblem so this header does not
+        // acquire a dependency on the vault loader; the page wants a summary,
+        // not a compiler log.
+        std::vector<std::string> vault_problems;
+
+        // The last thing that refused to build, if anything has. A tap that
+        // lands on a broken crystal changes nothing on screen and nothing on the
+        // page, which from a couch is indistinguishable from the button not
+        // working -- this is where the reason goes for somebody who was not
+        // looking at the picture when the toast came and went.
+        std::string last_error;
+
+        // Whether there is a vault directory being watched at all.
+        //
+        // False under --crystal, --calibrate, --debug-facet and --no-watch, all
+        // of which have no directory to re-read. The Rescan button is HIDDEN
+        // rather than shown and ignored, for the reason the projectM section is
+        // hidden when no projectM is drawing: a control whose silence has to be
+        // interpreted is worse than no control.
+        bool vault_rescannable = false;
+
         // Now playing, for orientation only. Empty when nothing is.
         std::string title;
         std::string artist;
 
         bool now_playing_visible = false;
         bool lyrics_visible      = false;
+
+        // Switch to a crystal the moment it appears in the vault. Issue 214.
+        //
+        // DEFAULT OFF, and that is the recommendation rather than an accident. An
+        // author copying a crystal in wants to see it and pays one tap; a listener
+        // gets a visualization replaced mid-track by something they did not ask
+        // for, which is disruptive and unexplainable to anyone else in the room.
+        // A missed switch costs a tap. An unwanted one costs the moment.
+        //
+        // INTENT, owned by the POST handler like the overlay toggles and for the
+        // same reason: the button carries the state it wants to move TO, so a page
+        // rendered from a stale read sends the wrong target and the control
+        // flip-flops on alternate taps.
+        //
+        // THE REJECTED ALTERNATIVE, recorded because it is the better answer if
+        // this toggle turns out to be switched on at the start of every authoring
+        // session: follow only while nothing is playing, derived from
+        // session.active() -- the same predicate the herald reads. That is ON for
+        // authoring and OFF for listening with no toggle at all. It was rejected
+        // as the default because it makes the behaviour conditional on invisible
+        // state, and "why did it switch that time and not this time" is a worse
+        // question than "why didn't it switch".
+        bool follow_new = false;
 
         // The licence panel. INTENT, owned by the POST handler like the other
         // two toggles.
@@ -256,10 +321,33 @@ public:
     // the redirect, and the render loop only performs it. Only the descriptive
     // fields are pushed from the render loop.
 
-    // Descriptive only: the vault contents and what is playing. Safe to call every
-    // frame; deliberately does NOT touch `current` or the toggles.
-    void set_control_info(const std::vector<std::string>& crystals, const std::string& title,
-                          const std::string& artist, bool has_art);
+    // The vault list and the generation identifying it. Descriptive; deliberately
+    // does NOT touch `current` or the toggles.
+    //
+    // THE TWO ARE ONE CALL AND THAT IS LOAD-BEARING. Split apart, a page fetched
+    // in the gap would render the new names under the old generation -- and then
+    // accept a tap against a list nobody was shown, which is the exact failure the
+    // generation exists to prevent.
+    //
+    // Safe to call every frame, and also called the moment a re-scan is adopted:
+    // the drain runs later in the render loop than the per-frame push, so waiting
+    // for the next frame would leave `current` published against the old list.
+    void set_control_vault(const std::vector<std::string>& crystals, std::uint64_t generation);
+
+    // What is playing, for orientation only. Separate from the vault because the
+    // two change for entirely different reasons -- this one on a track boundary,
+    // that one when somebody edits a directory -- and because nothing on this page
+    // indexes into a track title.
+    void set_control_info(const std::string& title, const std::string& artist, bool has_art);
+
+    // What the vault could not load, and the last thing that refused to build.
+    //
+    // Called when they change rather than every frame -- a scan happens a few
+    // times an hour and a failed build only when somebody breaks something, so
+    // there is nothing here for a stale page to get wrong and nothing worth
+    // copying 144 times a second.
+    void set_control_diagnostics(const std::vector<std::string>& problems,
+                                 const std::string& last_error);
 
     // Which crystal is current. Called by the render loop ONLY when it changes it
     // itself -- the arrow keys, or refusing an out-of-range index -- so it corrects
@@ -269,16 +357,45 @@ public:
     // Called when the page asks for a different crystal, BY INDEX into the list
     // the page was given.
     //
-    // An index rather than a name because the vault is fixed for a run and the
-    // page is rendered from it -- and because a name would need escaping in two
-    // directions for crystals whose manifests contain spaces or quotes.
-    using SelectCrystalHandler = std::function<void(std::size_t index)>;
+    // An index rather than a name because the page is rendered from the vault --
+    // and because a name would need escaping in two directions for crystals whose
+    // manifests contain spaces or quotes.
+    //
+    // THE GENERATION TRAVELS WITH THE INDEX ALL THE WAY TO THE RENDER THREAD, and
+    // it has to. Checking it here is necessary and not sufficient: switching
+    // compiles a GL program, so the request is queued and performed a frame or
+    // more later -- and the render loop drains a pending vault re-scan BEFORE it
+    // performs this. An index that was correct when it was accepted can therefore
+    // be applied to a list adopted in between, and because the vault is sorted by
+    // display name that is not an out-of-range rejection: it is a switch to the
+    // wrong crystal, silently. Passing the generation along lets the render thread
+    // re-check it against the list it is actually about to index.
+    //
+    // Zero means "the caller sent no generation" and is never a real one --
+    // generations start at 1 -- so a curl that does not know about any of this
+    // still works. The guard is against a stale page, not against unknown callers.
+    using SelectCrystalHandler = std::function<void(std::size_t index, std::uint64_t generation)>;
+
+    // Called when the page asks for the vault directory to be read again.
+    //
+    // DELIBERATELY UNCONDITIONAL. The scanner already notices files appearing on
+    // its own, so this button is for the cases the filesystem cannot show:
+    // something that was broken when it was scanned and has since been fixed by a
+    // change the mtime does not reflect, a share that was remounted, or simple
+    // disbelief -- which on a control surface is a perfectly good reason to offer
+    // a button, since the alternative is walking to the machine.
+    using RescanHandler = std::function<void()>;
 
     // Called when the page asks to show or hide an overlay. Two separate handlers
     // rather than one taking a name: there are two overlays, they are wired to
     // different things, and a string would need validating.
     using LyricsHandler     = std::function<void(bool visible)>;
     using NowPlayingHandler = std::function<void(bool visible)>;
+
+    // Called when the page turns "show new crystals as they arrive" on or off.
+    // Its own alias rather than borrowing one of the two above: those are named
+    // for overlays and this is not one, and a reader should not have to check.
+    using FollowNewHandler = std::function<void(bool on)>;
 
     // Move the trim by `delta_ms`, and show the beat-alignment instrument.
     //
@@ -299,6 +416,8 @@ public:
     using ProjectMToggleHandler = std::function<void(bool on)>;
 
     void set_select_crystal_handler(SelectCrystalHandler handler);
+    void set_rescan_handler(RescanHandler handler);
+    void set_follow_new_handler(FollowNewHandler handler);
     void set_lyrics_handler(LyricsHandler handler);
     void set_colophon_handler(LyricsHandler handler);
 
@@ -327,6 +446,11 @@ public:
     // than the struct's default. Not called per frame: this is intent, and the
     // POST handler owns it from then on.
     void set_advance(const std::string& mode, int seconds);
+
+    // Whether a vault directory is being watched. Pushed once at startup, same
+    // contract as set_advance -- it is a property of how the player was launched
+    // and cannot change during a run.
+    void set_vault_rescannable(bool rescannable);
 
     // Descriptive tuning state, pushed from the render loop like the vault and
     // the now-playing strings. Safe to call every frame.

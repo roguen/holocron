@@ -337,3 +337,64 @@ TEST_CASE("an archive whose CRYSTAL layer is missing is still a problem", "[vaul
     REQUIRE(problems.size() == 1);
     CHECK(problems[0].detail.find("nothing-here") != std::string::npos);
 }
+
+TEST_CASE("an unreadable directory is distinguishable from an empty one", "[vault]")
+{
+    // THE DISTINCTION ISSUE 214 DEPENDS ON, and the two are the same return value:
+    // zero entries either way.
+    //
+    // An empty directory is something a person creates by deleting their last
+    // crystal, and a caller that replaces a live vault with the result should.
+    // A directory that could not be read is a share that blinked -- and adopting
+    // that strips every crystal off the phone and leaves the arrow keys nowhere
+    // to go, on a machine nobody is sitting at. Before `out_readable` there was
+    // nothing in the return value that told them apart.
+    Scratch s;
+
+    bool                      readable = false;
+    std::vector<VaultProblem> problems;
+
+    // Read, and genuinely empty.
+    auto empty = scan_vault(s.path(), problems, &readable);
+    CHECK(empty.empty());
+    CHECK(readable);
+    CHECK(problems.empty());
+
+    // Read, and has something in it -- so the flag is not just "no entries".
+    s.crystal("a", "alpha");
+    problems.clear();
+    readable  = false;
+    auto full = scan_vault(s.path(), problems, &readable);
+    CHECK(full.size() == 1);
+    CHECK(readable);
+
+    // Not read at all.
+    std::error_code ec;
+    std::filesystem::remove_all(s.dir, ec);
+    problems.clear();
+    readable  = true;
+    auto gone = scan_vault(s.path(), problems, &readable);
+    CHECK(gone.empty());
+    CHECK_FALSE(readable);
+    CHECK(problems.size() == 1);
+}
+
+TEST_CASE("a crystal that will not load leaves the vault readable", "[vault]")
+{
+    // The flag is about the DIRECTORY, not about its contents. One crystal with a
+    // typo is the case vault.hpp's whole premise is built on -- reported and
+    // skipped, everything else still works -- and reporting the vault as
+    // unreadable for it would make a caller refuse to adopt a listing that is
+    // perfectly good apart from the entry it already knows is bad.
+    Scratch s;
+    s.crystal("a", "alpha");
+    s.file("broken.toml", "name = \"broken\"\n");   // announces itself, has no .frag
+
+    bool                      readable = false;
+    std::vector<VaultProblem> problems;
+    auto                      entries = scan_vault(s.path(), problems, &readable);
+
+    CHECK(readable);
+    CHECK(entries.size() == 1);
+    CHECK(problems.size() == 1);
+}

@@ -14,7 +14,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(holocron
-    VERSION 0.8.0
+    VERSION 0.8.1
     DESCRIPTION "GPU music visualization engine that is also the music player"
     LANGUAGES CXX
 )
@@ -245,6 +245,7 @@ add_library(holocron_crystal STATIC
     src/crystal/crystal.cpp
     src/crystal/crystal_watch.cpp
     src/crystal/vault.cpp
+    src/crystal/vault_watch.cpp
     src/crystal/archive.cpp
 )
 

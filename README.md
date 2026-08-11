@@ -171,7 +171,7 @@ What exists:
 | **Audio** | FFmpeg decode, a 48 kHz analysis tap, a lock-free PCM ring, and `WasapiSink` (exclusive, bit-perfect) behind an interface with `SdlSink` beside it. |
 | **Tap placement** | The frame on screen is the one the speakers are producing, selected **by position** against the device clock — a measured 51 ms of correction over newest-wins. |
 | **Render** | GL 4.5 core, a debug facet drawing every field, and `CrystalFacet` drawing authored crystals. |
-| **Crystals** | `.frag` + `.toml`, uniforms bound to contract fields **by name** and validated at load. Hot reload, and a vault the arrow keys move through. |
+| **Crystals** | `.frag` + `.toml`, uniforms bound to contract fields **by name** and validated at load. Hot reload, and a vault the arrow keys move through — **including crystals copied in while it is running**. |
 | **Plex** | GDM discovery, `--link` sign-in through the plex.tv PIN flow, automatic device registration and connection publishing, play queues built on the server, timeline reporting to both the controller and the media server, and every transport command a phone sends. |
 | **Playback** | `PlaybackSession` — decoder, analysis, ring, device and decode thread behind one object that can be started, **replaced** and **seeked**, which is what casting requires. |
 | **Track context** | `TrackContext` — what is playing, the album art as a texture, and a **palette** extracted from it: five swatches, a primary and a contrast accent, supplied to every crystal in linear RGB. |
@@ -278,6 +278,26 @@ It also could not have existed before
 [#94](https://github.com/roguen/holocron/issues/94) was fixed. The beat grid used
 to carry a per-track phase error of up to a fifth of a beat. A pulse tolerates
 that; two figures meeting do not.
+
+### The vault is live
+
+**Copy a crystal into the vault directory and it appears** — on the arrow keys and
+on the phone, in about three seconds, with the player still running. Editing one
+already reloaded it in place; adding one used to need a restart, which on a
+machine you are casting to from another room is the whole cost
+([#214](https://github.com/roguen/holocron/issues/214)).
+
+The result is said on the picture as well as in the terminal: a two-second line in
+the corner, amber when something did not compile. That is not decoration. The
+person authoring a crystal is at the vault, which is not where the log is, and
+from there a save that was not noticed, one that failed to build, and one that
+compiled and changed nothing visible all look identical.
+
+Deletions count too, including of the crystal on screen — which keeps drawing,
+because a blank screen is a worse answer than a stale one, and the player says
+that is what it is doing.
+
+`--no-watch` turns the whole thing off.
 
 ## MilkDrop presets
 

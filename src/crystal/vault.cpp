@@ -17,11 +17,19 @@
 namespace holocron {
 
 std::vector<VaultEntry> scan_vault(const std::string& dir,
-                                   std::vector<VaultProblem>& out_problems)
+                                   std::vector<VaultProblem>& out_problems,
+                                   bool*                      out_readable)
 {
     namespace fs = std::filesystem;
 
     std::vector<VaultEntry> entries;
+
+    // Pessimistic until the directory has actually been walked to the end, so
+    // every early return below reports "not readable" without having to remember
+    // to.
+    if (out_readable != nullptr) {
+        *out_readable = false;
+    }
 
     std::error_code ec;
     if (!fs::is_directory(dir, ec)) {
@@ -37,8 +45,38 @@ std::vector<VaultEntry> scan_vault(const std::string& dir,
     // crystals, and descending would make it ambiguous whether a subdirectory is
     // part of this vault or a separate one.
     std::vector<std::string> stems;
-    for (const auto& e : fs::directory_iterator(dir, ec)) {
-        if (!e.is_regular_file()) {
+
+    fs::directory_iterator it(dir, ec);
+    if (ec) {
+        // The iterator's own error_code was constructed and then ignored, which
+        // was survivable while this only ran once at startup on a local path. It
+        // is not now: issue 214 runs this on a worker thread, where a throw is
+        // caught by a catch(...) that ends the thread and takes the hot vault
+        // with it for the rest of the run.
+        out_problems.push_back(VaultProblem{dir, "cannot read " + dir + ": " + ec.message()});
+        return entries;
+    }
+
+    // Stepped by hand for the same reason: a range-for uses the THROWING
+    // operator++, and only the constructor takes an error_code. An enumeration
+    // that fails partway -- a share dropping mid-listing -- must be reported as a
+    // failure rather than raised as an exception or, worse, returned as a short
+    // listing that looks like crystals having been deleted.
+    const fs::directory_iterator end;
+    for (; it != end; it.increment(ec)) {
+        if (ec) {
+            out_problems.push_back(VaultProblem{dir, "stopped reading " + dir + ": " +
+                                                         ec.message()});
+            return entries;
+        }
+
+        const fs::directory_entry& e = *it;
+
+        // is_regular_file's throwing overload would raise on a file that vanished
+        // between the listing and the query, which during an authoring session is
+        // an ordinary event rather than an exceptional one.
+        if (!e.is_regular_file(ec) || ec) {
+            ec.clear();
             continue;
         }
         const fs::path& p = e.path();
@@ -48,6 +86,12 @@ std::vector<VaultEntry> scan_vault(const std::string& dir,
         fs::path stem = p;
         stem.replace_extension();
         stems.push_back(stem.string());
+    }
+
+    // Walked to the end. Whatever the crystals turn out to be, the DIRECTORY was
+    // read, which is the only thing this flag claims.
+    if (out_readable != nullptr) {
+        *out_readable = true;
     }
 
     // Sorted before loading so the PROBLEM list is deterministic too, not only

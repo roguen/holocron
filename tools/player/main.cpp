@@ -70,6 +70,7 @@
 #include <holocron/projectm_api.hpp>
 #include <holocron/projectm_facet.hpp>
 #include <holocron/vault.hpp>
+#include <holocron/vault_watch.hpp>
 #include <holocron/debug_facet.hpp>
 #include <holocron/decoder.hpp>
 #include <holocron/playback_session.hpp>
@@ -108,6 +109,8 @@
 #include <fcntl.h>
 #include <io.h>
 #endif
+#include <condition_variable>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -437,10 +440,12 @@ void usage()
         "                 display's CURRENT mode rather than setting one, so the\n"
         "                 resolution and refresh rate stay the driver's business.\n"
         "  --windowed     force a window even if the config asks for fullscreen.\n"
-        "  --no-watch     do not reload the crystal when its files change. With\n"
-        "                 --crystal, saving the .frag or .toml rebuilds it in\n"
-        "                 place by default; a shader that fails to compile is\n"
-        "                 reported and the running one keeps drawing\n"
+        "  --no-watch     do not look at the filesystem while running. By default\n"
+        "                 saving a .frag or .toml rebuilds that crystal in place,\n"
+        "                 and a crystal COPIED INTO the vault appears on the arrow\n"
+        "                 keys and the phone within a few seconds. A shader that\n"
+        "                 fails to compile is reported and the running one keeps\n"
+        "                 drawing\n"
         "  --link         sign this Holocron in to your Plex account, which is\n"
         "                 what makes it offerable as a cast target. Prints a\n"
         "                 link to approve in your browser, then prints the token\n"
@@ -534,6 +539,21 @@ void describe(const char* verb, const Crystal& crystal, const CrystalFacet& face
 // Relative to the working directory, exactly as `--calibrate` has always been.
 constexpr const char* kSyncStem = "instruments/sync";
 
+// `current` names nothing in the vault.
+//
+// Introduced with the hot vault (issue 214), because a re-scan can remove the
+// entry that was current -- somebody deletes the crystal that is on screen -- and
+// there is no honest index to move it to. Falling back to 0 would be a lie of
+// exactly the kind D-034 is most careful about: the picture would still be the
+// deleted crystal while `current`, the phone's highlight and the next arrow press
+// all described a different one.
+//
+// The state is not new. `showing_sync` has always meant "what is on screen is not
+// a vault entry", and this is the same condition arrived at from the other
+// direction. Everything that indexes the vault has to check it, which is why it
+// is a named constant rather than a bare -1 to be recognised at each site.
+constexpr std::size_t kNoCurrent = static_cast<std::size_t>(-1);
+
 // ---------------------------------------------------------------------------
 // A live stack
 //
@@ -593,6 +613,73 @@ struct LiveStack {
     }
 };
 
+// The one line of a build log worth putting on a projector.
+//
+// NOT LITERALLY THE FIRST LINE, and finding that out cost a screenshot. A crystal
+// that fails to compile produces
+//
+//     <path to the .frag>:
+//     ERROR: 0:3: 'u_bas' : undeclared identifier
+//
+// because crystal_facet.cpp prefixes the driver's infolog with a header saying
+// which file it is about -- in three places, all of the form "<something>:". Take
+// the first line literally and the toast reads out an absolute path, truncated,
+// with the actual error off the end of it. That is not a worse message than
+// nothing; it is a message that actively looks like the diagnostic while
+// containing none of it.
+//
+// So: the first line that is not a header. A header is a line ending in a colon,
+// which is this project's own convention rather than a guess about the driver's
+// output, and the caller has already said which crystal it is anyway.
+std::string first_line(const std::string& text, std::size_t limit = 90)
+{
+    std::string line;
+
+    for (std::size_t at = 0; at <= text.size();) {
+        std::size_t end = text.find_first_of("\r\n", at);
+        if (end == std::string::npos) {
+            end = text.size();
+        }
+
+        // Drivers pad the front of an infolog, and leading spaces on a one-line
+        // overlay read as the text being mis-positioned rather than as
+        // whitespace.
+        const std::size_t begin = text.find_first_not_of(" \t", at);
+        std::string       candidate =
+            begin == std::string::npos || begin >= end ? std::string() : text.substr(begin, end - begin);
+        while (!candidate.empty() && (candidate.back() == ' ' || candidate.back() == '\t')) {
+            candidate.pop_back();
+        }
+
+        // Keep the first thing seen, so a log that is nothing BUT headers still
+        // says something rather than coming back empty.
+        if (line.empty()) {
+            line = candidate;
+        }
+        if (!candidate.empty() && candidate.back() != ':') {
+            line = candidate;
+            break;
+        }
+
+        if (end == text.size()) {
+            break;
+        }
+        at = end + 1;
+    }
+
+    if (line.size() > limit) {
+        // Cut on a byte boundary that cannot split a UTF-8 sequence. A truncated
+        // multi-byte character is not a shorter string, it is an invalid one, and
+        // the rasterizer is handed UTF-8.
+        std::size_t cut = limit;
+        while (cut > 0 && (static_cast<unsigned char>(line[cut]) & 0xC0) == 0x80) {
+            --cut;
+        }
+        line = line.substr(0, cut) + "...";
+    }
+    return line;
+}
+
 // Compile every layer of `archive` into a NEW stack, and hand it back only if all
 // of them built.
 //
@@ -604,8 +691,16 @@ struct LiveStack {
 // ALL OR NOTHING, and that is the other half of the same idea: a
 // stack with one layer missing is not a smaller stack, it is a different picture,
 // and showing it would hide the failure behind something that looks deliberate.
+//
+// `out_error` GETS THE SAME FAILURE THE TERMINAL GETS, cut to one line.
+//
+// Every failure here already prints, and until issue 214 that print was the ONLY
+// signal -- to a terminal on a different machine from the one the author is
+// looking at. From the vault's own seat "not noticed yet", "noticed and did not
+// compile" and "compiled and changed nothing visible" were indistinguishable.
+// The caller puts this on screen; see the toast in the render loop.
 bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
-                 const ProjectMContext& pm)
+                 const ProjectMContext& pm, std::string* out_error = nullptr)
 {
     LiveStack next;
     next.archive = archive;
@@ -622,6 +717,9 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
                              "holocron: %s failed -- this layer needs libprojectM and none is "
                              "loaded\nholocron: still drawing what was already up\n",
                              verb);
+                if (out_error != nullptr) {
+                    *out_error = "no libprojectM loaded";
+                }
                 return false;
             }
 
@@ -631,6 +729,9 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
                 std::fprintf(stderr, "holocron: %s failed -- projectM did not start\n%s\n"
                                      "holocron: still drawing what was already up\n",
                              verb, why.c_str());
+                if (out_error != nullptr) {
+                    *out_error = "projectM: " + first_line(why);
+                }
                 return false;
             }
 
@@ -647,6 +748,12 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
             std::fprintf(stderr, "holocron: %s failed -- %s\n%s\nholocron: still drawing what "
                                  "was already up\n",
                          verb, to_string(err), detail.c_str());
+            if (out_error != nullptr) {
+                // NAMED BY STEM RATHER THAN BY MANIFEST NAME, because the manifest
+                // is what failed to load and its name is exactly the thing that is
+                // not available to quote.
+                *out_error = layer.crystal + ": " + to_string(err);
+            }
             return false;
         }
 
@@ -656,6 +763,9 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
             std::fprintf(stderr, "holocron: %s failed -- `%s` did not build\n%s\n"
                                  "holocron: still drawing what was already up\n",
                          verb, crystal.name.c_str(), log.c_str());
+            if (out_error != nullptr) {
+                *out_error = crystal.name + ": " + first_line(log);
+            }
             return false;
         }
 
@@ -683,7 +793,7 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
 //
 // This is where "a crystal is an archive of one" actually happens, and it is the
 // only place in the player that knows the difference.
-bool archive_for(const VaultEntry& entry, Archive& out)
+bool archive_for(const VaultEntry& entry, Archive& out, std::string* out_error = nullptr)
 {
     if (entry.kind == VaultKind::kProjectM) {
         out = archive_of_projectm(entry.name);
@@ -698,6 +808,9 @@ bool archive_for(const VaultEntry& entry, Archive& out)
     const ArchiveError err = load_archive(entry.stem, out, detail);
     if (err != ArchiveError::kOk) {
         std::fprintf(stderr, "holocron: %s -- %s\n", to_string(err), detail.c_str());
+        if (out_error != nullptr) {
+            *out_error = entry.name + ": " + to_string(err);
+        }
         return false;
     }
     return true;
@@ -928,25 +1041,76 @@ struct CastCommand {
     // same rule that made this whole struct a request-and-perform queue rather
     // than a set of direct calls. Replacing a live program while the render
     // thread is drawing with it is the failure this avoids.
-    bool        want_crystal = false;
-    std::size_t crystal_index = 0;
+    // WHICH LIST THAT INDEX CAME FROM travels with it. The render loop drains a
+    // pending vault re-scan before it performs this, so an index that was correct
+    // when the HTTP worker accepted it can be applied to a list adopted since --
+    // and the vault is sorted by name, so that selects the wrong crystal rather
+    // than failing. Zero means the caller sent no generation; see
+    // CompanionServer::SelectCrystalHandler.
+    bool          want_crystal    = false;
+    std::size_t   crystal_index   = 0;
+    std::uint64_t crystal_gen     = 0;
 
-    void request_crystal(std::size_t index)
+    void request_crystal(std::size_t index, std::uint64_t generation)
     {
         const std::lock_guard<std::mutex> lock(mutex);
         want_crystal  = true;
         crystal_index = index;
+        crystal_gen   = generation;
     }
 
-    bool take_crystal(std::size_t& out_index)
+    bool take_crystal(std::size_t& out_index, std::uint64_t& out_generation)
     {
         const std::lock_guard<std::mutex> lock(mutex);
         if (!want_crystal) {
             return false;
         }
-        out_index    = crystal_index;
-        want_crystal = false;
+        out_index      = crystal_index;
+        out_generation = crystal_gen;
+        want_crystal   = false;
         return true;
+    }
+
+    // Read the vault directory again now. Issue 214.
+    //
+    // Crosses to the render thread like everything else here even though the
+    // scan happens on a third thread of its own -- the render loop is what owns
+    // the scanner, and a handler reaching past it to poke a worker directly
+    // would be the one place in this struct that does not follow its own rule.
+    bool want_rescan = false;
+
+    void request_rescan()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        want_rescan = true;
+    }
+
+    bool take_rescan()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!want_rescan) {
+            return false;
+        }
+        want_rescan = false;
+        return true;
+    }
+
+    // Show a crystal the moment it arrives. Tri-state like the overlay toggles:
+    // 0 is "nothing asked", not "off".
+    int follow_new_asked = 0;
+
+    void request_follow_new(bool on)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        follow_new_asked = on ? 1 : -1;
+    }
+
+    int take_follow_new()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const int asked  = follow_new_asked;
+        follow_new_asked = 0;
+        return asked;
     }
 
     // -- tuning, from the control page's sub-page ---------------------------
@@ -1645,6 +1809,224 @@ private:
     Clock::time_point retry_at_{};
 };
 
+// Re-scan the vault off the render thread. Issue 214.
+//
+// WHY A THREAD AT ALL, when CrystalWatch happily polls from the render loop.
+//
+// Because the two do different amounts of work. CrystalWatch stats two files;
+// this reads a directory and then LOADS every manifest and every shader in it to
+// find out what is there -- which is what scan_vault does, deliberately, so a
+// broken crystal is reported before anybody switches to it. That is tens of file
+// reads, and putting it in a 16.7 ms budget on a timer would be a hitch a few
+// times a minute for no reason.
+//
+// And the failure mode is worse than the cost. `--vault` can name a network path.
+// A directory_iterator on a share that has gone away blocks for as long as the OS
+// feels like, and on the render thread that is the picture stopping. The hazard
+// already exists once -- CrystalWatch::poll calls last_write_time from the render
+// loop -- and adding a second, larger instance of it is not a trade worth making.
+//
+// A CONDVAR RATHER THAN A SLEEP, for two reasons that are both about the edges. A
+// sleeping thread cannot be woken to serve `POST /control/rescan`, so the phone's
+// button would take up to a poll interval to do anything. And a sleeping thread
+// makes shutdown wait out the sleep -- which is the same class of bug the herald
+// closed by bounding every operation, on a path that runs on every exit.
+//
+// THE LOCK NEVER SPANS THE SCAN. It is taken to read the stop flag, and taken
+// again to hand the finished listing over. Between those the thread owns nothing
+// the render loop wants, so a scan that blocks on a dead path costs exactly this
+// thread and nothing else.
+class VaultScanner {
+public:
+    VaultScanner(std::string dir, std::chrono::milliseconds interval)
+        : dir_(std::move(dir)), interval_(interval)
+    {
+    }
+
+    ~VaultScanner() { stop(); }
+
+    VaultScanner(const VaultScanner&)            = delete;
+    VaultScanner& operator=(const VaultScanner&) = delete;
+
+    void start()
+    {
+        worker_ = std::thread([this] {
+            // catch(...) round the whole body for the reason herald.hpp gives:
+            // an exception escaping a std::thread is std::terminate, and a
+            // convenience feature that can kill the player is worse than no
+            // convenience feature. The filesystem calls below all take an
+            // error_code, so this should never fire -- which is exactly when it
+            // is worth having.
+            try {
+                run();
+            } catch (...) {
+                std::fprintf(stderr, "holocron: the vault scanner stopped -- new crystals "
+                                     "will need a restart until the next run\n");
+            }
+        });
+    }
+
+    void stop()
+    {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            stop_ = true;
+        }
+        wake_.notify_all();
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+    }
+
+    // Ask for a scan now, whatever the watch thinks. This is the phone's button,
+    // and it is deliberately NOT conditional on the directory having changed:
+    // somebody pressing it has a reason the filesystem cannot see -- most likely
+    // a crystal that was broken when it was scanned and has since been fixed
+    // somewhere the mtime does not show, or simple disbelief, which is a
+    // perfectly good reason to offer a button.
+    void rescan_now()
+    {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            forced_ = true;
+        }
+        wake_.notify_all();
+    }
+
+    // Hand over the most recent scan, if one is waiting. Called once per frame
+    // from the render thread; returns false almost every time.
+    bool take(std::vector<VaultEntry>& out_entries, std::vector<VaultProblem>& out_problems)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (!ready_) {
+            return false;
+        }
+        out_entries  = std::move(entries_);
+        out_problems = std::move(problems_);
+        entries_.clear();
+        problems_.clear();
+        ready_ = false;
+        return true;
+    }
+
+private:
+    void run()
+    {
+        // ZERO INTERVAL ON THE WATCH, because this thread IS the clock. The gate
+        // inside VaultWatch::poll exists so a caller can poll every frame without
+        // turning the filesystem into a per-frame cost; here every call is
+        // already paced by the wait below, and leaving the gate armed would mean
+        // two clocks that can disagree -- a wake that arrives a microsecond early
+        // silently doing nothing.
+        VaultWatch watch(dir_, VaultWatch::Clock::now(), VaultWatch::Clock::duration::zero());
+
+        for (;;) {
+            bool forced = false;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                wake_.wait_for(lock, interval_, [this] { return stop_ || forced_; });
+                if (stop_) {
+                    return;
+                }
+                forced  = forced_;
+                forced_ = false;
+            }
+
+            // OUTSIDE THE LOCK, both of them. See the class comment.
+            const bool changed = watch.poll(VaultWatch::Clock::now());
+            if (!changed && !forced) {
+                continue;
+            }
+
+            // CHECKED AGAIN IMMEDIATELY BEFORE THE EXPENSIVE PART, because
+            // stop() joins. A scan loads every manifest and every shader in the
+            // directory, and on a vault that lives on a share which has just gone
+            // away, directory_iterator blocks for as long as the OS decides --
+            // during which the player cannot exit.
+            //
+            // This does not remove that hazard, it bounds it: a scan already in
+            // flight when the quit arrives still has to finish, but no new one is
+            // started after it. The remaining exposure is one scan, and only for
+            // a vault on a network path, which is not what `[paths] vault`
+            // defaults to. Bounding it completely would mean a cancellable
+            // filesystem walk, which std::filesystem does not offer.
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                if (stop_) {
+                    return;
+                }
+            }
+
+            std::vector<VaultProblem> problems;
+            bool                      readable = false;
+            std::vector<VaultEntry>   entries  = scan_vault(dir_, problems, &readable);
+
+            // A LISTING THAT WAS NOT FULLY READ IS NEVER PUBLISHED, and this is
+            // the guard the forced path needs.
+            //
+            // VaultWatch already refuses to report a failed look, which covers the
+            // timer. The BUTTON does not go through it: `forced` skips the
+            // change test above precisely so a scan happens whatever the watch
+            // thinks. Without this, tapping "Look for new crystals" during the
+            // exact blip the button exists to recover from -- a share being
+            // remounted -- would hand the render thread an empty vault, and
+            // adoption is wholesale: no crystals on the phone, dead arrow keys,
+            // and no self-correction, because when the share returns the watch
+            // sees the listing it always had and reports nothing.
+            //
+            // An empty directory that WAS read is still published. Deleting your
+            // last crystal is a real thing to do and the list has to follow.
+            if (!readable) {
+                for (const VaultProblem& p : problems) {
+                    std::fprintf(stderr, "holocron: vault scan gave up -- %s\n",
+                                 p.detail.c_str());
+                }
+                std::fflush(stderr);
+                continue;
+            }
+
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                // NEWEST WINS. If the render thread has not drained the previous
+                // scan yet, that scan is now stale by definition and keeping it
+                // would mean adopting a listing the disk has already moved past.
+                // Same argument TripleBuffer makes for frames.
+                entries_  = std::move(entries);
+                problems_ = std::move(problems);
+                ready_    = true;
+            }
+        }
+    }
+
+    std::string               dir_;
+    std::chrono::milliseconds interval_;
+
+    std::thread             worker_;
+    mutable std::mutex      mutex_;
+    std::condition_variable wake_;
+    bool stop_ = false;
+
+    // TRUE TO BEGIN WITH, WHICH CLOSES A GAP AT STARTUP.
+    //
+    // The player scans the vault itself, then opens a window, compiles the first
+    // crystal's shader and only then starts this thread -- which takes its own
+    // baseline at that later moment. A crystal that lands in between is therefore
+    // in the watch's baseline but NOT in the player's list, so it compares equal
+    // forever and is never reported: not delayed, missed, until some unrelated
+    // file changes. A boot-time sync from the authoring machine is exactly the
+    // shape of thing that lands there.
+    //
+    // Forcing the first scan costs one directory read on a worker thread and
+    // makes it impossible. If nothing did land, adopt_vault's own diff absorbs
+    // it -- the sequence is identical, so no generation bump, no toast, and an
+    // early return.
+    bool forced_ = true;
+    bool ready_  = false;
+
+    std::vector<VaultEntry>   entries_;
+    std::vector<VaultProblem> problems_;
+};
+
 extern "C" void on_interrupt(int)
 {
     // Nothing but a flag. A signal handler may call almost nothing, and the two
@@ -2094,9 +2476,11 @@ int main(int argc, char** argv)
     companion.set_refresh_queue_handler([&cast](const std::string& play_queue_id) {
         cast.request_refresh_queue(play_queue_id);
     });
-    companion.set_select_crystal_handler([&cast](std::size_t index) {
-        cast.request_crystal(index);
+    companion.set_select_crystal_handler([&cast](std::size_t index, std::uint64_t generation) {
+        cast.request_crystal(index, generation);
     });
+    companion.set_rescan_handler([&cast] { cast.request_rescan(); });
+    companion.set_follow_new_handler([&cast](bool on) { cast.request_follow_new(on); });
     companion.set_projectm_step_handler([&cast](int step) { cast.request_projectm_step(step); });
     companion.set_projectm_shuffle_handler([&cast](bool on) {
         cast.request_projectm_shuffle(on);
@@ -2370,13 +2754,41 @@ int main(int argc, char** argv)
     std::vector<VaultEntry> vault;
     std::size_t             current = 0;
 
+    // WHAT `current` NAMES, BY IDENTITY RATHER THAN BY POSITION (issue 214).
+    //
+    // An index into a list that can be rebuilt underneath it is not a reference to
+    // anything. The vault is sorted by display name, so a crystal called `aurora`
+    // arriving pushes everything after it down one -- and index 3 quietly becomes
+    // a different crystal than the one on screen. Nothing would report that: the
+    // picture would be right and every description of it wrong, which is the
+    // failure mode issue 216 already cost a fix for once.
+    //
+    // Kept alongside rather than derived from `vault[current]` so it survives
+    // `current` being kNoCurrent: delete the crystal that is on screen and put it
+    // back, and the player picks the thread up again instead of having forgotten
+    // which entry the picture belonged to.
+    std::string current_stem;
+    VaultKind   current_kind = VaultKind::kCrystal;
+
+    // What the last scan could not load, kept rather than only printed.
+    //
+    // At startup these went to stderr and were gone. With the vault re-scanned
+    // while the player runs (issue 214) they are a LIVE fact -- a crystal being
+    // written right now is broken and then is not -- and the person who needs
+    // them is holding a phone. The control page renders this list.
+    std::vector<VaultProblem> vault_problems;
+
+    // Bumped when the vault's ENTRY SEQUENCE changes, and never merely because a
+    // file did. See the adopt lambda: this is what stops an ordinary shader save
+    // from invalidating a page somebody is reading.
+    std::uint64_t vault_generation = 1;
+
     if (opt.vault != nullptr) {
-        std::vector<VaultProblem> problems;
-        vault = scan_vault(opt.vault, problems);
+        vault = scan_vault(opt.vault, vault_problems);
 
         // Reported but not fatal. One crystal with a typo must not stop the
         // other twenty being usable -- see vault.hpp.
-        for (const VaultProblem& p : problems) {
+        for (const VaultProblem& p : vault_problems) {
             std::fprintf(stderr, "holocron: skipping %s\n%s\n", p.stem.c_str(), p.detail.c_str());
         }
         if (vault.empty() && !projectm_ctx.available()) {
@@ -2389,7 +2801,21 @@ int main(int argc, char** argv)
         // --crystal names a stem rather than a vault entry, so it is not scanned
         // and its kind is not known. It is a crystal by definition: an archive is
         // something found in a vault.
-        vault.push_back(VaultEntry{opt.crystal, opt.crystal, VaultKind::kCrystal});
+        //
+        // THE DISPLAY NAME IS THE FILENAME, NOT THE STEM, and that is not
+        // cosmetic. vault.hpp says `name` is "what a person should ever be
+        // shown"; a stem is a path, and `--crystal C:\some\long\path\pulse` put
+        // the whole of it everywhere a name goes -- the phone's crystal list, the
+        // "already on X" line, and (which is how it was noticed) a reload toast
+        // that was entirely path and had no room left for anything else.
+        //
+        // The manifest's own name would be better still and is not available
+        // here: nothing has been loaded yet, and the vault is built before the
+        // first build_stack precisely so a failure to load is reported against an
+        // entry that already exists.
+        vault.push_back(VaultEntry{opt.crystal,
+                                   std::filesystem::path(opt.crystal).filename().string(),
+                                   VaultKind::kCrystal});
     }
 
     // projectM joins the same list the crystals and archives are in, at the end.
@@ -2452,6 +2878,9 @@ int main(int argc, char** argv)
     }
 
     if (!vault.empty()) {
+        current_stem = vault[current].stem;
+        current_kind = vault[current].kind;
+
         Archive archive;
         if (!archive_for(vault[current], archive) ||
             !build_stack(archive, live_stack, "opened", projectm_ctx)) {
@@ -2491,6 +2920,25 @@ int main(int argc, char** argv)
         session.stop();
         return 1;
     }
+
+    // -- the vault itself is watched now (issue 214) --------------------------
+    //
+    // ONLY FOR A SCANNED VAULT. `--crystal`, `--calibrate` and `--debug-facet`
+    // all null `opt.vault` by construction: there is no directory to re-read, and
+    // a crystal named outright is already covered by CrystalWatch.
+    //
+    // SHARES `--no-watch`, rather than adding a second off switch. That flag has
+    // always meant "do not go looking at the filesystem while I am running", and
+    // somebody who turned it off to stop the player touching a slow share does
+    // not want a directory listing on a timer either. One switch, one meaning.
+    std::optional<VaultScanner> vault_scanner;
+    if (opt.vault != nullptr && !opt.no_watch) {
+        vault_scanner.emplace(opt.vault, kVaultPollInterval);
+        vault_scanner->start();
+        std::printf("holocron: watching %s -- crystals added there appear without a restart\n",
+                    opt.vault);
+    }
+    companion.set_vault_rescannable(vault_scanner.has_value());
 
     // -- render loop ---------------------------------------------------------
 
@@ -2696,8 +3144,19 @@ int main(int argc, char** argv)
     // there is one path rather than two. Rejected for now: begin_stack is a lambda
     // declared with the render loop's state and moving it above the vault means
     // hoisting `layered`, `fade_started` and both stacks with it, which is a large
-    // edit to fix a one-word bug. The two places that raise this both take a max,
-    // so neither can lower it -- that is the property that matters.
+    // edit to fix a one-word bug.
+    //
+    // THERE ARE THREE PLACES THAT RAISE THIS, NOT TWO. This comment said two, and
+    // the third -- the hot-reload path -- was the one that did not do it, so an
+    // archive that gained a `[[layer]]` while on screen lost the new layer
+    // silently (issue 217). The count is stated because getting it wrong is
+    // exactly how that happened: begin_stack raises it twice, the reload path
+    // once, and the reload path is easy to miss precisely because it deliberately
+    // does NOT go through begin_stack.
+    //
+    // All three take a max, so none can lower it -- that is the property that
+    // matters, and it is what makes raising it on the reload path safe even when
+    // the stack got smaller.
     std::size_t layers_wanted = std::max<std::size_t>(1, live_stack.size());
 
     // Printed when it changes, because this is the branch the whole render path
@@ -2781,6 +3240,263 @@ int main(int argc, char** argv)
     TextureHandle lyric_texture = 0;
     int           lyric_w = 0, lyric_h = 0;
     std::string   drawn_lyric;
+
+    // -- the toast (issue 214) -------------------------------------------------
+    //
+    // WHY A PLAYER GROWS A NOTIFICATION AT ALL, having deliberately refused an
+    // on-screen UI. It is not chrome and it is not the beginning of one: it is the
+    // authoring loop's only feedback channel.
+    //
+    // Every build failure in this program prints to stderr and does nothing else,
+    // and the author is at the vault -- which on this rack is a machine in another
+    // room from the picture, and at M8 is a machine that has no terminal at all.
+    // From that seat three states look identical: the save was not noticed yet,
+    // it was noticed and did not compile, and it compiled and changed nothing
+    // visible. Two of those are bugs in the shader and one is a bug in the player,
+    // and there was no way to tell which without walking to the keyboard.
+    //
+    // So: one line, one corner, two seconds. No queue -- a later message replaces
+    // an earlier one, because during a reload loop the newest result is the only
+    // one anybody wants and a backlog of stale compiler errors would be worse than
+    // silence. It says what happened, not what is true, which is why it expires.
+    std::string                           toast_text;
+    bool                                  toast_bad = false;
+    std::chrono::steady_clock::time_point toast_until{};
+    TextureHandle                         toast_texture = 0;
+    int                                   toast_w = 0, toast_h = 0;
+    std::string                           toast_drawn;   // what the texture says
+
+    // How long a message stays up, and how long it takes to go.
+    //
+    // Two seconds is long enough to read six words while looking at something
+    // else, and short enough that a fast save-compile-save cycle does not leave
+    // the picture permanently captioned. The fade is so the message leaves rather
+    // than blinks out: a hard disappearance in peripheral vision reads as a
+    // flicker in the picture, which is the one thing an author must not have to
+    // second-guess while judging a shader.
+    constexpr auto kToastHold = std::chrono::milliseconds(2000);
+    constexpr auto kToastFade = std::chrono::milliseconds(350);
+
+    // `bad` only changes the colour, and the words still say which it is. The
+    // colour is what makes the answer readable BEFORE the words are -- from the
+    // far end of the room a save that compiled and one that did not are otherwise
+    // the same shape of white line, and telling them apart is the whole question.
+    // It is the same amber the tuning page warns in, deliberately: two surfaces,
+    // one meaning.
+    // The last failure, and whether the phone has been told about it yet.
+    //
+    // The toast is two seconds long and the person it is for may have been
+    // looking somewhere else, so the same text also goes to the control page --
+    // where it STAYS, because "why did that button do nothing" is a question
+    // asked after the fact by definition. Pushed on change rather than per frame:
+    // it changes when somebody breaks something, which is not 144 times a second.
+    std::string last_error;
+    bool        diagnostics_dirty = true;
+
+    // Switch to a crystal as it arrives. Off by default -- see
+    // ControlState::follow_new for the argument and for the rejected alternative.
+    bool follow_new = false;
+
+    // Which entry to move to because it just arrived, or kNoCurrent.
+    //
+    // A HANDOFF RATHER THAN A DIRECT SWITCH, because the drain runs before the
+    // block that owns switching -- deliberately, so no index outlives the list it
+    // was validated against. Building a stack needs the GL context, so the
+    // arrival cannot act on itself where it is noticed.
+    std::size_t follow_target = kNoCurrent;
+
+    const auto notify = [&](std::string text, bool bad = false) {
+        if (bad) {
+            last_error        = text;
+            diagnostics_dirty = true;
+        }
+        toast_text  = std::move(text);
+        toast_bad   = bad;
+        toast_until = std::chrono::steady_clock::now() + kToastHold;
+    };
+
+    // A stack built, so whatever last refused to is no longer the news.
+    //
+    // NOT FOLDED INTO notify(), because not every good thing that happens fixes
+    // the bad one: "new: duel" is a successful arrival and says nothing about a
+    // shader that is still broken. Only an actual build clears this.
+    const auto clear_error = [&] {
+        if (!last_error.empty()) {
+            last_error.clear();
+            diagnostics_dirty = true;
+        }
+    };
+
+    // -- taking a fresh scan of the vault (issue 214) --------------------------
+    //
+    // Runs on the RENDER THREAD, once per frame at most, and does no filesystem
+    // work: the scanner thread has already read the disk and loaded every
+    // manifest. All that happens here is that one list replaces another, which is
+    // the part that has to be atomic with respect to everything that indexes it.
+    //
+    // Two identities of a vault entry are in play and confusing them is the whole
+    // hazard. (stem, kind) is WHICH CRYSTAL -- stable, and what `current` is
+    // re-anchored on. (kind, stem, name) is WHAT THE PAGE WAS RENDERED FROM, and
+    // it includes the display name because renaming a crystal in its manifest
+    // re-sorts the list and changes what every index on that page means.
+    const auto adopt_vault = [&](std::vector<VaultEntry>   fresh,
+                                 std::vector<VaultProblem> problems) {
+        // RE-APPENDED ON EVERY ADOPTION, because a scan cannot produce it. There
+        // is no file on disk for projectM -- the entry is synthesised when the
+        // library actually loaded (see vault.hpp) -- so adopting a scan wholesale
+        // would silently drop it, and the only symptom would be that projectM
+        // stopped being reachable at some point during a run.
+        if (projectm_ctx.available()) {
+            fresh.push_back(VaultEntry{"", "projectM", VaultKind::kProjectM});
+        }
+
+        const auto same_entry = [](const VaultEntry& a, const VaultEntry& b) {
+            return a.kind == b.kind && a.stem == b.stem;
+        };
+        const auto has = [&](const std::vector<VaultEntry>& in, const VaultEntry& e) {
+            return std::any_of(in.begin(), in.end(),
+                               [&](const VaultEntry& x) { return same_entry(x, e); });
+        };
+
+        std::vector<std::size_t> arrived;
+        for (std::size_t i = 0; i < fresh.size(); ++i) {
+            if (!has(vault, fresh[i])) {
+                arrived.push_back(i);
+            }
+        }
+        const auto departed = static_cast<std::size_t>(
+            std::count_if(vault.begin(), vault.end(),
+                          [&](const VaultEntry& e) { return !has(fresh, e); }));
+
+        // THE GENERATION MOVES ONLY WHEN THE SEQUENCE REALLY DIFFERS.
+        //
+        // The scanner re-scans whenever any watched file settles, which includes
+        // every ordinary shader save. Bumping on each of those would invalidate
+        // the phone's page while somebody was looking at it -- so a crystal list
+        // rendered a second ago would refuse the tap it was rendered for, and the
+        // feature meant to make the vault easier to use would make it unusable
+        // during exactly the activity it exists to support.
+        const bool sequence_changed =
+            fresh.size() != vault.size() ||
+            !std::equal(fresh.begin(), fresh.end(), vault.begin(),
+                        [](const VaultEntry& a, const VaultEntry& b) {
+                            return a.kind == b.kind && a.stem == b.stem && a.name == b.name;
+                        });
+
+        const std::string was_showing =
+            current != kNoCurrent && current < vault.size() ? vault[current].name : std::string();
+
+        vault             = std::move(fresh);
+        vault_problems    = std::move(problems);
+        diagnostics_dirty = true;
+        if (sequence_changed) {
+            ++vault_generation;
+        }
+
+        // RE-ANCHORED ON IDENTITY. Not kept, not clamped, not reset to zero --
+        // found again by (stem, kind), or admitted to be nothing.
+        const std::size_t before = current;
+        current                  = kNoCurrent;
+        if (!current_stem.empty() || current_kind == VaultKind::kProjectM) {
+            for (std::size_t i = 0; i < vault.size(); ++i) {
+                if (vault[i].kind == current_kind && vault[i].stem == current_stem) {
+                    current = i;
+                    break;
+                }
+            }
+        }
+
+        // PUSHED HERE AND NOT LEFT TO THE NEXT FRAME'S DESCRIPTIVE PUSH.
+        //
+        // That push runs earlier in the loop body than this drain does, so
+        // without this the server would spend the rest of the frame holding the
+        // NEW `current` against the OLD list of names -- one frame of the phone
+        // highlighting the wrong row, and, if the generation had also lagged, one
+        // frame in which a tap could be accepted against a list nobody was shown.
+        // Both are sub-frame windows and neither is a reason to leave the state
+        // inconsistent when the fix is to publish the two together.
+        const auto publish_names = [&] {
+            std::vector<std::string> names;
+            names.reserve(vault.size());
+            for (const VaultEntry& e : vault) {
+                names.push_back(e.name);
+            }
+            companion.set_control_vault(names, vault_generation);
+        };
+
+        if (!sequence_changed) {
+            // A content edit that did not change the list. The reload path has
+            // its own toast for the crystal that is actually on screen; saying
+            // anything here would double it.
+            if (current != before) {
+                publish_names();
+                companion.set_current_crystal(current);
+            }
+            return;
+        }
+        publish_names();
+
+        std::printf("holocron: vault re-scanned -- %zu entr%s", vault.size(),
+                    vault.size() == 1 ? "y" : "ies");
+        if (!arrived.empty()) {
+            std::printf(", %zu new", arrived.size());
+        }
+        if (departed > 0) {
+            std::printf(", %zu gone", departed);
+        }
+        if (!vault_problems.empty()) {
+            std::printf(", %zu unreadable", vault_problems.size());
+        }
+        std::printf("\n");
+        for (const VaultProblem& p : vault_problems) {
+            std::fprintf(stderr, "holocron: skipping %s\n%s\n", p.stem.c_str(),
+                         p.detail.c_str());
+        }
+        std::fflush(stdout);
+
+        // SAID ON SCREEN, because the whole feature is for somebody who is not at
+        // the terminal. Without this, copying a crystal in and copying a broken
+        // one in look identical from the couch: the picture carries on either way
+        // and the new name either is or is not in a list on a phone that has to
+        // be picked up to find out.
+        // FIRST BY VAULT ORDER when several land at once, which is deterministic
+        // rather than right -- there is no way to know which of three crystals
+        // copied in together was the interesting one. Copying them in one at a
+        // time is the way to be shown each, and that is what an author does
+        // anyway.
+        if (follow_new && !arrived.empty()) {
+            follow_target = arrived.front();
+        }
+
+        if (arrived.size() == 1) {
+            notify((follow_new ? "showing new: " : "new: ") + vault[arrived.front()].name);
+        } else if (!arrived.empty() && departed > 0) {
+            notify(std::to_string(arrived.size()) + " new, " + std::to_string(departed) +
+                   " gone");
+        } else if (!arrived.empty()) {
+            notify(std::to_string(arrived.size()) + " new crystals");
+        } else if (departed > 0) {
+            notify(std::to_string(departed) + (departed == 1 ? " crystal gone" : " crystals gone"));
+        }
+
+        // The one departure that has to be called out by name: the crystal that
+        // is ON SCREEN. It keeps drawing -- there is nothing better to put up, and
+        // blanking the picture because a file was deleted would be a worse answer
+        // than a stale one -- but `current` now names nothing, the phone
+        // highlights nothing, and the next arrow press starts from the beginning
+        // rather than from here. All three are consequences somebody should be
+        // told about rather than discover.
+        if (before != kNoCurrent && current == kNoCurrent && !was_showing.empty()) {
+            std::fprintf(stderr,
+                         "holocron: \"%s\" is gone from the vault -- still drawing it, but it "
+                         "is no longer somewhere the arrows can return to\n",
+                         was_showing.c_str());
+            std::fflush(stderr);
+            notify(was_showing + " is gone -- still drawing it", /*bad=*/true);
+        }
+
+        companion.set_current_crystal(current);
+    };
 
     // Rebuild the card's textures. Called when the track changes, and only then.
     const auto build_card = [&](const std::string& title, const std::string& artist) {
@@ -3782,7 +4498,8 @@ int main(int argc, char** argv)
             for (const VaultEntry& entry : vault) {
                 names.push_back(entry.name);
             }
-            companion.set_control_info(names, track_context.title, track_context.artist,
+            companion.set_control_vault(names, vault_generation);
+            companion.set_control_info(track_context.title, track_context.artist,
                                        track_context.has_art);
             companion.set_control_tuning(trim_ms, headroom_ms, showing_sync, opt.config);
 
@@ -3919,6 +4636,51 @@ int main(int argc, char** argv)
             }
         }
 
+        // -- a fresh scan of the vault, if one is waiting (issue 214) ------------
+        //
+        // BEFORE ANYTHING READS AN INDEX, and that ordering is the whole reason
+        // this sits here rather than anywhere else in the frame. Below this line
+        // the arrow keys, the auto-advance and `take_crystal` all turn `current`
+        // or a number from the phone into `vault[i]`. Draining after any of them
+        // would mean an index validated against the old list being used against
+        // the new one -- and because the list is sorted by name, that is not a
+        // crash, it is silently switching to the wrong crystal.
+        //
+        // OUTSIDE the `drawing_crystal && !colophon_took_arrows` gate as well: the
+        // colophon consuming the arrow keys is a reason not to MOVE, never a
+        // reason to hold a stale list. The debug facet nulls the vault so there is
+        // no scanner in that case at all.
+        if (const int asked = cast.take_follow_new(); asked != 0) {
+            follow_new = asked == 1;
+            std::printf("holocron: following new crystals %s\n", follow_new ? "on" : "off");
+            std::fflush(stdout);
+        }
+        if (cast.take_rescan() && vault_scanner) {
+            vault_scanner->rescan_now();
+        }
+        if (vault_scanner) {
+            std::vector<VaultEntry>   fresh;
+            std::vector<VaultProblem> fresh_problems;
+            if (vault_scanner->take(fresh, fresh_problems)) {
+                adopt_vault(std::move(fresh), std::move(fresh_problems));
+            }
+        }
+        if (diagnostics_dirty) {
+            // Flattened to one line each here rather than in the server, so
+            // companion_server.cpp does not acquire a dependency on the vault
+            // loader for the sake of a summary. first_line drops the header line
+            // for the same reason the toast does -- a problem's detail begins
+            // with the path it is about, which the stem already says.
+            std::vector<std::string> lines;
+            lines.reserve(vault_problems.size());
+            for (const VaultProblem& p : vault_problems) {
+                lines.push_back(std::filesystem::path(p.stem).filename().string() + ": " +
+                                first_line(p.detail, 120));
+            }
+            companion.set_control_diagnostics(lines, last_error);
+            diagnostics_dirty = false;
+        }
+
         if (drawing_crystal && !colophon_took_arrows) {
             // Switching, then reloading, both here rather than on their own
             // thread: building a program needs the GL context, which belongs to
@@ -3932,13 +4694,26 @@ int main(int argc, char** argv)
             std::size_t wanted    = current;
             bool        switching = false;
 
-            if (vault.size() > 1 && (back || fwd)) {
-                // Wraps in both directions. Modular arithmetic on the way down
-                // uses + size() rather than - 1 so index 0 does not underflow to
-                // a very large number indeed.
-                wanted = fwd ? (current + 1) % vault.size()
-                             : (current + vault.size() - 1) % vault.size();
-                switching = true;
+            if ((back || fwd) && !vault.empty()) {
+                if (current == kNoCurrent) {
+                    // NOWHERE IS A PLACE THE ARROWS MUST GET OUT OF. The crystal
+                    // on screen was deleted from the vault, so there is no
+                    // position to step from -- and the ordinary rule below ("a
+                    // vault of one never advances") would leave a single
+                    // remaining crystal unreachable from the keyboard entirely.
+                    //
+                    // Forward lands on the first, back on the last, which is what
+                    // wrapping means when you are outside the list.
+                    wanted    = fwd ? 0 : vault.size() - 1;
+                    switching = true;
+                } else if (vault.size() > 1) {
+                    // Wraps in both directions. Modular arithmetic on the way down
+                    // uses + size() rather than - 1 so index 0 does not underflow to
+                    // a very large number indeed.
+                    wanted = fwd ? (current + 1) % vault.size()
+                                 : (current + vault.size() - 1) % vault.size();
+                    switching = true;
+                }
             }
 
             // -- moving on by itself -------------------------------------------
@@ -3974,20 +4749,16 @@ int main(int argc, char** argv)
                 }
 
                 if (due) {
-                    wanted    = (current + 1) % vault.size();
+                    // The sentinel is spelled out rather than left to unsigned
+                    // wrap. (kNoCurrent + 1) % size does happen to be 0, which is
+                    // the right answer by accident -- and accidental correctness
+                    // in modular arithmetic is how the `- 1` underflow above got
+                    // its own comment.
+                    wanted    = current == kNoCurrent ? 0 : (current + 1) % vault.size();
                     switching = true;
                     std::printf("holocron: advancing to \"%s\"\n", vault[wanted].name.c_str());
                     std::fflush(stdout);
                 }
-            }
-
-            // The clock restarts on EVERY switch, including a manual one. Picking
-            // something by hand and having it replaced eight seconds later because
-            // the timer was already most of the way through is the behaviour
-            // nobody wants and everybody writes first.
-            if (switching) {
-                advance_due_at = std::chrono::steady_clock::now() +
-                                 std::chrono::seconds(cfg.advance_seconds);
             }
 
             // THE BEAT INSTRUMENT IS NOT IN THE VAULT, on purpose: it is a
@@ -3999,9 +4770,10 @@ int main(int argc, char** argv)
             // the page is told -- otherwise it highlights a crystal that is not
             // running, which is the exact lie the control-page race fix was about.
             if (cast.take_sync()) {
-                LiveStack next;
+                LiveStack   next;
+                std::string why;
                 if (build_stack(archive_of_crystal(kSyncStem, "sync"), next,
-                                "beat instrument", projectm_ctx)) {
+                                "beat instrument", projectm_ctx, &why)) {
                     showing_sync = true;
                     begin_stack(std::move(next));
                     if (watch) {
@@ -4017,22 +4789,48 @@ int main(int argc, char** argv)
                                  "holocron: %s is loaded relative to the working directory; "
                                  "run holocron from the directory that has instruments/\n",
                                  kSyncStem);
+                    // The request came from the tuning page, so the person who
+                    // made it is holding a phone and looking at the picture.
+                    notify(why.empty() ? std::string("no beat instrument") : why, /*bad=*/true);
                 }
             }
 
-            if (std::size_t asked = 0; cast.take_crystal(asked)) {
+            std::size_t   asked     = 0;
+            std::uint64_t asked_gen = 0;
+            if (cast.take_crystal(asked, asked_gen)) {
+                // RE-CHECKED HERE AGAINST THE LIST WE ARE ABOUT TO INDEX, not only
+                // where it was accepted.
+                //
+                // The HTTP worker's check proves the page was current when the tap
+                // arrived. It cannot prove the list is still that one now: the
+                // drain a few dozen lines above may have adopted a re-scan in
+                // between, and the vault is sorted by display name, so the same
+                // index is then a different crystal. Not out of range -- just
+                // wrong, and silently.
+                //
+                // Zero means the caller sent no generation at all, which is a
+                // curl rather than the page. Left alone deliberately: this is a
+                // staleness guard, not authentication.
+                if (asked_gen != 0 && asked_gen != vault_generation) {
+                    std::fprintf(stderr,
+                                 "holocron: ignoring crystal %zu -- the vault changed between "
+                                 "the request and this frame\n",
+                                 asked);
+                    std::fflush(stderr);
+                    companion.set_current_crystal(current);
+                }
                 // OUT OF RANGE IS IGNORED, NOT CLAMPED. The page is rendered from
                 // the vault so its indices are always valid, but the request
                 // arrives over HTTP and anyone on the LAN can send one. Clamping
                 // would silently switch to a crystal nobody asked for.
-                if (asked < vault.size()) {
+                else if (asked < vault.size()) {
                     wanted = asked;
                     // A vault entry is ALWAYS a switch while the instrument is up,
                     // even to the index that was current before it -- otherwise
                     // "already on pulse" is reported and the instrument stays on
                     // screen, which is a control that does nothing.
                     switching = wanted != current || showing_sync;
-                    if (!switching) {
+                    if (!switching && current != kNoCurrent) {
                         std::printf("holocron: already on \"%s\"\n", vault[current].name.c_str());
                         std::fflush(stdout);
                     }
@@ -4046,17 +4844,84 @@ int main(int argc, char** argv)
                 }
             }
 
-            if (switching) {
-                current      = wanted;
-                showing_sync = false;
-                // Pushed so the control page follows the ARROW KEYS too. The page
-                // already knows about its own POSTs; this is the other direction.
-                companion.set_current_crystal(current);
+            // -- a crystal that just arrived, if we are following them ---------
+            //
+            // LAST, AND ONLY IF NOTHING ELSE ASKED. An arrow press, an
+            // auto-advance and a tap on the phone are all somebody saying what
+            // they want, and every one of them beats a file landing in a
+            // directory.
+            //
+            // NOT WHILE THE BEAT INSTRUMENT IS UP, for the reason auto-advance is
+            // not either: somebody is measuring with it, and a measuring tool
+            // that wanders off is worse than one that cannot be reached.
+            //
+            // Consumed either way. A follow that was refused for any of these
+            // reasons is not saved up for later -- by the time the instrument
+            // comes down, "new" is no longer news.
+            if (follow_target != kNoCurrent) {
+                if (!switching && !showing_sync && follow_target < vault.size()) {
+                    wanted    = follow_target;
+                    switching = true;
+                }
+                follow_target = kNoCurrent;
+            }
 
-                Archive   archive;
-                LiveStack next;
-                if (archive_for(vault[current], archive) &&
-                    build_stack(archive, next, "switched to", projectm_ctx)) {
+            // The clock restarts on EVERY switch, including a manual one. Picking
+            // something by hand and having it replaced eight seconds later because
+            // the timer was already most of the way through is the behaviour
+            // nobody wants and everybody writes first.
+            //
+            // MOVED DOWN HERE, BELOW EVERY PLACE THAT CAN SET `switching`. It used
+            // to sit directly after the arrow keys and the auto-advance, which was
+            // right when those were the only two -- but `take_crystal` has been
+            // below it since the control page was written, so a crystal chosen
+            // FROM THE PHONE never restarted the timer and could be replaced
+            // seconds later by an advance that was already nearly due. The
+            // follow-new path added by issue 214 is below it too and would have
+            // been a second instance of the same thing. The comment above was the
+            // invariant; the placement had quietly stopped implementing it.
+            if (switching) {
+                advance_due_at = std::chrono::steady_clock::now() +
+                                 std::chrono::seconds(cfg.advance_seconds);
+            }
+
+            if (switching) {
+                // NOTHING IS RECORDED UNTIL THE STACK IS BUILT.
+                //
+                // `current`, `showing_sync` and the page's selection used to be
+                // set here, BEFORE anything that can refuse the switch --
+                // `archive_for` fails on a broken archive and `build_stack` fails
+                // on any layer that will not compile, which build_stack's own
+                // comment notes is most of the time an author is editing.
+                //
+                // On a refusal that left three things describing a picture that
+                // was not on screen: `current` named a crystal that was not
+                // drawing so the next arrow press moved from the wrong place, the
+                // phone highlighted the wrong entry, and -- the one that would
+                // really have cost an evening -- `watch` was not re-emplaced,
+                // because the re-emplace sits in the success branch. An author who
+                // switched to a broken crystal and then edited it to fix it got no
+                // reload, because nothing was watching the file being edited.
+                //
+                // build_stack was always right: it builds beside the live stack and
+                // swaps only if every layer built, and all three of its failure
+                // prints end "still drawing what was already up". The picture was
+                // correct and everything describing it was wrong. Issue 216.
+                Archive     archive;
+                LiveStack   next;
+                std::string why;
+                if (archive_for(vault[wanted], archive, &why) &&
+                    build_stack(archive, next, "switched to", projectm_ctx, &why)) {
+                    current      = wanted;
+                    current_stem = vault[wanted].stem;
+                    current_kind = vault[wanted].kind;
+                    showing_sync = false;
+                    clear_error();
+                    // Pushed so the control page follows the ARROW KEYS too. The
+                    // page already knows about its own POSTs; this is the other
+                    // direction.
+                    companion.set_current_crystal(current);
+
                     begin_stack(std::move(next));
                     if (watch) {
                         // The watch has to follow, or an author would edit what is
@@ -4064,6 +4929,29 @@ int main(int argc, char** argv)
                         watch.emplace(live_stack.archive.watch_paths,
                                       std::chrono::steady_clock::now());
                     }
+                } else {
+                    // The switch was refused and `current` still names what is
+                    // actually drawing. Say so, and correct the page -- which
+                    // wrote its own selection optimistically before its 303,
+                    // because the browser's follow-up GET usually beats the render
+                    // loop. Without this it keeps showing a switch that did not
+                    // happen, and the same correction is already made for an
+                    // out-of-range index a few lines above.
+                    std::fprintf(stderr,
+                                 "holocron: could not switch to \"%s\" -- still on \"%s\"\n",
+                                 vault[wanted].name.c_str(),
+                                 current == kNoCurrent ? "what was already up"
+                                                       : vault[current].name.c_str());
+                    std::fflush(stderr);
+                    companion.set_current_crystal(current);
+
+                    // A REFUSED SWITCH IS THE WORST ONE TO LEAVE SILENT. The
+                    // picture does not change, so from the couch a tap on the
+                    // phone and a tap that landed on a broken crystal look the
+                    // same -- and the phone has already put itself right, which
+                    // makes it look as though nothing was ever pressed.
+                    notify(why.empty() ? "could not switch to " + vault[wanted].name : why,
+                           /*bad=*/true);
                 }
             }
 
@@ -4077,17 +4965,54 @@ int main(int argc, char** argv)
             // compile per layer on a keystroke-and-save, which is what the author
             // was already paying for one.
             if (watch && watch->poll(std::chrono::steady_clock::now())) {
-                Archive   archive;
-                LiveStack next;
+                Archive     archive;
+                LiveStack   next;
+                std::string why;
 
                 // Re-read the archive itself, since the edit may have BEEN the
                 // archive. `showing_sync` is not a vault entry, so it is rebuilt
                 // from its stem.
+                //
+                // RELOADED FROM THE ANCHOR, NOT FROM THE INDEX, and that is not a
+                // tidying-up. `current` can be kNoCurrent while a perfectly real
+                // crystal is on screen -- its files were removed from the vault --
+                // and the two watches make that window land on the reload rather
+                // than miss it: CrystalWatch settles in at most 400 ms, VaultWatch
+                // needs 2000 ms plus a scan, so a crystal deleted and put back
+                // ALWAYS reports its return to CrystalWatch first.
+                //
+                // Guarding on the index instead threw that report away, and
+                // CrystalWatch retires a change the moment it reports it -- so the
+                // returned files were never compiled, the picture kept running the
+                // pre-deletion program, and once the scan re-anchored `current`
+                // every description of the screen agreed on a crystal the screen
+                // was not showing. Nothing would ever have corrected it.
+                //
+                // The anchor is what identifies the picture; the index is only
+                // where it currently sits in a list. Reload the thing, not the
+                // position.
+                VaultEntry anchor;
+                if (current != kNoCurrent) {
+                    anchor = vault[current];
+                } else {
+                    anchor.stem = current_stem;
+                    anchor.kind = current_kind;
+                    // Only ever used as a display name -- archive_of_crystal takes
+                    // it and it ends up in the toast. projectM has no stem, and
+                    // archive_for reads the name for exactly that case.
+                    anchor.name = current_kind == VaultKind::kProjectM
+                                      ? "projectM"
+                                      : std::filesystem::path(current_stem).filename().string();
+                }
+
+                const bool have_anchor =
+                    !anchor.stem.empty() || anchor.kind == VaultKind::kProjectM;
+
                 const bool got = showing_sync
                                      ? (archive = archive_of_crystal(kSyncStem, "sync"), true)
-                                     : archive_for(vault[current], archive);
+                                     : have_anchor && archive_for(anchor, archive, &why);
 
-                if (got && build_stack(archive, next, "reloaded", projectm_ctx)) {
+                if (got && build_stack(archive, next, "reloaded", projectm_ctx, &why)) {
                     // u_time CARRIES ACROSS, layer for layer, so slow motion does
                     // not snap back to zero on every save -- the whole reason the
                     // clock is settable. Only where the stack still has a layer in
@@ -4099,6 +5024,27 @@ int main(int argc, char** argv)
                     }
                     live_stack = std::move(next);
 
+                    // THE THIRD PLACE THAT RAISES layers_wanted, and it was
+                    // missing. A reload deliberately does not go through
+                    // begin_stack -- that is what starts a crossfade, and a reload
+                    // must not fade -- so it also skipped the only two places that
+                    // sized the compositor.
+                    //
+                    // Add a [[layer]] to the archive on screen and save it:
+                    // build_stack succeeded, live_stack grew, and layers_wanted did
+                    // not, so compositor.resize() was still sized for the old count,
+                    // bind_layer failed for the extra layer, the loop broke, and the
+                    // new layer was neither drawn nor composited. Nothing was
+                    // printed either, because the announcement is gated on
+                    // `announced_layers != layers_wanted` -- suppressed by the same
+                    // bug that caused it. Issue 217, and the same silence as #166.
+                    //
+                    // This only ever grows, like the other two, which is why it
+                    // cannot regress a stack that got smaller: the compositor is
+                    // deliberately not shrunk mid-run, because reallocating layers
+                    // on the frame a transition begins is the worst moment for it.
+                    layers_wanted = std::max(layers_wanted, live_stack.size());
+
                     // A reload is NOT a transition and must not fade -- it
                     // replaces a picture with a recompiled version of itself, and
                     // fading there makes every save look like a glitch.
@@ -4106,6 +5052,19 @@ int main(int argc, char** argv)
                         watch.emplace(live_stack.archive.watch_paths,
                                       std::chrono::steady_clock::now());
                     }
+
+                    // SAID ON SCREEN AS WELL AS IN THE TERMINAL, and the success
+                    // case earns it as much as the failure does. A save that
+                    // compiles but changes nothing an eye can catch -- a constant
+                    // nudged, a branch that was not taken -- looks exactly like a
+                    // save the player never noticed, and that ambiguity is what
+                    // sends an author looking for a bug in the watch.
+                    notify("reloaded " + live_stack.archive.name);
+                    clear_error();
+                } else {
+                    // build_stack has already printed the whole log. This is the
+                    // one line of it that reaches the room the picture is in.
+                    notify(why.empty() ? std::string("reload failed") : why, /*bad=*/true);
                 }
             }
         }
@@ -4586,6 +5545,97 @@ int main(int argc, char** argv)
                     overlay.draw(colophon_footer_texture, col_x, sh - margin_y + line_h / 2,
                                  colophon_footer_w, colophon_footer_h, glm::vec3(0.72f),
                                  0.95f, sw, sh);
+                }
+            }
+        }
+
+        // -- the toast (issue 214) -----------------------------------------------
+        //
+        // LAST, SO NOTHING CAN HIDE IT, and that is not a layering preference. The
+        // colophon draws a 0.92 panel down the middle of the frame and the card
+        // owns the bottom-left; suppressing the toast behind either would mean the
+        // one build failure an author most needs to see is the one that arrives
+        // while they happen to have a panel open. That is defect S2 coming back in
+        // through the draw order.
+        //
+        // TOP-LEFT, which is the only corner nothing else claims: the card is
+        // bottom-left, the lyric is centred low, the colophon is a centred column.
+        // It can overlap that column at 4K, and it is allowed to -- two seconds of
+        // a compiler error over a licence notice is the right way round.
+        //
+        // NOT GATED BY --overlay. The three overlay flags turn off things somebody
+        // might not want on a projector; this is the diagnostic channel, and an
+        // off switch for it is an off switch for knowing whether the player is
+        // working.
+        if (overlay_ready && !toast_text.empty()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= toast_until) {
+                // Held rather than cleared, so a repeat of the same message does
+                // not re-rasterize identical pixels -- the same discipline the
+                // lyric line uses, and during a reload loop the same message is
+                // exactly what recurs.
+                toast_text.clear();
+            } else {
+                if (toast_text != toast_drawn) {
+                    toast_drawn = toast_text;
+                    release_art(toast_texture);
+                    toast_texture = 0;
+                    toast_w = toast_h = 0;
+
+                    // 38 px, which is the colophon's arithmetic run backwards: it
+                    // reasons that 40 px at 2160 is about 26 arcminutes of
+                    // character height on a 100-inch screen at ten feet, against
+                    // roughly 20 for comfortable reading of unfamiliar text. This
+                    // is unfamiliar text -- a compiler error is the least
+                    // guessable string this program can put on screen -- so it
+                    // sits just above that floor and below the card's 52, which
+                    // is the one thing on screen it must not compete with.
+                    TextRequest req;
+                    req.text         = toast_text;
+                    req.pixel_height = 38;
+                    req.bold         = true;
+
+                    ImageRgba8  bitmap;
+                    std::string detail;
+                    if (render_text(req, bitmap, detail) == TextError::kOk) {
+                        toast_texture = upload_art(bitmap);
+                        toast_w       = bitmap.width;
+                        toast_h       = bitmap.height;
+                    }
+                }
+
+                if (toast_texture != 0 && toast_w > 0) {
+                    const int sw = window.width();
+                    const int sh = window.height();
+
+                    // Scaled down to fit rather than cropped, like the lyric. A
+                    // compiler error is long and the END of it is the part that
+                    // names the symbol.
+                    const int max_w = (sw * 2) / 3;
+                    int       w     = toast_w;
+                    int       h     = toast_h;
+                    if (w > max_w && max_w > 0) {
+                        h = h * max_w / w;
+                        w = max_w;
+                    }
+
+                    // The card's margin, so the two agree on where the edge of the
+                    // frame is. A projector overscans and this is inside the same
+                    // safe area the card was judged against on the rack.
+                    const int pad = sh / 24;
+
+                    // Fades out rather than blinking off -- see kToastFade.
+                    const auto left_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        toast_until - now);
+                    const float alpha =
+                        left_ms < kToastFade
+                            ? static_cast<float>(left_ms.count()) /
+                                  static_cast<float>(kToastFade.count())
+                            : 1.0f;
+
+                    const glm::vec3 ink = toast_bad ? glm::vec3(1.00f, 0.70f, 0.42f)
+                                                    : glm::vec3(0.95f);
+                    overlay.draw_text(toast_texture, pad, pad, w, h, ink, alpha, sw, sh);
                 }
             }
         }
