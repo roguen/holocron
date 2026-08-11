@@ -373,16 +373,14 @@ SessionError PlaybackSession::start(const std::string& source, std::int64_t offs
             err = exclusive->open(want, &render_audio, impl.shared.get());
 
             if (err == SinkError::kOk) {
-                impl.bit_perfect = exclusive->is_bit_perfect();
-                impl.sink        = std::move(exclusive);
+                impl.sink = std::move(exclusive);
             } else {
                 out_detail = to_string(err);
 
                 auto shared_mode = std::make_unique<WasapiSink>();
                 shared_mode->set_mode(WasapiMode::kShared);
                 if (shared_mode->open(want, &render_audio, impl.shared.get()) == SinkError::kOk) {
-                    impl.bit_perfect = shared_mode->is_bit_perfect();
-                    impl.sink        = std::move(shared_mode);
+                    impl.sink = std::move(shared_mode);
                 }
             }
         }
@@ -392,6 +390,16 @@ SessionError PlaybackSession::start(const std::string& source, std::int64_t offs
             if (sdl->open(want, &render_audio, impl.shared.get()) == SinkError::kOk) {
                 impl.sink = std::move(sdl);
             }
+        }
+
+        // ASKED OF WHATEVER OPENED, rather than of the two WASAPI branches
+        // separately. It used to be set inside each of those, so the SDL path --
+        // the only path on Android and on Linux -- left it at its default and
+        // the player reported "not bit-perfect" because nothing had set it
+        // rather than because anything had asked. The answer was right and the
+        // reason was absent, which is the state that survives until it does not.
+        if (impl.sink != nullptr) {
+            impl.bit_perfect = impl.sink->is_bit_perfect();
         }
 
         if (impl.sink == nullptr) {
@@ -564,7 +572,33 @@ bool PlaybackSession::played_us(std::uint64_t& out) const
     if (!clock.valid) {
         return false;
     }
-    out = (clock.frames_played * 1'000'000ULL) / impl_->rate;
+
+    // THE DEVICE'S RATE, NOT THE SOURCE'S. Issue 240.
+    //
+    // `SinkClock::frames_played` is counted in DEVICE frames and says so:
+    // "Reported in DEVICE frames, not app frames, so that dividing by
+    // format().sample_rate yields seconds of audio played." This divided by
+    // `impl_->rate`, which is the FILE's rate, and the two are equal only when
+    // the device happens to be running at the source's rate.
+    //
+    // WHERE IT WAS WRONG: WASAPI shared mode, which opens at the mixer's rate.
+    // A 44.1 kHz file on a 48 kHz mixer ran the clock 8.8% fast -- about 21
+    // seconds over a four-minute track -- and `played_us` is what drives the
+    // progress bar reported to Plexamp, the A/V trim's target and the seek
+    // position. Invisible on the rack because exclusive mode makes the two
+    // rates equal, which is why it survived.
+    //
+    // NOT wrong on the Shield, and the reason is worth keeping because it is
+    // counter-intuitive: SDL opens the AudioTrack at the SOURCE rate and
+    // AudioFlinger resamples below the frame counter, so the device rate SDL
+    // reports IS the source rate. Measured, 2026-08-11: 39.98 s reported against
+    // 40.02 s of wall clock. "The OS resamples" and "the frame counter is at the
+    // OS rate" are different claims and only the second one breaks this.
+    const std::uint32_t device_rate = impl_->sink->format().sample_rate;
+    if (device_rate == 0) {
+        return false;
+    }
+    out = (clock.frames_played * 1'000'000ULL) / device_rate;
     return true;
 }
 
@@ -612,6 +646,11 @@ std::uint32_t PlaybackSession::period_frames() const
 std::uint32_t PlaybackSession::sample_rate() const { return impl_->rate; }
 
 bool PlaybackSession::bit_perfect() const { return impl_->bit_perfect; }
+
+const char* PlaybackSession::bit_perfect_note() const
+{
+    return impl_->sink != nullptr ? impl_->sink->bit_perfect_note() : "";
+}
 
 double PlaybackSession::lead_budget_ms() const { return impl_->lead_budget; }
 

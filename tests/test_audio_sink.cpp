@@ -15,6 +15,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
+#include <cstring>
 #include <cstdint>
 #include <string_view>
 #include <vector>
@@ -265,4 +266,66 @@ TEST_CASE("AudioSink is usable polymorphically", "[sink]")
     CHECK(sink.period_frames() > 0);
     CHECK(sink.clock().valid);
     sink.close();
+}
+
+namespace {
+
+// A sink that implements the interface and nothing else, to pin what the
+// INTERFACE promises rather than what any particular backend does.
+struct BareSink final : AudioSink {
+    SinkError     open(const SinkFormat&, RenderCallback, void*) override { return SinkError::kOk; }
+    void          close() override {}
+    SinkError     start() override { return SinkError::kOk; }
+    SinkError     stop() override { return SinkError::kOk; }
+    bool          is_open() const override { return true; }
+    bool          is_running() const override { return false; }
+    SinkFormat    format() const override { return SinkFormat{48000, 2, SampleFormat::kInt16}; }
+    std::uint32_t period_frames() const override { return 480; }
+    SinkClock     clock() const override { return SinkClock{}; }
+    const char*   backend_name() const override { return "bare"; }
+};
+
+}  // namespace
+
+TEST_CASE("a sink that has not thought about bit-perfection answers no", "[sink][bitperfect]")
+{
+    // THE DEFAULT IS THE POINT. Before this was on the interface, only
+    // WasapiSink implemented it and PlaybackSession asked only the WASAPI
+    // branches -- so on Android and on Linux the player reported "not
+    // bit-perfect" because nothing had ever set the flag. The right answer,
+    // reached by omission.
+    //
+    // Right-by-accident survives exactly until the accident changes, so the
+    // default is now explicit and this is what holds it there. A future sink
+    // that wants to claim bit-perfection has to say so and to compute it.
+    BareSink sink;
+    CHECK_FALSE(sink.is_bit_perfect());
+
+    // And it must be able to say why, because "not bit-perfect" on its own is a
+    // fact with no next step.
+    REQUIRE(sink.bit_perfect_note() != nullptr);
+    CHECK(std::strlen(sink.bit_perfect_note()) > 0);
+}
+
+TEST_CASE("seconds played come from the DEVICE rate, not the source's", "[sink][clock][bitperfect]")
+{
+    // Issue 240, as arithmetic. SinkClock::frames_played is in DEVICE frames;
+    // dividing by anything else is wrong, and the wrongness is silent because
+    // both numbers are plausible sample rates.
+    //
+    // The numbers are the real case: a 44.1 kHz file on a 48 kHz mixer, which is
+    // WASAPI shared mode and every Android output. One second of audio has been
+    // played.
+    BareSink            sink;
+    const std::uint64_t device_frames = 48000;
+
+    const std::uint64_t right = (device_frames * 1'000'000ULL) / sink.format().sample_rate;
+    const std::uint64_t wrong = (device_frames * 1'000'000ULL) / 44100;
+
+    CHECK(right == 1'000'000ULL);
+
+    // 8.8% fast: about 21 seconds over a four-minute track, on the progress bar
+    // reported to Plexamp, the A/V trim's target and the seek position.
+    CHECK(wrong > 1'088'000ULL);
+    CHECK(static_cast<double>(wrong) / static_cast<double>(right) > 1.08);
 }

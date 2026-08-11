@@ -105,6 +105,15 @@ public:
 
     const char* backend_name() const override;
 
+    // ALWAYS FALSE, and this is a statement about the path rather than a
+    // limitation waiting to be lifted. SDL takes float from the application and
+    // converts to whatever the device wants, through a shared platform mixer
+    // that resamples and requantises where it likes -- and nothing here can
+    // observe or prevent it. The bit-perfect path is WasapiSink in exclusive
+    // mode. See the note on kAppFormat in sdl_sink.cpp.
+    bool        is_bit_perfect() const override;
+    const char* bit_perfect_note() const override;
+
     // Callbacks served since open(). A liveness counter, nothing more: if this
     // is not climbing, the device is not pulling.
     //

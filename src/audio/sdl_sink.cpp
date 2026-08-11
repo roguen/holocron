@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -197,6 +198,25 @@ SinkError SdlSink::open(const SinkFormat& desired, RenderCallback cb, void* user
     spec.channels = static_cast<int>(desired.channels);
     spec.freq     = static_cast<int>(desired.sample_rate);
 
+    // WHAT THE PLATFORM WOULD HAVE CHOSEN, asked BEFORE opening anything.
+    //
+    // Diagnostic, and it exists because the question it answers cost a
+    // measurement to settle. SDL opens the device at the format the application
+    // asks for where it can, so format() afterwards reports the rate SDL
+    // negotiated -- NOT what the platform mixer runs at underneath. On Android
+    // those differ by design: every mixer output on the Shield is 48 kHz 16-bit
+    // (D-053), and an AudioTrack opened at 44.1 kHz is resampled below the frame
+    // counter, invisibly.
+    //
+    // Printing both is what makes that visible from a log rather than from
+    // `dumpsys media.audio_flinger`. A run where these two disagree is a run
+    // where something below this sink is converting and cannot be asked about
+    // it -- which is exactly what is_bit_perfect() reports and why it is false.
+    SDL_AudioSpec native{};
+    int           native_frames = 0;
+    const bool    have_native =
+        SDL_GetAudioDeviceFormat(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &native, &native_frames);
+
     SDL_AudioStream* stream =
         SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, &Impl::on_audio, impl_.get());
     if (stream == nullptr) {
@@ -229,6 +249,27 @@ SinkError SdlSink::open(const SinkFormat& desired, RenderCallback cb, void* user
     impl_->fmt.channels    = desired.channels;
     impl_->fmt.format      = from_sdl_format(device_spec.format);
     impl_->app_rate        = desired.sample_rate;
+
+    // UNCONDITIONAL, because "they agreed" is as informative as "they did not"
+    // and the question this answers is one a reader will have.
+    //
+    // MEASURED ON THE SHIELD, 2026-08-11: these AGREE at 44100, while the
+    // platform mixer underneath is running at 48000 (D-053, confirmed in
+    // `dumpsys media.audio_flinger`). So SDL cannot tell us the mixer's real
+    // rate on Android -- it reports the rate the AudioTrack was opened at, and
+    // AudioFlinger resamples below that without saying so.
+    //
+    // That is why is_bit_perfect() is a flat false here rather than a comparison
+    // of these two numbers: the comparison would say "no conversion" and be
+    // wrong.
+    if (have_native) {
+        std::printf("holocron:   device %u Hz, platform default %d Hz%s\n",
+                    impl_->fmt.sample_rate, native.freq,
+                    static_cast<std::uint32_t>(native.freq) == impl_->fmt.sample_rate
+                        ? ""
+                        : " -- something below this sink is resampling");
+        std::fflush(stdout);
+    }
 
     impl_->scratch.assign(static_cast<std::size_t>(impl_->period) * desired.channels, 0.0f);
 
@@ -353,6 +394,28 @@ SinkClock SdlSink::clock() const
 }
 
 const char* SdlSink::backend_name() const { return "sdl3"; }
+
+bool SdlSink::is_bit_perfect() const
+{
+    // Not "no path here computes it yet" -- there is nothing to compute. Every
+    // route through this sink crosses a shared platform mixer, and a mixer that
+    // resamples below the handle cannot be asked what it did. See the header.
+    return false;
+}
+
+const char* SdlSink::bit_perfect_note() const
+{
+#ifdef __ANDROID__
+    // D-053. Read out of the device's own audio policy rather than assumed:
+    // every mixer output on the Shield is 48 kHz 16-bit, and every output that
+    // carries 44.1 kHz is AUDIO_OUTPUT_FLAG_DIRECT, which the NDK does not
+    // expose. So this is a property of the hardware and not of the code, and no
+    // amount of work on this sink changes it.
+    return "every Android mixer output is 48 kHz 16-bit and the NDK exposes no direct path";
+#else
+    return "SDL goes through the shared system mixer";
+#endif
+}
 
 std::uint64_t SdlSink::callbacks_served() const
 {

@@ -193,6 +193,38 @@ public:
     // Name for logs and the debug facet.
     virtual const char* backend_name() const = 0;
 
+    // Did the samples this process produced reach the device unaltered?
+    //
+    // DEFAULTS TO FALSE, AND THAT IS THE IMPORTANT PART. A sink that has not
+    // thought about the question must not answer yes to it. Before this existed
+    // the only implementation was WasapiSink's, and PlaybackSession asked only
+    // the WASAPI sinks -- so on Android the player reported "not bit-perfect"
+    // because nothing ever set the flag, which is the right answer arrived at by
+    // omission rather than by asking. Right-by-accident survives exactly until
+    // the accident changes.
+    //
+    // IT IS A QUESTION ABOUT WHAT WAS NEGOTIATED, NOT ABOUT WHAT IS POSSIBLE.
+    // The answer must be computed from the format the device actually opened at
+    // compared with the format the file is in -- never from a backend's
+    // reputation. See WasapiSink::is_bit_perfect and SdlSink::is_bit_perfect.
+    //
+    // A SINK CAN ONLY ANSWER FOR WHAT IT CAN SEE. Below the handle a sink holds,
+    // a platform mixer may resample or requantise without telling it, and no
+    // sink can report what it was not told. Where that is known to happen the
+    // sink must answer false rather than "as far as I know" -- see the Android
+    // branch, where every mixer output is 48 kHz 16-bit (D-053).
+    virtual bool is_bit_perfect() const { return false; }
+
+    // WHY NOT, in one clause, for the line the player prints when a device
+    // opens. Ignored when is_bit_perfect() is true.
+    //
+    // "not bit-perfect" on its own is a fact with no next step. The reasons are
+    // genuinely different and lead different places: a busy device is worth
+    // retrying, a shared mixer is worth a settings change, and a platform whose
+    // every output is 48 kHz 16-bit is worth accepting. Saying which is the
+    // difference between a report and a shrug.
+    virtual const char* bit_perfect_note() const { return "this sink does not negotiate one"; }
+
 protected:
     AudioSink() = default;
 };
