@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    SPDX-License-Identifier: GPL-3.0-or-later
+    Copyright (c) 2026 Roguen Keller
+
+    Holocron's Android manifest. Derived from SDL3's android-project template and
+    then cut down: everything SDL ships for touchscreens, cameras, microphones,
+    Bluetooth and USB game controllers is gone, because the target is a box in a
+    rack driven from a phone.
+
+    THREE THINGS HERE ARE LOAD-BEARING AND NONE OF THEM IS OBVIOUS.
+
+    1. android.permission.INTERNET. Without it socket() returns EACCES and every
+       network fault in the app looks like a code fault: GDM does not answer, the
+       Companion port does not listen, and the phone never sees a player.
+
+    2. CHANGE_WIFI_MULTICAST_STATE. Android filters multicast away from an app
+       that does not hold a WifiManager.MulticastLock, and GDM is IPv4 multicast.
+       The Shield is on Ethernet in the rack, where this does not apply, so the
+       permission is declared and the lock is NOT yet taken (issue 242). It is
+       here because the failure it causes, "the device just does not appear", is
+       one this project has already spent a session on once.
+
+    3. android:banner, and the LEANBACK_LAUNCHER category. An Android TV launcher
+       will not show an app without both. The ordinary LAUNCHER category is kept
+       as well so `adb shell am start` and a phone-style launcher both work.
+
+    NO TOUCHSCREEN. `android.hardware.touchscreen` defaults to REQUIRED, and a TV
+    has none, so without the explicit required="false" the app is not installable
+    on the target at all.
+
+    A NOTE ON PROSE IN THIS FILE: an XML comment may not contain a double hyphen,
+    which is this project's usual dash. Every one here is spelled some other way
+    on purpose, and aapt2 reports the violation as "not well-formed (invalid
+    token)" pointing at the comment, which reads like a structural error.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="io.github.roguen.holocron"
+    android:versionCode="1"
+    android:versionName="0.8.4"
+    android:installLocation="auto">
+
+    <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="30" />
+
+    <!-- ES 3.2. The float layers the compositor depends on are colour-renderable
+         AND required-renderable in ES 3.2 core; at 3.0 and 3.1 they need an
+         extension. See D-047 and docs/shield.md section 2. -->
+    <uses-feature android:glEsVersion="0x00030002" android:required="true" />
+
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <application
+        android:label="Holocron"
+        android:icon="@mipmap/ic_launcher"
+        android:banner="@drawable/banner"
+        android:allowBackup="false"
+        android:hardwareAccelerated="true"
+        android:extractNativeLibs="true"
+        android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+
+        <activity
+            android:name="io.github.roguen.holocron.HolocronActivity"
+            android:label="Holocron"
+            android:exported="true"
+            android:alwaysRetainTaskState="true"
+            android:launchMode="singleInstance"
+            android:screenOrientation="landscape"
+            android:preferMinimalPostProcessing="true"
+            android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
