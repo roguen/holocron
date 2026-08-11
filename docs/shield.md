@@ -689,6 +689,6 @@ VRAM bandwidth. The Shield has no such cache. Re-measure.
 
 **`duel` at 8.10 ms at 4K.** Same reason, and it is the most expensive crystal.
 
-**`trim_ms = -90` mostly DOES port**, and is the exception. It is a difference
+**`trim_ms = -30` mostly DOES port**, and is the exception. It is a difference
 between the audio and display paths, not a latency, and both boxes reach the same
 projector through the same receiver. Re-measure to confirm rather than to discover.

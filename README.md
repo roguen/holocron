@@ -226,7 +226,7 @@ order deliberately because it is the one the project exists for. M2, M3 and M4 a
 not finished, which is why this is not `v0.6.0`.
 
 `--trim-ms` compensates for latency *downstream* of the device clock — the DAC, the
-HDMI link, the receiver's own processing. It is **measured at −90 ms on the
+HDMI link, the receiver's own processing. It is **measured at −30 ms on the
 reference rack** and it is a *difference*, not a latency: the projector is slower
 than the audio path, so the picture has to be pulled earlier. The value belongs to
 the whole rack; changing the display, the resolution or the receiver's listening

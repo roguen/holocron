@@ -36,9 +36,11 @@ redefining "bass" — there is only a vault of crystals that all quietly look wr
   that has input lag of its own pushing the other way. So the value belongs to a
   whole rack and not to the receiver, and changing the display invalidates it.
 
-  Measured **−90 ms** on the rack (2026-08-04), bracketed against a generated
-  click track: clearly early at −135, clearly late at −50, midpoint −92.5 with a
-  resolution of about ±42 ms. Negative because the projector is slower than the
+  Measured **−30 ms** on the rack (2026-08-10, 4K 60 Hz RGB 8-bit), bracketed
+  against a generated click track: late at 0, early at −50, midpoint −25, taken as
+  −30 with a resolution of about ±25 ms. It read −90 until then, measured at 4K
+  **29 Hz** on 2026-08-04; changing the refresh rate changed the trim, which is
+  the rule below working rather than an inconsistency. Negative because the projector is slower than the
   audio path. A display's *rated* input lag is roughly half the real figure — it
   is measured at 1080p, usually to mid-frame, and excludes 4K/HDR processing and
   the vsync'd present pipeline — so this must be measured rather than derived
