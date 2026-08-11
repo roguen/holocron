@@ -5,7 +5,7 @@
 
 #include <holocron/render_target.hpp>
 
-#include <glad/glad.h>
+#include "gl_api.hpp"
 
 namespace holocron {
 

@@ -51,7 +51,13 @@ constexpr const char* to_string(WindowError e)
     case WindowError::kOk:                  return "ok";
     case WindowError::kVideoUnavailable:    return "no video subsystem available";
     case WindowError::kWindowCreateFailed:  return "window creation failed";
-    case WindowError::kContextCreateFailed: return "no OpenGL 4.5 core context available";
+    // Deliberately does not name a version. This build asks for GL 4.5 core on
+    // the desktop and OpenGL ES 3.2 on Android (see src/render/window.cpp), and
+    // an error naming the wrong one of those is worse than an error naming
+    // neither -- it sends the reader looking for a driver problem that is not
+    // there. The version actually requested is printed on the line above this
+    // one on a successful open.
+    case WindowError::kContextCreateFailed: return "no OpenGL context of the required version";
     case WindowError::kLoaderFailed:        return "OpenGL entry points did not resolve";
     }
     return "unknown";
