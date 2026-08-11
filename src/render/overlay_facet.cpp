@@ -5,7 +5,7 @@
 
 #include <holocron/overlay_facet.hpp>
 
-#include <glad/glad.h>
+#include "gl_api.hpp"
 
 #include "gl_bind.hpp"
 

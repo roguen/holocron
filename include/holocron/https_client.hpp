@@ -17,9 +17,17 @@
 //
 // So: WinHTTP, behind `_WIN32` inside the source, with the file compiled on
 // every platform so the Linux job still reads it. Same arrangement as
-// wasapi_sink.cpp. On a non-Windows build every call fails with kUnsupported
-// rather than pretending. The cost is stated plainly in plex_link.hpp and does
-// not port to Android at M8 -- neither does the audio backend.
+// wasapi_sink.cpp. On a build with no platform client every call fails with
+// kUnsupported rather than pretending.
+//
+// M8 ADDED A SECOND PLATFORM CLIENT rather than a portable one: Android reaches
+// java.net.HttpURLConnection through JNI, which is the same trade for the same
+// reasons, and which keeps certificate validation on the system trust store
+// instead of a copy shipped inside the APK. OpenSSL is still the rejected
+// alternative and the argument is recorded at that branch in https_client.cpp.
+// Two Android-only conditions -- the INTERNET manifest permission, and the ban
+// on network calls from the main thread -- are recorded there too, because
+// neither is visible from this header and both present as "Plex is unreachable".
 //
 // WHAT IT DELIBERATELY DOES NOT DO
 //

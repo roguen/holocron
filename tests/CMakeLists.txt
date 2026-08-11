@@ -87,5 +87,16 @@ target_link_libraries(holocron_tests
 
 # Register each TEST_CASE with CTest individually, so a failure names the case
 # rather than just reporting that the test binary exited non-zero.
+#
+# PRE_TEST, not the POST_BUILD default, because the default RUNS THE TEST BINARY
+# to enumerate its cases -- as a post-build step, on the machine that did the
+# build. That is fine when host and target are the same machine and is a build
+# failure the moment they are not: an Android configure would hand an aarch64 ELF
+# to a Windows host to execute, and CatchAddTests.cmake turns the non-zero result
+# into a FATAL_ERROR after everything else has already compiled.
+#
+# PRE_TEST defers enumeration to ctest time, which is the right time for it on
+# every platform -- so this is not an Android concession, it is the correct
+# setting that only Android made visible. See issue 242.
 include(Catch)
-catch_discover_tests(holocron_tests)
+catch_discover_tests(holocron_tests DISCOVERY_MODE PRE_TEST)

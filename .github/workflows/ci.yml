@@ -111,6 +111,81 @@ jobs:
           g++ -std=c++20 -Iinclude /tmp/check.cpp -o /tmp/check
           /tmp/check || { echo "::error::AudioFrame layout changed — update the expected size if intentional"; exit 1; }
 
+  # ---------------------------------------------------------------------------
+  # M8. The Android branches of the platform layer get a compiler.
+  #
+  # `render_text`, `https_client` and the JNI helper each carry an
+  # `#elif defined(__ANDROID__)` block, and nothing in this project builds for
+  # Android. Without this job those blocks would be code no compiler ever reads —
+  # which is the thing the project has a rule against, written on
+  # `--no-compositor` and again on the DSA port: a path nothing can reach on
+  # purpose is a path nobody finds out is broken.
+  #
+  # It is free. GitHub's ubuntu runners ship an NDK and set
+  # ANDROID_NDK_LATEST_HOME, so there is no download step and no setup action.
+  #
+  # WHAT IT DOES NOT PROVE is written into the script's own output and is worth
+  # repeating here: it compiles, it does not link, it does not package, and
+  # nothing has ever run on the device. With no arm64-android dependency tree on
+  # the runner most translation units are SKIPPED, and the script prints which —
+  # a check that silently covers three files out of twenty reads exactly like a
+  # check that covers twenty.
+  # ---------------------------------------------------------------------------
+  android:
+    name: Android platform layer compiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The NDK the runner already has
+        run: |
+          echo "ANDROID_NDK_LATEST_HOME=$ANDROID_NDK_LATEST_HOME"
+          test -d "$ANDROID_NDK_LATEST_HOME" || { echo "::error::no NDK on this runner"; exit 1; }
+
+      # The files carrying an __ANDROID__ branch need headers, and the script
+      # fails deliberately when one of them is SKIPPED for a missing dependency
+      # — so they have to be here or this job cannot do its job.
+      #
+      # text_render.cpp reaches glm through palette.hpp; window.cpp needs SDL3.
+      #
+      # THROUGH VCPKG FOR THE arm64-android TRIPLET, not through apt. Two
+      # reasons. Ubuntu has no SDL3 package at all, so apt could not supply it
+      # anyway. And the host packages are the wrong content in a way that is
+      # easy to miss: putting `-isystem /usr/include` on a cross-compile line
+      # searches glibc's headers ahead of the NDK's sysroot, which produces
+      # failures that look like Android bugs and are not.
+      #
+      # Header-only ports (glm) cost seconds. SDL3 is a real build and is the
+      # bulk of this job's time; it is cached by vcpkg's own binary cache
+      # between runs on the same runner image.
+      #
+      # Classic mode rather than the manifest, so this installs TWO ports rather
+      # than the project's whole dependency set — FFmpeg for arm64-android is
+      # seventeen minutes and buys this check nothing. The cost is that these two
+      # come from vcpkg's own baseline rather than the manifest's pinned one. A
+      # header difference between them would surface here as a compile error,
+      # which is a visible failure rather than a silent one.
+      - name: SDL3 and glm for arm64-android
+        run: |
+          # EXPORTED IN THE SHELL, not through a step-level `env:` block. The
+          # `env` context holds workflow/job/step variables only — it does not
+          # contain the runner's own environment, so
+          # `ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}` expands to the
+          # empty string and vcpkg's android toolchain then fails to detect a
+          # compiler at all.
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          # --classic is required, not optional: vcpkg finds the repo's own
+          # vcpkg.json, switches to manifest mode, and manifest mode rejects
+          # individual package arguments outright.
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --classic --triplet arm64-android \
+              --x-install-root=/tmp/android-vcpkg glm sdl3
+          ls /tmp/android-vcpkg/arm64-android/include
+
+      - name: Cross-compile src/ for aarch64-linux-android
+        run: |
+          HOLOCRON_ANDROID_INCLUDE=/tmp/android-vcpkg/arm64-android/include \
+              bash scripts/android-check.sh
+
   build:
     name: Build and test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
