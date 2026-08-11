@@ -2886,6 +2886,13 @@ int main(int argc, char** argv)
         std::printf("holocron: audio %s, %u frames per period%s\n", session.backend_name(),
                     session.period_frames(),
                     session.bit_perfect() ? ", BIT-PERFECT" : ", not bit-perfect");
+        // THE REASON, not just the verdict. "not bit-perfect" on its own is a
+        // fact with no next step, and the reasons lead different places: a
+        // shared mixer is worth a settings change, and a platform whose every
+        // output is 48 kHz 16-bit is worth accepting rather than chasing.
+        if (!session.bit_perfect()) {
+            std::printf("holocron:   %s\n", session.bit_perfect_note());
+        }
     } else {
         std::printf("holocron: no track yet -- the audio device opens when one is cast,\n"
                     "  because its format follows the track\n");
@@ -4186,6 +4193,19 @@ int main(int argc, char** argv)
                                     request.paused ? "loaded (paused)" : "playing",
                                     what.title.c_str(), what.artist.c_str(),
                                     session.bit_perfect() ? " [BIT-PERFECT]" : "");
+                        // THE DEVICE REPORT, and this is the only place a
+                        // television ever sees it. The startup report is
+                        // printed only when a track was named on the command
+                        // line, because that is the only way a device exists
+                        // that early -- and an Activity launch has no track.
+                        // So on the Shield the backend, the period and the
+                        // bit-perfect verdict were never said at all.
+                        std::printf("holocron:   audio %s, %u frames per period, %s\n",
+                                    session.backend_name(), session.period_frames(),
+                                    session.bit_perfect() ? "BIT-PERFECT" : "not bit-perfect");
+                        if (!session.bit_perfect()) {
+                            std::printf("holocron:   %s\n", session.bit_perfect_note());
+                        }
                         std::fflush(stdout);
                     }
                 }

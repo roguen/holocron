@@ -270,7 +270,19 @@ bool WasapiSink::available() { return true; }
 
 void       WasapiSink::set_mode(WasapiMode m) { impl_->mode = m; }
 WasapiMode WasapiSink::mode() const           { return impl_->mode; }
-bool       WasapiSink::is_bit_perfect() const { return impl_->bit_perfect; }
+bool WasapiSink::is_bit_perfect() const { return impl_->bit_perfect; }
+
+const char* WasapiSink::bit_perfect_note() const
+{
+    // Exclusive mode is the only path that can be, so failing to get it IS the
+    // reason -- and it is the actionable one: the two checkboxes under Sound ->
+    // Playback -> Properties -> Advanced are what decide it. The player already
+    // prints which box to tick when open() is refused; this is the same fact
+    // said on a run that succeeded in shared mode instead.
+    return impl_->mode == WasapiMode::kExclusive
+               ? "the device would not take the source format exactly"
+               : "shared mode: Windows mixes and resamples";
+}
 
 SinkError WasapiSink::open(const SinkFormat& desired, RenderCallback cb, void* user)
 {
@@ -585,7 +597,8 @@ bool WasapiSink::available() { return false; }
 
 void       WasapiSink::set_mode(WasapiMode m) { impl_->mode = m; }
 WasapiMode WasapiSink::mode() const           { return impl_->mode; }
-bool       WasapiSink::is_bit_perfect() const { return false; }
+bool        WasapiSink::is_bit_perfect() const { return false; }
+const char* WasapiSink::bit_perfect_note() const { return "WASAPI is Windows-only"; }
 
 SinkError WasapiSink::open(const SinkFormat& desired, RenderCallback cb, void*)
 {
