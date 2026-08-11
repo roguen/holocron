@@ -252,6 +252,9 @@ public:
     std::uint32_t sample_rate() const;
     bool          bit_perfect() const;
 
+    // Why not, when bit_perfect() is false. Empty string when no device is open.
+    const char*   bit_perfect_note() const;
+
     // The deepest a negative trim can reach, in milliseconds.
     double lead_budget_ms() const;
 

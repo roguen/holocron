@@ -94,7 +94,8 @@ public:
     // This is a QUESTION THE CALLER CAN ASK rather than a promise the sink
     // makes silently, because "bit-perfect" that cannot be interrogated is
     // indistinguishable from marketing.
-    bool is_bit_perfect() const;
+    bool        is_bit_perfect() const override;
+    const char* bit_perfect_note() const override;
 
     SinkError open(const SinkFormat& desired, RenderCallback cb, void* user) override;
     void      close() override;

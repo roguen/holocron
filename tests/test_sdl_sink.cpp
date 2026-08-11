@@ -274,3 +274,52 @@ TEST_CASE("SdlSink stops cleanly and the callback is quiet afterwards", "[sink][
     REQUIRE(sink.stop() == SinkError::kOk);
     sink.close();
 }
+
+TEST_CASE("SdlSink reports the DEVICE rate, and the clock is scaled to it",
+          "[sink][sdl][clock]")
+{
+    // ISSUE 240. `SinkClock::frames_played` is documented as being in DEVICE
+    // frames "so that dividing by format().sample_rate yields seconds of audio
+    // played", and PlaybackSession::played_us divided by the SOURCE rate
+    // instead. The two are equal only when the device happens to run at the
+    // source's rate, which is why it survived on a rack where exclusive mode
+    // guarantees exactly that.
+    //
+    // This pins the half of the contract a sink owns: what format() reports is
+    // the device's, and the clock is expressed in those units.
+    REQUIRE(SdlSink::use_dummy_driver());
+    SdlSink sink;
+    Probe   probe;
+
+    SinkFormat want{};
+    want.sample_rate = 44100;  // deliberately not the 48k the other tests use
+    want.channels    = 2;
+    want.format      = SampleFormat::kFloat32;
+
+    REQUIRE(sink.open(want, &render, &probe) == SinkError::kOk);
+
+    // WHATEVER THE DUMMY DRIVER DID, format() must describe the DEVICE. The
+    // dummy honours the request on every platform seen so far, so this is
+    // usually 44100 -- the assertion that matters is that it is a real rate and
+    // that the clock below is expressed in it, not that the two differ.
+    const std::uint32_t device_rate = sink.format().sample_rate;
+    REQUIRE(device_rate > 0);
+
+    REQUIRE(sink.start() == SinkError::kOk);
+    REQUIRE(wait_for_calls(probe, 4, std::chrono::seconds(5)));
+
+    // READ WHILE RUNNING. The clock is deliberately invalid before start and
+    // after stop -- a zeroed pair is not a reading of "the very beginning".
+    const SinkClock clock = sink.clock();
+    REQUIRE(clock.valid);
+
+    // The seconds implied by the contract. Sane rather than exact: the dummy
+    // driver runs on a timer, so how much has been consumed by now is not
+    // something to pin.
+    const double seconds = static_cast<double>(clock.frames_played) / device_rate;
+    CHECK(seconds >= 0.0);
+    CHECK(seconds < 60.0);
+
+    REQUIRE(sink.stop() == SinkError::kOk);
+    sink.close();
+}
