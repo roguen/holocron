@@ -166,9 +166,14 @@ jobs:
       # header difference between them would surface here as a compile error,
       # which is a visible failure rather than a silent one.
       - name: SDL3 and glm for arm64-android
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
         run: |
+          # EXPORTED IN THE SHELL, not through a step-level `env:` block. The
+          # `env` context holds workflow/job/step variables only — it does not
+          # contain the runner's own environment, so
+          # `ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}` expands to the
+          # empty string and vcpkg's android toolchain then fails to detect a
+          # compiler at all.
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
           # --classic is required, not optional: vcpkg finds the repo's own
           # vcpkg.json, switches to manifest mode, and manifest mode rejects
           # individual package arguments outright.
