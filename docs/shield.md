@@ -81,34 +81,62 @@ ANGLE caps at ES 3.1, so **no ES 3.2 context has been obtained anywhere** and th
 
 ---
 
-## 3. What has NOT been measured on the Shield
+## 3. Measured on the Shield — and the prediction held
 
-**Nothing has.** ADB is not enabled — TCP 5555 is closed, swept twice across the
-whole /24. Everything in §2 is a specification reading plus two drivers that are
-not the Shield's.
+§2 was written before the device was reachable, and its prediction — ES 3.2 and
+`GL_EXT_color_buffer_float` both present — was recorded deliberately ahead of the
+measurement. Reached over ADB the same day. Both halves held.
 
-The check is five minutes once developer mode is on:
-
-1. Shield → *Settings → Device Preferences → About*, click **Build** seven times.
-2. *Settings → Device Preferences → Developer options* → enable **Network debugging**
-   (it will show a port, normally 5555).
-3. From this machine, with `adb` on `PATH`:
-
-```bash
-adb connect 192.168.68.38:5555 && adb shell dumpsys SurfaceFlinger | head -40
+```
+EGL implementation : 1.5
+GLES: NVIDIA Corporation, NVIDIA Tegra, OpenGL ES 3.2 NVIDIA 495.00
 ```
 
-What that output must show:
+| | |
+|---|---|
+| `GL_EXT_color_buffer_float` | **present** |
+| `GL_EXT_color_buffer_half_float` | **present** |
+| `GL_OES_texture_half_float_linear` | **present** |
+| `GL_EXT_float_blend` | **present** |
+| `GL_KHR_debug` | **present** — the debug callback survives |
+| `GL_EXT_disjoint_timer_query` | **present** — timings can be re-measured on device |
+| `GL_ARB_direct_state_access` | **absent** |
+| `GL_EXT_direct_state_access` | **absent** |
 
-- **GLES version 3.2** — if it says 3.1, §2's core guarantee does not apply and the
-  extension below becomes mandatory rather than belt-and-braces.
-- **`GL_EXT_color_buffer_float`** in the extension list. Its presence makes the
-  format renderable regardless of version, so this is the single string that
-  decides whether the float layers survive the port.
+**ES 3.2, so §2's core guarantee applies, and the extension is there anyway.** Belt
+and braces: `GL_RGBA16F` layers survive the port and the compositor needs no
+non-float path. The runtime check stays regardless, because it is also the check
+for a float framebuffer that cannot be *allocated* — a different failure that no
+extension string rules out.
 
-The prediction is on record before the measurement, which is the point of writing
-it down: **both will be present.** If either is missing, D-047 is wrong and the
-compositor needs a non-float layer path.
+**The two absences matter more than the presences.** Direct state access is not
+there under either name, at any version. That turns §4 from a suspicion into the
+known body of M8's render work.
+
+`GL_EXT_disjoint_timer_query` is the one to remember: §5 lists numbers that must
+not be carried over from the RX 6800, and this is what will let them be measured
+here rather than estimated.
+
+Device: `SHIELD Android TV`, product `mdarcy` (Shield TV Pro), Android 11, SDK 30,
+board `tegra`, at `192.168.68.38` on the receiver's STRM BOX input.
+
+### How it was reached, and two things that cost time
+
+ADB over the network needs the owner once: *Settings → Device Preferences → About*,
+click **Build** seven times, then *Developer options* → **Network debugging**.
+
+**The RSA fingerprint dialog appears on the Shield's own screen.** So the receiver
+has to be on the STRM BOX input to see it — which is easy to forget immediately
+after the herald has switched everything to PC. The connection sits in
+`unauthorized` with no other symptom.
+
+**Do not pipe `dumpsys` through `head`.** It closes the pipe and the device logs
+`Failed to write while dumping service SurfaceFlinger: Broken pipe`, truncating
+exactly the extension list you came for. Redirect to a file and search that:
+
+```bash
+adb connect 192.168.68.38:5555 && adb shell dumpsys SurfaceFlinger > sf.txt
+```
 
 ---
 
