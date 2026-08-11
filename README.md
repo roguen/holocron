@@ -175,13 +175,13 @@ What exists:
 | **Plex** | GDM discovery, `--link` sign-in through the plex.tv PIN flow, automatic device registration and connection publishing, play queues built on the server, timeline reporting to both the controller and the media server, and every transport command a phone sends. |
 | **Playback** | `PlaybackSession` — decoder, analysis, ring, device and decode thread behind one object that can be started, **replaced** and **seeked**, which is what casting requires. |
 | **Track context** | `TrackContext` — what is playing, the album art as a texture, and a **palette** extracted from it: five swatches, a primary and a contrast accent, supplied to every crystal in linear RGB. |
-| **Tests** | **544 cases, green on Windows and Linux.** |
+| **Tests** | **548 cases on Windows, 549 on Linux, green on both.** |
 
 **Seven of the eight milestones are finished.** What is left is M8 — Holocron on
 the NVIDIA Shield — and it now runs there: an ES 3.2 context on Tegra, the float
 compositor layers, a crystal on screen and the licence panel legible. What it
-cannot yet do on that box is **be cast to**, because it has no Plex token there
-and the Companion port does not bind. See the milestone table below.
+cannot yet do on that box is **be cast to**, because it has no Plex token there.
+See the milestone table below.
 
 **The `AudioFrame` contract is signed off** (2026-08-01). Section 9 of
 [`docs/audio-frame.md`](docs/audio-frame.md) records the decisions behind it — the
@@ -389,7 +389,7 @@ pull requests are not.
 | Platform | Role | State today |
 |---|---|---|
 | **Windows x86-64 + discrete GPU** | The build and test target | **Runs everything.** Plays bit-perfect through `WasapiSink` in exclusive mode, is cast to from Plexamp, and draws the whole facet stack. |
-| **Android TV — NVIDIA Shield** | Where it is going | **Runs and draws.** An ES 3.2 context on Tegra, the `RGBA16F` compositor layers, crystals, hot reload and the licence panel. **Cannot be cast to yet:** no Plex token on the device, and the Companion HTTP port does not bind there. |
+| **Android TV — NVIDIA Shield** | Where it is going | **Runs and draws.** An ES 3.2 context on Tegra, the `RGBA16F` compositor layers, crystals, hot reload and the licence panel. The Companion control page answers on it — **HTTP 200 in 2.5 ms**, measured from the rack. **Cannot be cast to yet:** it has no Plex token, so nothing has ever been cast to it. |
 | **Linux** | CI only | Builds and hygiene checks run here. Not a deployment target. |
 | **macOS** | Not supported | Was the development host until 2026-08-01. No longer in the project. |
 
