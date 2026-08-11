@@ -406,6 +406,47 @@ unmissable:
 Blue-dominant in all three; before differs from after by 0.03 where two runs of
 the same binary differ by 0.56.
 
+### Something has now run on the Shield, and it is the analysis spine
+
+**2026-08-11.** The whole project **configures, builds and links for
+`arm64-android`** — 56 targets, both executables, no source changes beyond the
+platform layer and the ES header. That was not expected this session and it
+changes what "nothing has ever run on the Shield" means.
+
+`holocron-analyze` needs no window, no GL context and no audio device, so it can
+be pushed and run over ADB directly. It links against `libm`, `libandroid`,
+`libmediandk`, `libdl` and `libc` and nothing else — the STL is static, so there
+is no `libc++_shared.so` to ship.
+
+**It ran, and it agrees with Windows.** The same 5-second generated tone through
+the Windows MSVC build and through the Tegra build, `--csv` on both, 468 frames of
+47 fields:
+
+| | |
+|---|---|
+| cells compared | 21,996 |
+| **bit-identical** | **21,802 — 99.12%** |
+| within the golden file's 5e-4 tolerance | 182 |
+| exceeding it | 12 |
+
+**All twelve exceedances differ by exactly 1.0e-6**, which is one unit in the last
+decimal the CSV prints. Eleven are `spectral_flux` and one each `bass_env` and
+`treble_norm`, all on values between 1.6e-5 and 1.8e-3 — small enough that one
+printed ULP is a large *relative* difference and a meaningless one. **There are no
+real disagreements.** The summary lines are identical to the digit: peak RMS
+0.4713, peak sample 0.8841, loudness −38.79 to −3.72 LUFS, 27 onsets, 10 beats,
+60.48 BPM at confidence 0.39.
+
+So FFmpeg decode, the resampler, the FFT, the band split, the envelopes, the
+onset detector, the tempo estimator and BS.1770 loudness all produce the same
+answers on aarch64/clang as on x64/MSVC. **That is the whole of M1's spine
+confirmed on the target**, and it is the first thing this project has ever
+executed there.
+
+`holocron` itself links too, but it is an executable exporting `main` and an
+Android application needs a shared object exporting `SDL_main` — see the table
+below. It has not been run.
+
 ---
 
 ## 6. What is left, measured rather than estimated
