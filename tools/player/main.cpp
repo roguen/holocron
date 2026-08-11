@@ -1060,6 +1060,30 @@ struct CastCommand {
         return true;
     }
 
+    // Read the vault directory again now. Issue 214.
+    //
+    // Crosses to the render thread like everything else here even though the
+    // scan happens on a third thread of its own -- the render loop is what owns
+    // the scanner, and a handler reaching past it to poke a worker directly
+    // would be the one place in this struct that does not follow its own rule.
+    bool want_rescan = false;
+
+    void request_rescan()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        want_rescan = true;
+    }
+
+    bool take_rescan()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!want_rescan) {
+            return false;
+        }
+        want_rescan = false;
+        return true;
+    }
+
     // -- tuning, from the control page's sub-page ---------------------------
     //
     // ACCUMULATED RATHER THAN REPLACED, which is the opposite of every other
@@ -2386,6 +2410,7 @@ int main(int argc, char** argv)
     companion.set_select_crystal_handler([&cast](std::size_t index) {
         cast.request_crystal(index);
     });
+    companion.set_rescan_handler([&cast] { cast.request_rescan(); });
     companion.set_projectm_step_handler([&cast](int step) { cast.request_projectm_step(step); });
     companion.set_projectm_shuffle_handler([&cast](bool on) {
         cast.request_projectm_shuffle(on);
@@ -2843,6 +2868,7 @@ int main(int argc, char** argv)
         std::printf("holocron: watching %s -- crystals added there appear without a restart\n",
                     opt.vault);
     }
+    companion.set_vault_rescannable(vault_scanner.has_value());
 
     // -- render loop ---------------------------------------------------------
 
@@ -3187,10 +3213,36 @@ int main(int argc, char** argv)
     // the same shape of white line, and telling them apart is the whole question.
     // It is the same amber the tuning page warns in, deliberately: two surfaces,
     // one meaning.
+    // The last failure, and whether the phone has been told about it yet.
+    //
+    // The toast is two seconds long and the person it is for may have been
+    // looking somewhere else, so the same text also goes to the control page --
+    // where it STAYS, because "why did that button do nothing" is a question
+    // asked after the fact by definition. Pushed on change rather than per frame:
+    // it changes when somebody breaks something, which is not 144 times a second.
+    std::string last_error;
+    bool        diagnostics_dirty = true;
+
     const auto notify = [&](std::string text, bool bad = false) {
+        if (bad) {
+            last_error        = text;
+            diagnostics_dirty = true;
+        }
         toast_text  = std::move(text);
         toast_bad   = bad;
         toast_until = std::chrono::steady_clock::now() + kToastHold;
+    };
+
+    // A stack built, so whatever last refused to is no longer the news.
+    //
+    // NOT FOLDED INTO notify(), because not every good thing that happens fixes
+    // the bad one: "new: duel" is a successful arrival and says nothing about a
+    // shader that is still broken. Only an actual build clears this.
+    const auto clear_error = [&] {
+        if (!last_error.empty()) {
+            last_error.clear();
+            diagnostics_dirty = true;
+        }
     };
 
     // -- taking a fresh scan of the vault (issue 214) --------------------------
@@ -3252,8 +3304,9 @@ int main(int argc, char** argv)
         const std::string was_showing =
             current != kNoCurrent && current < vault.size() ? vault[current].name : std::string();
 
-        vault          = std::move(fresh);
-        vault_problems = std::move(problems);
+        vault             = std::move(fresh);
+        vault_problems    = std::move(problems);
+        diagnostics_dirty = true;
         if (sequence_changed) {
             ++vault_generation;
         }
@@ -4334,8 +4387,8 @@ int main(int argc, char** argv)
             for (const VaultEntry& entry : vault) {
                 names.push_back(entry.name);
             }
-            companion.set_control_info(names, track_context.title, track_context.artist,
-                                       track_context.has_art);
+            companion.set_control_info(names, vault_generation, track_context.title,
+                                       track_context.artist, track_context.has_art);
             companion.set_control_tuning(trim_ms, headroom_ms, showing_sync, opt.config);
 
             // WHETHER THE SECTION APPEARS AT ALL follows the LIVE stack rather
@@ -4485,12 +4538,30 @@ int main(int argc, char** argv)
         // colophon consuming the arrow keys is a reason not to MOVE, never a
         // reason to hold a stale list. The debug facet nulls the vault so there is
         // no scanner in that case at all.
+        if (cast.take_rescan() && vault_scanner) {
+            vault_scanner->rescan_now();
+        }
         if (vault_scanner) {
             std::vector<VaultEntry>   fresh;
             std::vector<VaultProblem> fresh_problems;
             if (vault_scanner->take(fresh, fresh_problems)) {
                 adopt_vault(std::move(fresh), std::move(fresh_problems));
             }
+        }
+        if (diagnostics_dirty) {
+            // Flattened to one line each here rather than in the server, so
+            // companion_server.cpp does not acquire a dependency on the vault
+            // loader for the sake of a summary. first_line drops the header line
+            // for the same reason the toast does -- a problem's detail begins
+            // with the path it is about, which the stem already says.
+            std::vector<std::string> lines;
+            lines.reserve(vault_problems.size());
+            for (const VaultProblem& p : vault_problems) {
+                lines.push_back(std::filesystem::path(p.stem).filename().string() + ": " +
+                                first_line(p.detail, 120));
+            }
+            companion.set_control_diagnostics(lines, last_error);
+            diagnostics_dirty = false;
         }
 
         if (drawing_crystal && !colophon_took_arrows) {
@@ -4673,6 +4744,7 @@ int main(int argc, char** argv)
                     current_stem = vault[wanted].stem;
                     current_kind = vault[wanted].kind;
                     showing_sync = false;
+                    clear_error();
                     // Pushed so the control page follows the ARROW KEYS too. The
                     // page already knows about its own POSTs; this is the other
                     // direction.
@@ -4787,6 +4859,7 @@ int main(int argc, char** argv)
                     // save the player never noticed, and that ambiguity is what
                     // sends an author looking for a bug in the watch.
                     notify("reloaded " + live_stack.archive.name);
+                    clear_error();
                 } else {
                     // build_stack has already printed the whole log. This is the
                     // one line of it that reaches the room the picture is in.

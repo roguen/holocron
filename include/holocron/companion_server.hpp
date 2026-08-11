@@ -163,6 +163,48 @@ public:
         std::vector<std::string> crystals;
         std::size_t              current = 0;
 
+        // WHICH LIST THOSE INDICES BELONG TO. Issue 214.
+        //
+        // The vault is re-scanned while the player runs, and it is sorted by
+        // display name -- so a crystal called `aurora` arriving pushes everything
+        // after it down one, and index 3 on a page rendered a moment ago now
+        // names a different crystal. Nothing about that is visible to the person
+        // holding the phone: they tap the row they can see and something else
+        // comes up.
+        //
+        // So every crystal button carries the generation of the list it was
+        // rendered from, and a POST whose generation no longer matches is
+        // REFUSED rather than obeyed against the wrong list. The redirect then
+        // shows them the list as it is now.
+        //
+        // It is bumped only when the entry SEQUENCE differs -- not when a file
+        // changed. The scanner re-scans on every ordinary shader save, and
+        // bumping there would make the page refuse taps throughout exactly the
+        // activity the hot vault exists to support.
+        std::uint64_t vault_generation = 0;
+
+        // What the last scan could not load, one line each, already flattened
+        // for display. Strings rather than VaultProblem so this header does not
+        // acquire a dependency on the vault loader; the page wants a summary,
+        // not a compiler log.
+        std::vector<std::string> vault_problems;
+
+        // The last thing that refused to build, if anything has. A tap that
+        // lands on a broken crystal changes nothing on screen and nothing on the
+        // page, which from a couch is indistinguishable from the button not
+        // working -- this is where the reason goes for somebody who was not
+        // looking at the picture when the toast came and went.
+        std::string last_error;
+
+        // Whether there is a vault directory being watched at all.
+        //
+        // False under --crystal, --calibrate, --debug-facet and --no-watch, all
+        // of which have no directory to re-read. The Rescan button is HIDDEN
+        // rather than shown and ignored, for the reason the projectM section is
+        // hidden when no projectM is drawing: a control whose silence has to be
+        // interpreted is worse than no control.
+        bool vault_rescannable = false;
+
         // Now playing, for orientation only. Empty when nothing is.
         std::string title;
         std::string artist;
@@ -258,8 +300,23 @@ public:
 
     // Descriptive only: the vault contents and what is playing. Safe to call every
     // frame; deliberately does NOT touch `current` or the toggles.
-    void set_control_info(const std::vector<std::string>& crystals, const std::string& title,
-                          const std::string& artist, bool has_art);
+    //
+    // THE GENERATION IS A PARAMETER OF THIS CALL AND NOT A SETTER OF ITS OWN, so
+    // the list and the number identifying it can never be one frame apart. Split
+    // into two calls, a page fetched in the gap would render the new names under
+    // the old generation -- and then accept a tap against the wrong list, which is
+    // the exact failure the generation exists to prevent.
+    void set_control_info(const std::vector<std::string>& crystals, std::uint64_t generation,
+                          const std::string& title, const std::string& artist, bool has_art);
+
+    // What the vault could not load, and the last thing that refused to build.
+    //
+    // Called when they change rather than every frame -- a scan happens a few
+    // times an hour and a failed build only when somebody breaks something, so
+    // there is nothing here for a stale page to get wrong and nothing worth
+    // copying 144 times a second.
+    void set_control_diagnostics(const std::vector<std::string>& problems,
+                                 const std::string& last_error);
 
     // Which crystal is current. Called by the render loop ONLY when it changes it
     // itself -- the arrow keys, or refusing an out-of-range index -- so it corrects
@@ -273,6 +330,16 @@ public:
     // page is rendered from it -- and because a name would need escaping in two
     // directions for crystals whose manifests contain spaces or quotes.
     using SelectCrystalHandler = std::function<void(std::size_t index)>;
+
+    // Called when the page asks for the vault directory to be read again.
+    //
+    // DELIBERATELY UNCONDITIONAL. The scanner already notices files appearing on
+    // its own, so this button is for the cases the filesystem cannot show:
+    // something that was broken when it was scanned and has since been fixed by a
+    // change the mtime does not reflect, a share that was remounted, or simple
+    // disbelief -- which on a control surface is a perfectly good reason to offer
+    // a button, since the alternative is walking to the machine.
+    using RescanHandler = std::function<void()>;
 
     // Called when the page asks to show or hide an overlay. Two separate handlers
     // rather than one taking a name: there are two overlays, they are wired to
@@ -299,6 +366,7 @@ public:
     using ProjectMToggleHandler = std::function<void(bool on)>;
 
     void set_select_crystal_handler(SelectCrystalHandler handler);
+    void set_rescan_handler(RescanHandler handler);
     void set_lyrics_handler(LyricsHandler handler);
     void set_colophon_handler(LyricsHandler handler);
 
@@ -327,6 +395,11 @@ public:
     // than the struct's default. Not called per frame: this is intent, and the
     // POST handler owns it from then on.
     void set_advance(const std::string& mode, int seconds);
+
+    // Whether a vault directory is being watched. Pushed once at startup, same
+    // contract as set_advance -- it is a property of how the player was launched
+    // and cannot change during a run.
+    void set_vault_rescannable(bool rescannable);
 
     // Descriptive tuning state, pushed from the render loop like the vault and
     // the now-playing strings. Safe to call every frame.
