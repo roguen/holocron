@@ -61,6 +61,7 @@
 #include <string>
 #include <vector>
 
+#include <holocron/envelope.hpp>
 #include <holocron/frame_binding.hpp>
 #include <holocron/layer.hpp>
 
@@ -81,11 +82,40 @@ constexpr std::size_t kMaxArchiveLayers = 4;
 // and map it from its own range onto [min, max] -- so `bass_norm` at 0 gives
 // `min` and at 1 gives `max`, and a layer can be made to breathe with the music
 // without its crystal knowing anything about it.
+// SMOOTHING IS PER LAYER, AND IT IS `attack`/`decay` AND NOT `scale`. Issue 199.
+//
+// `v0.5.1` gave crystal manifests per-uniform envelope overrides, and archive
+// manifests -- which bind the same fields through the same find_binding() -- did
+// not get them. So the same field was smoothable in one manifest and not in the
+// other, and an author binding a raw field to a layer's opacity had no way to
+// calm it without a C++ change. Measured over a real track, `spectral_flux`
+// reverses direction 60.8 times per 100 frames; at 93.75 Hz that is a whole
+// layer's opacity changing direction forty times a second.
+//
+// The issue asked which spelling to settle on, because the archive side has
+// `min`/`max` (a range map) and the crystal side has `scale` (a gain). It was
+// already answered, in envelope.hpp: a gain "is deliberately a gain and not a
+// range map ... the shape that can [offset] is the archive's `min`/`max`". They
+// are two shapes because they are two jobs. So the archive keeps its range map
+// and gains only the two constants it was actually missing.
+//
+// The envelope runs on the raw [0,1] field, BEFORE the range map. That way
+// `attack` and `decay` describe the field rising and falling -- the same thing
+// they describe in gatekeeper.toml and in a crystal manifest -- rather than
+// describing the mapped output, which would make the same number mean something
+// different depending on `min` and `max`.
 struct LayerOpacity {
     float          fixed   = 1.0f;
     const Binding* binding = nullptr;
     float          min     = 0.0f;
     float          max     = 1.0f;
+
+    // Seconds to 63%, exactly as EnvelopeSpec means them. Both zero is the
+    // unsmoothed path and is what every archive written before this got.
+    float attack = 0.0f;
+    float decay  = 0.0f;
+
+    bool enveloped() const { return binding != nullptr && (attack > 0.0f || decay > 0.0f); }
 };
 
 // What draws a layer.
@@ -184,6 +214,18 @@ Archive archive_of_crystal(const std::string& stem, const std::string& name);
 Archive archive_of_projectm(const std::string& name);
 
 // This layer's opacity for this frame, already clamped to [0, 1].
-float layer_opacity(const LayerOpacity& o, const AudioFrame& frame);
+//
+// `state` is the envelope's carried value and belongs to whatever owns the live
+// stack, because that is what gets rebuilt when the picture is replaced. Pass
+// nullptr -- or leave it out -- for the unsmoothed reading, which is what a
+// fixed opacity and an archive written before issue 199 both want.
+//
+// STEPPED IN ANALYSIS HOPS, NOT DRAWN FRAMES, for the reason envelope.hpp gives
+// at length: the render thread skips and repeats analysis frames constantly, so
+// an envelope advanced once per drawn frame would run at a rate set by the
+// monitor. `step.reseed` writes the current reading straight into `state`, which
+// is what the first frame of every track needs -- `frame_index` restarts at 0.
+float layer_opacity(const LayerOpacity& o, const AudioFrame& frame, float* state = nullptr,
+                    HopStep step = HopStep{});
 
 }  // namespace holocron
