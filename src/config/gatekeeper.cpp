@@ -294,6 +294,8 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     read_string_list(tbl, "herald", "on_stop", out.herald_on_stop, bad);
     read_int(tbl, "herald", "connect_timeout_ms", out.herald_connect_timeout_ms, bad);
     read_int(tbl, "herald", "cooldown_seconds", out.herald_cooldown_seconds, bad);
+    read_string(tbl, "herald", "on_volume", out.herald_on_volume, bad);
+    read_int(tbl, "herald", "volume_max", out.herald_volume_max, bad);
 
     if (!bad.empty()) {
         out         = Gatekeeper{};

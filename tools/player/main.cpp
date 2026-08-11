@@ -1181,6 +1181,31 @@ struct CastCommand {
         return true;
     }
 
+    // The phone's volume slider. Issue 126.
+    //
+    // NEWEST WINS, like the seek and unlike the trim. A drag is one command per
+    // pixel -- 44 for one gesture, measured -- and every intermediate value is
+    // an absolute destination that the next one supersedes. The herald paces the
+    // sending; this only has to stop the render loop seeing a queue of them.
+    int volume_asked = -1;
+
+    void request_volume(int level)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        volume_asked = level;
+    }
+
+    bool take_volume(int& out_level)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (volume_asked < 0) {
+            return false;
+        }
+        out_level    = volume_asked;
+        volume_asked = -1;
+        return true;
+    }
+
     // Show the beat-alignment instrument. Compiles a program, so it has to cross
     // to the render thread like every other crystal change.
     bool want_sync = false;
@@ -2488,6 +2513,11 @@ int main(int argc, char** argv)
         [&cast](int direction, const std::string& item, const std::string& key) {
             cast.request_skip(direction, item, key);
         });
+    // ISSUE 126. Straight into the request queue like every other command; the
+    // render loop hands it to the herald, which coalesces and paces. Recorded
+    // rather than acted on here for the reason the whole struct exists -- this
+    // runs on an HTTP worker.
+    companion.set_volume_handler([&cast](int level) { cast.request_volume(level); });
     companion.set_seek_handler([&cast](std::int64_t position_ms) {
         cast.request_seek(position_ms);
     });
@@ -3664,6 +3694,8 @@ int main(int argc, char** argv)
             hc.on_stop            = cfg.herald_on_stop;
             hc.connect_timeout_ms = cfg.herald_connect_timeout_ms;
             hc.cooldown_seconds   = cfg.herald_cooldown_seconds;
+            hc.on_volume          = cfg.herald_on_volume;
+            hc.volume_max         = cfg.herald_volume_max;
         }
         std::string detail;
         herald.start(hc, detail);
@@ -3689,6 +3721,16 @@ int main(int argc, char** argv)
             std::printf("holocron: herald armed -- %zu errand(s) on start (%zu command(s), "
                         "%zu wait(s)), %zu on stop\n",
                         hc.on_start.size(), hc.on_start.size() - waits, waits, hc.on_stop.size());
+            std::fflush(stdout);
+        }
+        if (herald.forwards_volume()) {
+            // SAID SEPARATELY, because the line above is gated on `on_start` and
+            // volume is the one part of the herald that can be configured alone.
+            // It is also the part with a ceiling somebody chose, and a number
+            // that only exists in a config file is a number worth reading back --
+            // this is the same argument as printing the trim and the density.
+            std::printf("holocron: herald takes the phone's volume, capped at %d\n",
+                        cfg.herald_volume_max);
             std::fflush(stdout);
         }
     }
@@ -4138,6 +4180,9 @@ int main(int argc, char** argv)
         // opened. A stop caused by a failure and a stop caused by the album
         // ending are different events; `walk.pending()` is what tells them apart.
         herald.observe((session.active() || walk.pending()) && !session.paused());
+        if (int level = 0; cast.take_volume(level)) {
+            herald.set_volume(level);
+        }
 
         // A pause or resume that arrived since the last frame. Applied here for
         // the same reason a play command is: this is the thread that owns the
@@ -4232,6 +4277,14 @@ int main(int argc, char** argv)
                 timeline.time_ms = at;
             }
         }
+        // WHAT WAS SENT, NOT WHAT WAS APPLIED. Issue 126: the receiver can be
+        // turned up by its own remote at any moment and nothing here would know,
+        // so the last commanded level is the most this can truthfully report.
+        // Pushed every frame because the herald sends on its own schedule -- it
+        // paces a drag -- so there is no event here to hang it on.
+        timeline.volume_controllable = herald.forwards_volume();
+        timeline.volume_sent         = herald.volume_sent();
+
         companion.set_timeline(timeline);
 
         // -- tell the SERVER too ----------------------------------------------

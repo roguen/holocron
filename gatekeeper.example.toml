@@ -570,6 +570,49 @@ connect_timeout_ms = 1500
 # the life of the process. With it, it costs one a minute and one log line.
 cooldown_seconds = 60
 
+# ---------------------------------------------------------------------------
+# The phone's volume slider (issue 126)
+#
+# Reaching for the volume on the phone during a cast used to do nothing, and that
+# was correct: applying it in software means scaling samples, which would end the
+# bit-perfect output WASAPI exclusive mode exists for.
+#
+# Sending it to the RECEIVER is the answer that keeps both. It attenuates in its
+# own domain, downstream of everything Holocron touches, so the slider works AND
+# the signal stays exact -- it is the same control the remote already drives.
+#
+# A TEMPLATE, NOT A URI, and it is the only one in this file. Every other errand
+# is complete the moment it is read; a volume command carries a number that only
+# exists when the slider moves. Exactly one placeholder, and three spellings:
+#
+#   {}       the level in decimal      -- what a webhook wants
+#   {:02X}   two hex digits, uppercase -- what eISCP's MVL wants
+#   {:02x}   two hex digits, lowercase
+#
+#   on_volume = "eiscp://192.0.2.50/MVL{:02X}"
+#   on_volume = "http://192.0.2.60:8123/api/webhook/vol?level={}"
+#
+# Empty is the off switch, like the two lists above.
+on_volume = ""
+
+# The loudest this is ever allowed to ask for, in the RECEIVER'S OWN UNITS.
+#
+# REQUIRED whenever `on_volume` is set, and it has NO DEFAULT ON PURPOSE. Plex's
+# slider is 0..100 and MVL is hex, so a pass-through sends MVL64 at the top --
+# which on a theater amplifier is full output, into a room, possibly at night,
+# from a phone in somebody's pocket. No ceiling is safe on every rack, and the
+# obvious guess is the amplifier's own maximum, which is the worst one available.
+# So it is demanded instead: set `on_volume` without this and the player says so
+# and forwards nothing.
+#
+# READ IT OFF THE UNIT rather than a published table. The maximum is a property
+# of the receiver and often of its own setup menu -- the same lesson the input
+# codes taught, where `05` is PC and `11` is STRM BOX on this one and no table
+# would have said so. Start low and raise it.
+#
+#   volume_max = 40
+volume_max = -1
+
 # REPLACING eISCP ENTIRELY is an edit to a value, not a change of shape -- which
 # is the point of errands being URIs. A Home Assistant webhook would read:
 #

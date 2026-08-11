@@ -235,6 +235,71 @@ void close_politely(socket_t s)
 
 // ---------------------------------------------------------------------------
 
+bool render_errand(std::string_view templ, int level, std::string& out, std::string& out_why)
+{
+    out.clear();
+    out_why.clear();
+
+    // The three spellings, longest first so `{:02X}` is not mistaken for `{`
+    // followed by rubbish. See the header for why there are three and not a
+    // format language.
+    struct Placeholder {
+        std::string_view token;
+        const char*      format;
+    };
+    static constexpr Placeholder kPlaceholders[] = {
+        {"{:02X}", "%02X"},
+        {"{:02x}", "%02x"},
+        {"{}",     "%d"},
+    };
+
+    std::size_t found = 0;
+    std::size_t at    = 0;
+
+    while (at < templ.size()) {
+        const std::size_t open = templ.find('{', at);
+        if (open == std::string_view::npos) {
+            out.append(templ.substr(at));
+            break;
+        }
+        out.append(templ.substr(at, open - at));
+
+        const Placeholder* match = nullptr;
+        for (const Placeholder& p : kPlaceholders) {
+            if (templ.compare(open, p.token.size(), p.token) == 0) {
+                match = &p;
+                break;
+            }
+        }
+        if (match == nullptr) {
+            // NAMED RATHER THAN COPIED THROUGH. A brace this does not understand
+            // is far more likely a typo in a placeholder than a literal brace
+            // somebody wanted in an eISCP command -- and passing it through would
+            // send a command containing "{:2X}" to an amplifier.
+            out_why = "`" + std::string(templ) +
+                      "` has a placeholder this does not understand -- use {} for decimal, "
+                      "{:02X} or {:02x} for two hex digits";
+            return false;
+        }
+
+        char rendered[16] = {};
+        std::snprintf(rendered, sizeof(rendered), match->format, level);
+        out.append(rendered);
+
+        ++found;
+        at = open + match->token.size();
+    }
+
+    if (found != 1) {
+        out_why = "`" + std::string(templ) + "` has " +
+                  (found == 0 ? "no placeholder" : std::to_string(found) + " placeholders") +
+                  " -- a volume errand needs exactly one";
+        out.clear();
+        return false;
+    }
+    return true;
+}
+
 bool parse_errand(std::string_view uri, Errand& out, std::string& out_why)
 {
     out     = Errand{};
@@ -373,6 +438,30 @@ struct Herald::Impl {
     bool quit    = false;
     int  pending = 0;   // +1 start, -1 stop, 0 nothing
 
+    // -- volume, issue 126 --------------------------------------------------
+    //
+    // `on_volume` empty means the whole thing is off and set_volume is a no-op.
+    // `volume_max` below zero means it was asked for without a ceiling, which is
+    // refused at start() -- see HeraldConfig.
+    std::string      on_volume;
+    int              volume_max = -1;
+
+    // Plex's 0..100. `wanted` is the newest the slider has reported and `sent` is
+    // the last one that actually reached the receiver; they differ while a drag
+    // is in flight, which is the whole point of coalescing.
+    int              volume_wanted = -1;
+    std::atomic<int> volume_sent{-1};
+
+    // The floor between two volume commands.
+    //
+    // A drag produced 44 setParameters on the rack. Each herald errand opens its
+    // own TCP connection -- deliberately, because a receiver waking from standby
+    // loses anything written into an earlier one -- so honouring all 44 would be
+    // 44 connections for one gesture. At 150 ms the worst case is about six a
+    // second, and because the loop re-checks after the nap the FINAL value always
+    // lands, which is the only one anybody hears.
+    static constexpr int kVolumeFloorMs = 150;
+
     PlaybackEdge edge;
 
     std::atomic<std::uint64_t> ran{0};
@@ -444,9 +533,65 @@ struct Herald::Impl {
     {
         std::unique_lock<std::mutex> lock(mutex);
         while (true) {
-            cv.wait(lock, [this] { return quit || pending != 0; });
+            cv.wait(lock, [this] {
+                return quit || pending != 0 ||
+                       (volume_wanted >= 0 &&
+                        volume_wanted != volume_sent.load(std::memory_order_relaxed));
+            });
             if (quit) {
                 return;
+            }
+
+            // -- the slider, before the edges ----------------------------------
+            //
+            // A volume change is the only thing here somebody is watching for a
+            // response to, so it does not queue behind a power-on sequence that
+            // may be several seconds of `wait://`.
+            if (volume_wanted >= 0 &&
+                volume_wanted != volume_sent.load(std::memory_order_relaxed)) {
+                const int level = volume_wanted;
+
+                // SCALED INSIDE THE CLAMP, so the ceiling cannot be exceeded by
+                // arithmetic. Plex 0..100 onto 0..volume_max, integer, rounded
+                // down -- a volume that rounds up is the wrong direction to be
+                // wrong in.
+                const int scaled = (level * volume_max) / 100;
+
+                std::string rendered;
+                std::string why;
+                if (render_errand(on_volume, scaled, rendered, why)) {
+                    Errand errand;
+                    if (parse_errand(rendered, errand, why)) {
+                        run_one(errand, lock);
+                        // Recorded whether or not the send succeeded. It is "the
+                        // last level this player commanded", which is what the
+                        // timeline claims; a failed send still means the player
+                        // is no longer asking for the old one, and retrying
+                        // forever against an absent receiver is what the cooldown
+                        // exists to prevent.
+                        volume_sent.store(level, std::memory_order_relaxed);
+                    } else {
+                        std::fprintf(stderr, "holocron: herald volume -- %s\n", why.c_str());
+                        volume_sent.store(level, std::memory_order_relaxed);
+                    }
+                } else {
+                    std::fprintf(stderr, "holocron: herald volume -- %s\n", why.c_str());
+                    volume_sent.store(level, std::memory_order_relaxed);
+                }
+
+                // The floor. New values keep overwriting `volume_wanted` during
+                // it, and the loop above then sends the newest.
+                nap(lock, kVolumeFloorMs);
+                if (quit) {
+                    return;
+                }
+                if (pending == 0) {
+                    continue;
+                }
+            }
+
+            if (pending == 0) {
+                continue;
             }
 
             const int what = pending;
@@ -504,13 +649,55 @@ bool Herald::start(const HeraldConfig& config, std::string& out_detail)
     load(config.on_start, impl_->on_start);
     load(config.on_stop, impl_->on_stop);
 
-    if (impl_->on_start.empty() && impl_->on_stop.empty()) {
+    // -- the volume template, validated here rather than at the slider ---------
+    //
+    // Rendered once with a probe value and then parsed, so a template that is a
+    // typo is reported at startup with everything else. Finding out at the moment
+    // somebody reaches for the slider -- in a dark room, from a phone -- is the
+    // worst possible time for it.
+    if (!config.on_volume.empty()) {
+        const auto refuse = [&out_detail](const std::string& why) {
+            if (!out_detail.empty()) {
+                out_detail += "\n";
+            }
+            out_detail += "holocron: herald ignored on_volume -- " + why;
+        };
+
+        if (config.volume_max <= 0 || config.volume_max > 100) {
+            // REQUIRED, AND WITH NO DEFAULT. See HeraldConfig: there is no
+            // ceiling that is safe on every rack, and the only alternative to
+            // demanding one was guessing -- where the obvious guess is the
+            // amplifier's own maximum, which is the worst answer available.
+            refuse("it needs `volume_max` as well, between 1 and 100, in the "
+                   "receiver's own units -- read it off the unit rather than a table");
+        } else {
+            std::string probe;
+            std::string why;
+            if (!render_errand(config.on_volume, config.volume_max, probe, why)) {
+                refuse(why);
+            } else {
+                Errand errand;
+                if (!parse_errand(probe, errand, why)) {
+                    refuse(why);
+                } else if (errand.kind == ErrandKind::kWait) {
+                    refuse("a wait:// cannot carry a volume");
+                } else {
+                    impl_->on_volume  = config.on_volume;
+                    impl_->volume_max = config.volume_max;
+                }
+            }
+        }
+    }
+
+    if (impl_->on_start.empty() && impl_->on_stop.empty() && impl_->on_volume.empty()) {
         return out_detail.empty();   // nothing to do is a valid configuration
     }
 
-    impl_->quit    = false;
-    impl_->pending = 0;
-    impl_->worker  = std::thread([this] {
+    impl_->quit          = false;
+    impl_->pending       = 0;
+    impl_->volume_wanted = -1;
+    impl_->volume_sent.store(-1, std::memory_order_relaxed);
+    impl_->worker        = std::thread([this] {
         // AN EXCEPTION ESCAPING A std::thread IS std::terminate. A bad_alloc or a
         // system_error out of anything in here would take the player with it,
         // which is the second way this convenience could kill playback.
@@ -554,6 +741,44 @@ void Herald::observe(bool playing)
     if (edge != 0) {
         impl_->cv.notify_one();
     }
+}
+
+void Herald::set_volume(int level)
+{
+    if (!impl_->worker.joinable() || impl_->on_volume.empty()) {
+        return;
+    }
+
+    // CLAMPED HERE AS WELL AS SCALED IN THE WORKER. This arrives from a phone
+    // over HTTP, and the range is Plex's rather than anything this program
+    // controls; the worker's arithmetic assumes 0..100 and a value outside it
+    // would scale straight past the ceiling.
+    const int wanted = level < 0 ? 0 : (level > 100 ? 100 : level);
+
+    bool wake = false;
+    {
+        const std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (impl_->volume_wanted != wanted) {
+            impl_->volume_wanted = wanted;
+            wake = wanted != impl_->volume_sent.load(std::memory_order_relaxed);
+        }
+    }
+    if (wake) {
+        impl_->cv.notify_one();
+    }
+}
+
+bool Herald::forwards_volume() const
+{
+    // The template only reaches the Impl once it has been rendered with a probe
+    // value and parsed, and only alongside a usable ceiling -- so this is "the
+    // config was accepted", not "the config had something in it".
+    return !impl_->on_volume.empty() && impl_->worker.joinable();
+}
+
+int Herald::volume_sent() const
+{
+    return impl_->volume_sent.load(std::memory_order_relaxed);
 }
 
 std::uint64_t Herald::errands_run() const { return impl_->ran.load(std::memory_order_relaxed); }

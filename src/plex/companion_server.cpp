@@ -551,6 +551,7 @@ struct CompanionServer::Impl {
     CompanionServer::RefreshQueueHandler  refresh_queue_handler;
     CompanionServer::SelectCrystalHandler select_crystal_handler;
     CompanionServer::RescanHandler        rescan_handler;
+    CompanionServer::VolumeHandler        volume_handler;
     CompanionServer::FollowNewHandler     follow_new_handler;
     CompanionServer::LyricsHandler        lyrics_handler;
     CompanionServer::LyricsHandler        colophon_handler;
@@ -1313,6 +1314,41 @@ void CompanionServer::Impl::install_routes()
                          res.set_content(response_xml(200, "OK"), "text/xml");
                      });
 
+    // -- the volume slider, forwarded to the receiver. Issue 126 ---------------
+    //
+    // NOT APPLIED IN SOFTWARE, AND THAT HAS NOT CHANGED. Scaling samples here
+    // would end bit-perfect output, which is the thing WASAPI exclusive mode
+    // exists for. The receiver does the attenuation in its own domain,
+    // downstream of everything this program touches -- so the slider works AND
+    // the signal stays exact, which is what made M7 the answer to this rather
+    // than a change of mind about D-004.
+    //
+    // Registered before the `/player/.*` catch-all, like every other real
+    // endpoint. `setParameters` reached it and was acknowledged without action,
+    // which is why the slider did nothing.
+    self->server.Get("/player/playback/setParameters",
+                     [self](const httplib::Request& req, httplib::Response& res) {
+                         self->note(req);
+                         self->decorate(res);
+
+                         // OTHER PARAMETERS ARE STILL ACKNOWLEDGED AND IGNORED.
+                         // `setParameters` carries shuffle and repeat too, and a
+                         // 200 with no action is the right answer for those --
+                         // the same reason the catch-all answers at all.
+                         const auto volume = req.params.find("volume");
+                         if (volume != req.params.end() && self->volume_handler) {
+                             const std::int64_t level = parse_int64(volume->second, -1);
+                             if (level >= 0 && level <= 100) {
+                                 // NOT LOGGED PER VALUE. note() already collapses
+                                 // a run of these -- a drag is one command per
+                                 // pixel, measured at 44 for one gesture -- and
+                                 // printing here would undo that.
+                                 self->volume_handler(static_cast<int>(level));
+                             }
+                         }
+                         res.set_content(response_xml(200, "OK"), "text/xml");
+                     });
+
     // pause / play / playPause, all three spellings a controller may use.
     const auto pause_route = [self](const httplib::Request& req, httplib::Response& res) {
         self->note(req);
@@ -1497,6 +1533,11 @@ void CompanionServer::set_refresh_queue_handler(RefreshQueueHandler handler)
 void CompanionServer::set_select_crystal_handler(SelectCrystalHandler handler)
 {
     impl_->select_crystal_handler = std::move(handler);
+}
+
+void CompanionServer::set_volume_handler(VolumeHandler handler)
+{
+    impl_->volume_handler = std::move(handler);
 }
 
 void CompanionServer::set_rescan_handler(RescanHandler handler)
