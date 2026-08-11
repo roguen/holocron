@@ -124,6 +124,39 @@ add_library(holocron::notices ALIAS holocron_notices)
 target_link_libraries(holocron_notices PUBLIC holocron::contract PRIVATE holocron::warnings)
 
 # ---------------------------------------------------------------------------
+# Platform layer
+#
+# M8. The one thing the Android branches of the platform code need from outside
+# themselves: the process's JavaVM, and the JNI hygiene every call needs around
+# it. See include/holocron/android_jni.hpp.
+#
+# ITS OWN TARGET RATHER THAN A FILE IN holocron_visual, because two libraries
+# need it -- the text rasterizer and the HTTPS client -- and they are on opposite
+# sides of the tree. Folding it into either would make the other depend on a
+# library it has no other business with.
+#
+# Compiled on every platform, like wasapi_sink.cpp and text_render.cpp, so the
+# other compilers still read the file. Off Android the body is a pair of stubs
+# and there is nothing to link.
+# ---------------------------------------------------------------------------
+
+add_library(holocron_platform STATIC
+    src/platform/android_jni.cpp
+)
+add_library(holocron::platform ALIAS holocron_platform)
+
+target_link_libraries(holocron_platform
+    PUBLIC  holocron::contract
+    PRIVATE holocron::warnings
+)
+
+if(ANDROID)
+    # log for __android_log_print, which is where a Java stack trace goes when a
+    # JNI call throws -- there is nowhere else for it to be seen on a TV.
+    target_link_libraries(holocron_platform PUBLIC log)
+endif()
+
+# ---------------------------------------------------------------------------
 # Analysis stage
 #
 # pocketfft is header-only and ships no CMake config, so it is located by header
@@ -307,6 +340,7 @@ target_link_libraries(holocron_visual
     PUBLIC  holocron::contract
             glm::glm
     PRIVATE holocron::warnings
+            holocron::platform
             ${FFMPEG_LIBRARIES}
 )
 
@@ -324,6 +358,14 @@ if(WIN32)
     # rather than pulling in FreeType. Same trade as avrt/ole32 for WASAPI and
     # winhttp for the plex.tv link flow. See text_render.hpp.
     target_link_libraries(holocron_visual PRIVATE gdi32 user32)
+endif()
+
+if(ANDROID)
+    # jnigraphics for AndroidBitmap_lockPixels -- the way to read the pixels of
+    # an android.graphics.Bitmap without copying them through a Java array. Same
+    # trade as gdi32 above: a system library the platform already ships, chosen
+    # over a font dependency. See the Android branch of text_render.cpp.
+    target_link_libraries(holocron_visual PRIVATE jnigraphics)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -501,6 +543,7 @@ add_library(holocron::plex ALIAS holocron_plex)
 target_link_libraries(holocron_plex
     PUBLIC  holocron::contract
     PRIVATE holocron::warnings
+            holocron::platform
             httplib::httplib
             Threads::Threads
 )

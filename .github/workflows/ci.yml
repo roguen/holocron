@@ -111,6 +111,56 @@ jobs:
           g++ -std=c++20 -Iinclude /tmp/check.cpp -o /tmp/check
           /tmp/check || { echo "::error::AudioFrame layout changed — update the expected size if intentional"; exit 1; }
 
+  # ---------------------------------------------------------------------------
+  # M8. The Android branches of the platform layer get a compiler.
+  #
+  # `render_text`, `https_client` and the JNI helper each carry an
+  # `#elif defined(__ANDROID__)` block, and nothing in this project builds for
+  # Android. Without this job those blocks would be code no compiler ever reads —
+  # which is the thing the project has a rule against, written on
+  # `--no-compositor` and again on the DSA port: a path nothing can reach on
+  # purpose is a path nobody finds out is broken.
+  #
+  # It is free. GitHub's ubuntu runners ship an NDK and set
+  # ANDROID_NDK_LATEST_HOME, so there is no download step and no setup action.
+  #
+  # WHAT IT DOES NOT PROVE is written into the script's own output and is worth
+  # repeating here: it compiles, it does not link, it does not package, and
+  # nothing has ever run on the device. With no arm64-android dependency tree on
+  # the runner most translation units are SKIPPED, and the script prints which —
+  # a check that silently covers three files out of twenty reads exactly like a
+  # check that covers twenty.
+  # ---------------------------------------------------------------------------
+  android:
+    name: Android platform layer compiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The NDK the runner already has
+        run: |
+          echo "ANDROID_NDK_LATEST_HOME=$ANDROID_NDK_LATEST_HOME"
+          test -d "$ANDROID_NDK_LATEST_HOME" || { echo "::error::no NDK on this runner"; exit 1; }
+
+      # text_render.cpp is one of the files carrying an __ANDROID__ branch, and
+      # it reaches glm through palette.hpp. Without glm it would be SKIPPED, and
+      # the script fails deliberately when a covered file is skipped — so the
+      # header has to be here or this job cannot do its job.
+      #
+      # COPIED RATHER THAN POINTED AT. glm is header-only and architecture
+      # independent, so the host package's copy is the right content; but
+      # `-isystem /usr/include` in a cross-compile puts glibc's headers ahead of
+      # the NDK's sysroot, which produces failures that look like Android bugs
+      # and are not. Copying the one directory out keeps that impossible.
+      - name: glm, and only glm, on the cross include path
+        run: |
+          sudo apt-get update && sudo apt-get install -y libglm-dev
+          mkdir -p /tmp/android-inc
+          cp -r /usr/include/glm /tmp/android-inc/
+
+      - name: Cross-compile src/ for aarch64-linux-android
+        run: HOLOCRON_ANDROID_INCLUDE=/tmp/android-inc bash scripts/android-check.sh
+
   build:
     name: Build and test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
