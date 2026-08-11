@@ -1588,16 +1588,21 @@ void CompanionServer::set_control_diagnostics(const std::vector<std::string>& pr
     impl_->control.last_error     = last_error;
 }
 
-void CompanionServer::set_control_info(const std::vector<std::string>& crystals,
-                                       std::uint64_t generation, const std::string& title,
-                                       const std::string& artist, bool has_art)
+void CompanionServer::set_control_vault(const std::vector<std::string>& crystals,
+                                        std::uint64_t generation)
 {
     const std::lock_guard<std::mutex> lock(impl_->control_mutex);
     impl_->control.crystals         = crystals;
     impl_->control.vault_generation = generation;
-    impl_->control.title            = title;
-    impl_->control.artist           = artist;
-    impl_->control.has_art          = has_art;
+}
+
+void CompanionServer::set_control_info(const std::string& title, const std::string& artist,
+                                       bool has_art)
+{
+    const std::lock_guard<std::mutex> lock(impl_->control_mutex);
+    impl_->control.title   = title;
+    impl_->control.artist  = artist;
+    impl_->control.has_art = has_art;
 
     // `current` and the toggles are deliberately NOT touched. See the header: they
     // are intent, owned by the POST handlers, and overwriting them from here every

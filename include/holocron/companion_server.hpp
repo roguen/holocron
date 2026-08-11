@@ -321,16 +321,24 @@ public:
     // the redirect, and the render loop only performs it. Only the descriptive
     // fields are pushed from the render loop.
 
-    // Descriptive only: the vault contents and what is playing. Safe to call every
-    // frame; deliberately does NOT touch `current` or the toggles.
+    // The vault list and the generation identifying it. Descriptive; deliberately
+    // does NOT touch `current` or the toggles.
     //
-    // THE GENERATION IS A PARAMETER OF THIS CALL AND NOT A SETTER OF ITS OWN, so
-    // the list and the number identifying it can never be one frame apart. Split
-    // into two calls, a page fetched in the gap would render the new names under
-    // the old generation -- and then accept a tap against the wrong list, which is
-    // the exact failure the generation exists to prevent.
-    void set_control_info(const std::vector<std::string>& crystals, std::uint64_t generation,
-                          const std::string& title, const std::string& artist, bool has_art);
+    // THE TWO ARE ONE CALL AND THAT IS LOAD-BEARING. Split apart, a page fetched
+    // in the gap would render the new names under the old generation -- and then
+    // accept a tap against a list nobody was shown, which is the exact failure the
+    // generation exists to prevent.
+    //
+    // Safe to call every frame, and also called the moment a re-scan is adopted:
+    // the drain runs later in the render loop than the per-frame push, so waiting
+    // for the next frame would leave `current` published against the old list.
+    void set_control_vault(const std::vector<std::string>& crystals, std::uint64_t generation);
+
+    // What is playing, for orientation only. Separate from the vault because the
+    // two change for entirely different reasons -- this one on a track boundary,
+    // that one when somebody edits a directory -- and because nothing on this page
+    // indexes into a track title.
+    void set_control_info(const std::string& title, const std::string& artist, bool has_art);
 
     // What the vault could not load, and the last thing that refused to build.
     //

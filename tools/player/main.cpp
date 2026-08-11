@@ -440,10 +440,12 @@ void usage()
         "                 display's CURRENT mode rather than setting one, so the\n"
         "                 resolution and refresh rate stay the driver's business.\n"
         "  --windowed     force a window even if the config asks for fullscreen.\n"
-        "  --no-watch     do not reload the crystal when its files change. With\n"
-        "                 --crystal, saving the .frag or .toml rebuilds it in\n"
-        "                 place by default; a shader that fails to compile is\n"
-        "                 reported and the running one keeps drawing\n"
+        "  --no-watch     do not look at the filesystem while running. By default\n"
+        "                 saving a .frag or .toml rebuilds that crystal in place,\n"
+        "                 and a crystal COPIED INTO the vault appears on the arrow\n"
+        "                 keys and the phone within a few seconds. A shader that\n"
+        "                 fails to compile is reported and the running one keeps\n"
+        "                 drawing\n"
         "  --link         sign this Holocron in to your Plex account, which is\n"
         "                 what makes it offerable as a cast target. Prints a\n"
         "                 link to approve in your browser, then prints the token\n"
@@ -3355,15 +3357,35 @@ int main(int argc, char** argv)
             }
         }
 
+        // PUSHED HERE AND NOT LEFT TO THE NEXT FRAME'S DESCRIPTIVE PUSH.
+        //
+        // That push runs earlier in the loop body than this drain does, so
+        // without this the server would spend the rest of the frame holding the
+        // NEW `current` against the OLD list of names -- one frame of the phone
+        // highlighting the wrong row, and, if the generation had also lagged, one
+        // frame in which a tap could be accepted against a list nobody was shown.
+        // Both are sub-frame windows and neither is a reason to leave the state
+        // inconsistent when the fix is to publish the two together.
+        const auto publish_names = [&] {
+            std::vector<std::string> names;
+            names.reserve(vault.size());
+            for (const VaultEntry& e : vault) {
+                names.push_back(e.name);
+            }
+            companion.set_control_vault(names, vault_generation);
+        };
+
         if (!sequence_changed) {
             // A content edit that did not change the list. The reload path has
             // its own toast for the crystal that is actually on screen; saying
             // anything here would double it.
             if (current != before) {
+                publish_names();
                 companion.set_current_crystal(current);
             }
             return;
         }
+        publish_names();
 
         std::printf("holocron: vault re-scanned -- %zu entr%s", vault.size(),
                     vault.size() == 1 ? "y" : "ies");
@@ -4427,8 +4449,9 @@ int main(int argc, char** argv)
             for (const VaultEntry& entry : vault) {
                 names.push_back(entry.name);
             }
-            companion.set_control_info(names, vault_generation, track_context.title,
-                                       track_context.artist, track_context.has_art);
+            companion.set_control_vault(names, vault_generation);
+            companion.set_control_info(track_context.title, track_context.artist,
+                                       track_context.has_art);
             companion.set_control_tuning(trim_ms, headroom_ms, showing_sync, opt.config);
 
             // WHETHER THE SECTION APPEARS AT ALL follows the LIVE stack rather
