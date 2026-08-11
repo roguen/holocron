@@ -1,6 +1,6 @@
 ---
-name: handoff
-description: Write the session handoff document that lets a fresh instance pick up this project with full context. Use when the user says "write the handoff", "transition document", "I want to start a new instance", "clear the context window", "wrap up the session", or otherwise asks to capture current state so work can continue elsewhere.
+name: force-bond
+description: Write the session handoff — the bond that carries everything this session learned to the instance that comes next, so it starts with full context instead of a blank slate. Use when the user says "force-bond", "write the handoff", "transition document", "I want to start a new instance", "clear the context window", "wrap up the session", or otherwise asks to capture current state so work can continue elsewhere.
 ---
 
 # Writing the Holocron handoff
