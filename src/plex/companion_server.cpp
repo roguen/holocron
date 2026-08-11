@@ -13,6 +13,11 @@
 
 #include <httplib.h>
 
+// AFTER httplib.h, and that order is load-bearing on Windows: httplib pulls in
+// winsock2.h, and winsock2.h included after windows.h is the classic way a
+// build starts reporting redefinitions in ws2tcpip.h.
+#include "server_socket.hpp"
+
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -499,6 +504,21 @@ std::string tuning_page(const CompanionServer::ControlState& state)
 }  // namespace
 
 struct CompanionServer::Impl {
+    Impl()
+    {
+        // The listening socket must be exclusive, or "the port is in use" is not
+        // a question this program can answer. httplib's default is SO_REUSEPORT
+        // on POSIX and SO_REUSEADDR on Windows, and BOTH let a second live
+        // listener onto the port. See server_socket.hpp for what that measured
+        // like before this line existed.
+        // `auto` rather than the parameter type: httplib declares `socket_t` at
+        // GLOBAL scope, not inside its own namespace, and naming a global type
+        // from a header that also defines `httplib::detail::socket_t` is a
+        // sentence nobody should have to read twice.
+        server.set_socket_options(
+            [](auto sock) { net::apply_exclusive_server_options(static_cast<std::intptr_t>(sock)); });
+    }
+
     httplib::Server server;
     PlexDevice      device;
     std::thread     thread;
@@ -1431,6 +1451,13 @@ CompanionError CompanionServer::start(const PlexDevice& device, std::string& out
     // Bind first and confirm it, then listen on the thread. bind_to_port returns
     // false on a taken port; listen() would swallow that into a thread that
     // simply never serves.
+    //
+    // PROBE BEFORE BINDING, AND NEVER LET httplib's BIND FAIL. Server::bind_to_port
+    // sets an internal `is_decommissioned` flag when bind_internal returns -1,
+    // and bind_internal returns -1 immediately ever after -- so one failed bind
+    // makes the object permanently unbindable and a fallback attempted on it
+    // fails for a reason that has nothing to do with the port. Asking first is
+    // what makes recovery possible at all.
     if (device.port == 0) {
         const int got = impl->server.bind_to_any_port("0.0.0.0");
         if (got <= 0) {
@@ -1440,11 +1467,48 @@ CompanionError CompanionServer::start(const PlexDevice& device, std::string& out
         impl->bound_port.store(static_cast<std::uint16_t>(got), std::memory_order_relaxed);
         impl->device.port = static_cast<std::uint16_t>(got);
     } else {
-        if (!impl->server.bind_to_port("0.0.0.0", device.port)) {
-            out_detail = "port " + std::to_string(device.port) + " is in use or not permitted";
-            return CompanionError::kBindFailed;
+        const net::BindProbe probe = net::probe_tcp_bind(device.port);
+
+        if (probe.fault == net::BindFault::kFree) {
+            if (!impl->server.bind_to_port("0.0.0.0", device.port)) {
+                // The probe said free and the bind still failed, so the port was
+                // taken in the microseconds between them. Reported rather than
+                // retried: a loop here would hide a port being fought over,
+                // which is worth knowing about.
+                out_detail = "port " + std::to_string(device.port) +
+                             " was free a moment ago and was taken before Holocron"
+                             " could bind it";
+                return CompanionError::kBindFailed;
+            }
+            impl->bound_port.store(device.port, std::memory_order_relaxed);
+            impl->device.port = device.port;
+        } else {
+            // MOVE RATHER THAN GIVE UP. Clients use the port Holocron ANNOUNCES,
+            // over GDM and in the connection published to the account -- the
+            // number is never assumed by anything on the other side. So a port
+            // that cannot be had is recoverable, and on Android it has to be:
+            // the Companion port carries the only control surface a device with
+            // no keyboard has (D-045), and losing it loses the crystal switch,
+            // the colophon, the trim and the volume slider all at once.
+            const int got = impl->server.bind_to_any_port("0.0.0.0");
+            if (got <= 0) {
+                out_detail = "port " + std::to_string(device.port) + " -- " + probe.text +
+                             "; and no free port could be bound either";
+                return CompanionError::kBindFailed;
+            }
+            impl->bound_port.store(static_cast<std::uint16_t>(got), std::memory_order_relaxed);
+            impl->device.port = static_cast<std::uint16_t>(got);
+
+            // kOk with a non-empty detail: the same idiom GdmResponder::start
+            // uses for a failed HELLO. It worked, and the caller should say so
+            // out loud, because a port that moved is the first thing to check
+            // when a client cannot find the player.
+            out_detail = "port " + std::to_string(device.port) + " -- " + probe.text +
+                         "\n  moved to port " + std::to_string(got) +
+                         " instead. Clients use the port Holocron announces, so"
+                         " casting\n  and the control page still work. Set [plex] port"
+                         " to pin a different one.";
         }
-        impl->bound_port.store(device.port, std::memory_order_relaxed);
     }
 
     impl->running.store(true, std::memory_order_release);

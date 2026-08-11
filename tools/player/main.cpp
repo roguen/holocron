@@ -2211,7 +2211,17 @@ PlexDevice device_from(const Gatekeeper& cfg, const char* config_path = nullptr)
 // Bring both halves up. Either can fail on its own, and which one failed is the
 // whole diagnosis, so they are reported separately rather than as "discovery
 // failed".
-bool start_discovery(const PlexDevice& device, GdmResponder& gdm, CompanionServer& companion)
+// TAKES THE DEVICE BY NON-CONST REFERENCE, and that is the point rather than an
+// oversight. The Companion server may not get the port it was asked for -- it
+// moves to a free one rather than leave a keyboard-less device with no control
+// surface -- and everything downstream has to be told which port that was.
+//
+// Before this, `device` was const and the bound port reached nothing: GDM
+// announced the CONFIGURED port, the connection published to plex.tv named the
+// configured port, and only the control-page line printed on the terminal read
+// the real one. With `[plex] port = 0`, which the tests use and a user may
+// reasonably set, that meant announcing port 0 to every controller on the LAN.
+bool start_discovery(PlexDevice& device, GdmResponder& gdm, CompanionServer& companion)
 {
     std::string detail;
 
@@ -2220,6 +2230,17 @@ bool start_discovery(const PlexDevice& device, GdmResponder& gdm, CompanionServe
         std::fprintf(stderr, "holocron: %s\n  %s\n", to_string(cerr), detail.c_str());
         return false;
     }
+
+    // start() reports a port it had to move away from this way, without failing.
+    if (!detail.empty()) {
+        std::fprintf(stderr, "holocron: the Companion HTTP port had to move\n  %s\n",
+                     detail.c_str());
+    }
+
+    // THE PORT ACTUALLY BOUND IS NOW THE TRUTH. Everything after this line --
+    // the GDM announcement, the connection published to the account, the
+    // control-page URL -- reads it from here.
+    device.port = companion.bound_port();
 
     // HTTP first, then GDM. The announcement tells clients where to connect, so
     // announcing before the port is listening invites a connection refused on
@@ -2693,7 +2714,9 @@ int main(int argc, char** argv)
     // --discover always wins here: it cannot be combined with --no-discover
     // (rejected above), so reaching this with opt.discover set means discovery
     // is wanted regardless of what the config says.
-    const PlexDevice device = device_from(cfg, opt.config);
+    // NOT const: start_discovery writes the port actually bound back into it,
+    // and register_with_account below publishes that port to the account.
+    PlexDevice device = device_from(cfg, opt.config);
 
     if ((cfg.plex_discovery || opt.discover) && !opt.no_discover) {
         if (!start_discovery(device, gdm, companion) && opt.discover) {
@@ -2720,6 +2743,12 @@ int main(int argc, char** argv)
         if (cerr != CompanionError::kOk) {
             std::fprintf(stderr, "holocron: no control page -- %s\n  %s\n", to_string(cerr),
                          detail.c_str());
+        } else {
+            if (!detail.empty()) {
+                std::fprintf(stderr, "holocron: the Companion HTTP port had to move\n  %s\n",
+                             detail.c_str());
+            }
+            device.port = companion.bound_port();
         }
     }
 

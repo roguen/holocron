@@ -76,6 +76,20 @@ public:
     // a port fails on whichever machine happens to be running something else on
     // it, and the usual fix -- skipping when the bind fails -- turns the test
     // into one that cannot report failure.
+    //
+    // A REQUESTED PORT THAT CANNOT BE HAD IS MOVED, NOT REFUSED. start() then
+    // returns kOk with `out_detail` NON-EMPTY, saying which port was wanted, why
+    // it could not be had, and which one was taken instead -- the same idiom
+    // GdmResponder::start uses to report a failed HELLO without failing. Callers
+    // must therefore read bound_port() rather than assume `device.port`, and
+    // should print a non-empty detail even on success.
+    //
+    // Moving is safe because nothing on the other side ever assumes the number:
+    // clients use the port announced over GDM and published in the connection on
+    // the account. It matters most where it is least convenient -- on Android the
+    // Companion port carries the ONLY control surface a device with no keyboard
+    // has, so refusing to start would cost the crystal switch, the colophon, the
+    // A/V trim and the volume slider together. Issue 247.
     CompanionError start(const PlexDevice& device, std::string& out_detail);
 
     void stop();
