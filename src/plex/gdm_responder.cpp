@@ -15,7 +15,10 @@
 
 #include <holocron/gdm_responder.hpp>
 
+#include <holocron/multicast_lock.hpp>
+
 #include <array>
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -227,6 +230,28 @@ GdmError GdmResponder::start(const PlexDevice& device, std::string& out_detail)
         out_detail = "announced nothing at startup: " + last_socket_error();
     }
 
+    // ANDROID FILTERS MULTICAST AWAY FROM A PROCESS THAT DOES NOT HOLD THIS.
+    //
+    // Taken here rather than at startup because GDM is the only multicast in the
+    // project: the lock's lifetime should be the lifetime of the thing that
+    // needs it, not of the process.
+    //
+    // NOT FATAL IN ANY OUTCOME, and the reasons differ. On Windows and Linux
+    // there is no filter and it answers kUnsupported. On Android over Ethernet
+    // -- which is how the Shield sits in the rack -- there is no filter either,
+    // so a device with no Wi-Fi service answers kUnavailable and discovery works
+    // regardless. Refusing to announce because a power-saving filter could not be
+    // lifted would break the common case to protect the rare one.
+    //
+    // Reported rather than silent, because the failure it prevents is "the device
+    // just does not appear", which is indistinguishable from a dozen other
+    // faults and which this project has already spent a session on once.
+    if (const MulticastLockState lock = acquire_multicast_lock();
+        lock != MulticastLockState::kUnsupported) {
+        std::printf("holocron: %s\n", to_string(lock));
+        std::fflush(stdout);
+    }
+
     thread_ = std::thread(&GdmResponder::run, this);
     return GdmError::kOk;
 }
@@ -282,6 +307,9 @@ void GdmResponder::stop()
     if (thread_.joinable()) {
         thread_.join();
     }
+
+    // Given back with the thing that needed it. A no-op where nothing was taken.
+    release_multicast_lock();
 
     // BYE after the thread is joined, so nothing is competing for the socket,
     // and before it is closed, which is the only ordering that works.

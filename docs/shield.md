@@ -561,8 +561,25 @@ holocron: registered with your Plex account at http://192.168.68.38:36599
 ```
 
 **Measured while it played:** position advanced **39.98 s against 40.02 s of wall
-clock**, `drift` drawing at 3840x2160 and tinted from the track's palette rather
-than the no-track default. The cast was driven by posting `playMedia` at the
+clock**, and `drift` drawing at 3840x2160.
+
+**`drift`'s COLOUR SAYS NOTHING ABOUT ALBUM ART, and this document claimed twice
+that it did.** The shader binds six `AudioFrame` fields and **no palette**; its
+colour is `mix(ember, steel, warmth)` between a red-orange and a blue, with
+`warmth = smoothstep(0.40, 0.85, u_centroid)`. So red is warm, bass-heavy content
+and blue is bright content, and both are the music.
+
+Two earlier readings are corrected by that one line of GLSL. `drift` coming out
+red on the Shield and blue on Windows was recorded as the palette differing
+because one run had a track with embedded art; and a blue frame from the first
+cast was read here as proof the palette had reached the shader. **Neither can be
+true.** The album cast in both tests carries no `thumb` and no `parentThumb` at
+all, so there was never a palette to extract, and `drift` would not have used one
+if there had been.
+
+The original conclusion -- that a red/blue difference between two machines was not
+a channel swap -- was right. The explanation attached to it was not, and it
+survived two sessions because it was plausible and nobody opened the shader. The cast was driven by posting `playMedia` at the
 Companion port directly, as a controller would, so it exercises the same path
 Plexamp uses.
 

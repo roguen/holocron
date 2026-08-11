@@ -46,9 +46,11 @@
 #endif
 
 #include <holocron/android_jni.hpp>
+#include <holocron/asset_seed.hpp>
 #include <holocron/platform_paths.hpp>
 
 #include <SDL3/SDL_filesystem.h>
+#include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_main.h>
 #include <SDL3/SDL_system.h>
 
@@ -142,11 +144,56 @@ int main(int argc, char** argv)
     // FIRST, before anything can print. Everything the player says is on stdout.
     redirect_stdio_to_logcat();
 
+    // KEEP RUNNING WHILE BACKGROUNDED. The owner's decision, 2026-08-11.
+    //
+    // SDL's default is the opposite and it is not a mild default: with
+    // SDL_ANDROID_BLOCK_ON_PAUSE at its default of "1", SDL_PollEvent BLOCKS
+    // INDEFINITELY once the Activity is paused. The render loop is
+    // `while (window.pump())`, so the entire loop stops -- and with it every
+    // command from the phone, both timelines and the herald. The music would
+    // keep playing, because the decode thread and the audio callback are
+    // independent of the loop, and the phone would keep showing a progress bar
+    // that no longer moved and buttons that did nothing.
+    //
+    // For a cast target that is the wrong behaviour. Holocron on a television is
+    // meant to be driven from a phone in another room; whether its Activity
+    // happens to be foreground is not something the person holding the phone
+    // knows or should have to care about.
+    //
+    // The obligation this takes on: with the loop still running there is no
+    // surface, so it must not touch GL. That is handled in the render loop,
+    // which skips everything below its drawing boundary while
+    // `window.visible()` is false.
+    //
+    // BEFORE THE VIDEO SUBSYSTEM STARTS, which is why it is here rather than in
+    // window.cpp -- SDL reads this hint when it initialises video, and this file
+    // is the first Holocron code that runs.
+    SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE, "0");
+
     JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
     if (env != nullptr) {
         JavaVM* vm = nullptr;
         if (env->GetJavaVM(&vm) == JNI_OK && vm != nullptr) {
             holocron::android::set_java_vm(vm);
+        }
+
+        // THE ACTIVITY, which is the process's only Context, and a Context is
+        // what getSystemService hangs off. The multicast lock needs one; nothing
+        // else does yet.
+        //
+        // SDL HANDS BACK A LOCAL REFERENCE AND SAYS SO IN ITS OWN HEADER: "The
+        // jobject returned by the function is a local reference and must be
+        // released by the caller." A local reference is valid on one thread
+        // until the native call that produced it returns, so it is promoted to a
+        // global inside set_activity -- and deleted here, because promoting it
+        // does not consume it.
+        //
+        // AFTER set_java_vm, not before: the promotion needs a ScopedEnv, and a
+        // ScopedEnv with no VM yields nothing.
+        if (jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
+            activity != nullptr) {
+            holocron::android::set_activity(activity);
+            env->DeleteLocalRef(activity);
         }
     }
 
@@ -186,6 +233,29 @@ int main(int argc, char** argv)
     std::printf("holocron: data directory %s\n",
                 holocron::data_directory().empty() ? "(none -- using the working directory)"
                                                    : holocron::data_directory().c_str());
+
+    // THE SHIPPED VAULT, OUT OF THE APK AND ONTO THE FILESYSTEM.
+    //
+    // Before the config is read and before anything scans, because the vault
+    // path resolves against the data directory that was just set and
+    // `scan_vault` walks a real directory -- an APK asset is a zip entry and is
+    // invisible to it.
+    //
+    // Nothing already there is overwritten, so a crystal the owner edited or
+    // added survives an upgrade. See asset_seed.hpp.
+    //
+    // The default vault path rather than the configured one, deliberately: the
+    // config has not been read yet, and a user who has pointed `[paths] vault`
+    // somewhere else has a vault already and does not want this one unpacked on
+    // top of it. Seeding the default is what makes a FIRST run work.
+    if (!holocron::data_directory().empty()) {
+        const holocron::SeedReport seed =
+            holocron::seed_vault_from_assets(holocron::resolve_data_path("crystals"));
+        if (seed.state != holocron::SeedState::kUnsupported) {
+            std::printf("holocron: %s -- %d copied, %d already there\n",
+                        holocron::to_string(seed.state), seed.copied, seed.skipped);
+        }
+    }
 
     return holocron_main(argc, argv);
 }

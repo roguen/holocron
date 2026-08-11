@@ -215,6 +215,17 @@ cp "$out/base.apk" "$out/unsigned.apk"
 cp "$so" "$out/staging/lib/$abi/"
 cp "$out/classes.dex" "$out/staging/"
 
+# THE VAULT, as assets. Without this a fresh install has no crystals at all and
+# the player comes up on an empty vault -- which is how the Shield behaved until
+# somebody pushed `crystals/` over adb by hand.
+#
+# Assets are zip entries, not files: the player copies them out to its external
+# data directory on first run and scans that. See asset_seed.hpp for why a copy
+# rather than reading in place, and note that the destination path there and the
+# `assets/crystals` prefix here have to agree BY HAND. Nothing checks.
+mkdir -p "$out/staging/assets/crystals"
+cp crystals/* "$out/staging/assets/crystals/"
+
 # `aapt add`, NOT `zip`. Git Bash on Windows ships no zip, and this is the tool
 # the Android SDK provides for the job -- aapt v1, not aapt2, which has no `add`.
 #
@@ -223,8 +234,16 @@ cp "$out/classes.dex" "$out/staging/"
 # lib/arm64-v8a/libholocron.so and nothing else will do.
 (
     cd "$out/staging"
-    "$aapt" add -f "../unsigned.apk" "classes.dex" "lib/$abi/libholocron.so" > /dev/null
+    # The asset paths are enumerated rather than globbed into the argument list,
+    # because `aapt add` stores an entry under exactly the path it is given and a
+    # shell glob would depend on the working directory being right. `find` from
+    # here yields `assets/crystals/x`, which is the path AAssetManager will look
+    # under.
+    assets=$(find assets -type f | sort)
+    # shellcheck disable=SC2086
+    "$aapt" add -f "../unsigned.apk" "classes.dex" "lib/$abi/libholocron.so" $assets > /dev/null
 )
+echo "android-apk: packaged $(find "$out/staging/assets" -type f | wc -l) asset(s)"
 
 # 5. Align, then sign. In that order: zipalign rewrites offsets and would
 # invalidate a signature applied first.

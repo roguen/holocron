@@ -22,6 +22,11 @@
 
 namespace holocron::android {
 
+// The process's Activity, as a global reference, or null if none was handed
+// over. It is the only Context this process has, which is what makes it worth
+// keeping: `getSystemService` hangs off a Context and nothing else here does.
+jobject activity();
+
 // A JNIEnv for the calling thread, attaching it if the VM has never seen it,
 // and detaching on the way out ONLY if this object was the one that attached.
 //

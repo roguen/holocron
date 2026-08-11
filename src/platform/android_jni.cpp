@@ -51,6 +51,11 @@ namespace {
 // pointer is enough and an atomic would be decoration.
 JavaVM* g_vm = nullptr;
 
+// The Activity, as a GLOBAL reference. Never released: it lives for the life of
+// the process, and DeleteGlobalRef at static-destruction time would need a
+// JNIEnv on a thread that may already be detached.
+jobject g_activity = nullptr;
+
 }  // namespace
 
 void set_java_vm(void* vm)
@@ -61,6 +66,31 @@ void set_java_vm(void* vm)
 bool has_java_vm()
 {
     return g_vm != nullptr;
+}
+
+void set_activity(void* activity_local_ref)
+{
+    if (activity_local_ref == nullptr) {
+        g_activity = nullptr;
+        return;
+    }
+    // PROMOTED HERE rather than by the caller, so the caller needs no jni.h --
+    // which is the whole reason android_jni.hpp takes a void*.
+    ScopedEnv env;
+    if (!env) {
+        return;
+    }
+    g_activity = env->NewGlobalRef(static_cast<jobject>(activity_local_ref));
+}
+
+bool has_activity()
+{
+    return g_activity != nullptr;
+}
+
+jobject activity()
+{
+    return g_activity;
 }
 
 // ---------------------------------------------------------------------------
