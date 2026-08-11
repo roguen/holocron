@@ -1041,24 +1041,33 @@ struct CastCommand {
     // same rule that made this whole struct a request-and-perform queue rather
     // than a set of direct calls. Replacing a live program while the render
     // thread is drawing with it is the failure this avoids.
-    bool        want_crystal = false;
-    std::size_t crystal_index = 0;
+    // WHICH LIST THAT INDEX CAME FROM travels with it. The render loop drains a
+    // pending vault re-scan before it performs this, so an index that was correct
+    // when the HTTP worker accepted it can be applied to a list adopted since --
+    // and the vault is sorted by name, so that selects the wrong crystal rather
+    // than failing. Zero means the caller sent no generation; see
+    // CompanionServer::SelectCrystalHandler.
+    bool          want_crystal    = false;
+    std::size_t   crystal_index   = 0;
+    std::uint64_t crystal_gen     = 0;
 
-    void request_crystal(std::size_t index)
+    void request_crystal(std::size_t index, std::uint64_t generation)
     {
         const std::lock_guard<std::mutex> lock(mutex);
         want_crystal  = true;
         crystal_index = index;
+        crystal_gen   = generation;
     }
 
-    bool take_crystal(std::size_t& out_index)
+    bool take_crystal(std::size_t& out_index, std::uint64_t& out_generation)
     {
         const std::lock_guard<std::mutex> lock(mutex);
         if (!want_crystal) {
             return false;
         }
-        out_index    = crystal_index;
-        want_crystal = false;
+        out_index      = crystal_index;
+        out_generation = crystal_gen;
+        want_crystal   = false;
         return true;
     }
 
@@ -1949,7 +1958,32 @@ private:
             }
 
             std::vector<VaultProblem> problems;
-            std::vector<VaultEntry>   entries = scan_vault(dir_, problems);
+            bool                      readable = false;
+            std::vector<VaultEntry>   entries  = scan_vault(dir_, problems, &readable);
+
+            // A LISTING THAT WAS NOT FULLY READ IS NEVER PUBLISHED, and this is
+            // the guard the forced path needs.
+            //
+            // VaultWatch already refuses to report a failed look, which covers the
+            // timer. The BUTTON does not go through it: `forced` skips the
+            // change test above precisely so a scan happens whatever the watch
+            // thinks. Without this, tapping "Look for new crystals" during the
+            // exact blip the button exists to recover from -- a share being
+            // remounted -- would hand the render thread an empty vault, and
+            // adoption is wholesale: no crystals on the phone, dead arrow keys,
+            // and no self-correction, because when the share returns the watch
+            // sees the listing it always had and reports nothing.
+            //
+            // An empty directory that WAS read is still published. Deleting your
+            // last crystal is a real thing to do and the list has to follow.
+            if (!readable) {
+                for (const VaultProblem& p : problems) {
+                    std::fprintf(stderr, "holocron: vault scan gave up -- %s\n",
+                                 p.detail.c_str());
+                }
+                std::fflush(stderr);
+                continue;
+            }
 
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
@@ -1970,9 +2004,24 @@ private:
     std::thread             worker_;
     mutable std::mutex      mutex_;
     std::condition_variable wake_;
-    bool                    stop_   = false;
-    bool                    forced_ = false;
-    bool                    ready_  = false;
+    bool stop_ = false;
+
+    // TRUE TO BEGIN WITH, WHICH CLOSES A GAP AT STARTUP.
+    //
+    // The player scans the vault itself, then opens a window, compiles the first
+    // crystal's shader and only then starts this thread -- which takes its own
+    // baseline at that later moment. A crystal that lands in between is therefore
+    // in the watch's baseline but NOT in the player's list, so it compares equal
+    // forever and is never reported: not delayed, missed, until some unrelated
+    // file changes. A boot-time sync from the authoring machine is exactly the
+    // shape of thing that lands there.
+    //
+    // Forcing the first scan costs one directory read on a worker thread and
+    // makes it impossible. If nothing did land, adopt_vault's own diff absorbs
+    // it -- the sequence is identical, so no generation bump, no toast, and an
+    // early return.
+    bool forced_ = true;
+    bool ready_  = false;
 
     std::vector<VaultEntry>   entries_;
     std::vector<VaultProblem> problems_;
@@ -2427,8 +2476,8 @@ int main(int argc, char** argv)
     companion.set_refresh_queue_handler([&cast](const std::string& play_queue_id) {
         cast.request_refresh_queue(play_queue_id);
     });
-    companion.set_select_crystal_handler([&cast](std::size_t index) {
-        cast.request_crystal(index);
+    companion.set_select_crystal_handler([&cast](std::size_t index, std::uint64_t generation) {
+        cast.request_crystal(index, generation);
     });
     companion.set_rescan_handler([&cast] { cast.request_rescan(); });
     companion.set_follow_new_handler([&cast](bool on) { cast.request_follow_new(on); });
@@ -4712,15 +4761,6 @@ int main(int argc, char** argv)
                 }
             }
 
-            // The clock restarts on EVERY switch, including a manual one. Picking
-            // something by hand and having it replaced eight seconds later because
-            // the timer was already most of the way through is the behaviour
-            // nobody wants and everybody writes first.
-            if (switching) {
-                advance_due_at = std::chrono::steady_clock::now() +
-                                 std::chrono::seconds(cfg.advance_seconds);
-            }
-
             // THE BEAT INSTRUMENT IS NOT IN THE VAULT, on purpose: it is a
             // measuring tool, not a visualization, and putting it in the crystal
             // list would offer it as something to watch a record with. It is
@@ -4755,12 +4795,35 @@ int main(int argc, char** argv)
                 }
             }
 
-            if (std::size_t asked = 0; cast.take_crystal(asked)) {
+            std::size_t   asked     = 0;
+            std::uint64_t asked_gen = 0;
+            if (cast.take_crystal(asked, asked_gen)) {
+                // RE-CHECKED HERE AGAINST THE LIST WE ARE ABOUT TO INDEX, not only
+                // where it was accepted.
+                //
+                // The HTTP worker's check proves the page was current when the tap
+                // arrived. It cannot prove the list is still that one now: the
+                // drain a few dozen lines above may have adopted a re-scan in
+                // between, and the vault is sorted by display name, so the same
+                // index is then a different crystal. Not out of range -- just
+                // wrong, and silently.
+                //
+                // Zero means the caller sent no generation at all, which is a
+                // curl rather than the page. Left alone deliberately: this is a
+                // staleness guard, not authentication.
+                if (asked_gen != 0 && asked_gen != vault_generation) {
+                    std::fprintf(stderr,
+                                 "holocron: ignoring crystal %zu -- the vault changed between "
+                                 "the request and this frame\n",
+                                 asked);
+                    std::fflush(stderr);
+                    companion.set_current_crystal(current);
+                }
                 // OUT OF RANGE IS IGNORED, NOT CLAMPED. The page is rendered from
                 // the vault so its indices are always valid, but the request
                 // arrives over HTTP and anyone on the LAN can send one. Clamping
                 // would silently switch to a crystal nobody asked for.
-                if (asked < vault.size()) {
+                else if (asked < vault.size()) {
                     wanted = asked;
                     // A vault entry is ALWAYS a switch while the instrument is up,
                     // even to the index that was current before it -- otherwise
@@ -4801,6 +4864,25 @@ int main(int argc, char** argv)
                     switching = true;
                 }
                 follow_target = kNoCurrent;
+            }
+
+            // The clock restarts on EVERY switch, including a manual one. Picking
+            // something by hand and having it replaced eight seconds later because
+            // the timer was already most of the way through is the behaviour
+            // nobody wants and everybody writes first.
+            //
+            // MOVED DOWN HERE, BELOW EVERY PLACE THAT CAN SET `switching`. It used
+            // to sit directly after the arrow keys and the auto-advance, which was
+            // right when those were the only two -- but `take_crystal` has been
+            // below it since the control page was written, so a crystal chosen
+            // FROM THE PHONE never restarted the timer and could be replaced
+            // seconds later by an advance that was already nearly due. The
+            // follow-new path added by issue 214 is below it too and would have
+            // been a second instance of the same thing. The comment above was the
+            // invariant; the placement had quietly stopped implementing it.
+            if (switching) {
+                advance_due_at = std::chrono::steady_clock::now() +
+                                 std::chrono::seconds(cfg.advance_seconds);
             }
 
             if (switching) {
@@ -4891,15 +4973,44 @@ int main(int argc, char** argv)
                 // archive. `showing_sync` is not a vault entry, so it is rebuilt
                 // from its stem.
                 //
-                // NOTHING TO RELOAD WHEN `current` NAMES NOTHING. The crystal on
-                // screen was deleted from the vault, so there is no manifest to
-                // re-read -- and the files the watch is still watching are the
-                // ones that were removed. It reports the deletion once and then
-                // has nothing more to say, which is the right amount.
+                // RELOADED FROM THE ANCHOR, NOT FROM THE INDEX, and that is not a
+                // tidying-up. `current` can be kNoCurrent while a perfectly real
+                // crystal is on screen -- its files were removed from the vault --
+                // and the two watches make that window land on the reload rather
+                // than miss it: CrystalWatch settles in at most 400 ms, VaultWatch
+                // needs 2000 ms plus a scan, so a crystal deleted and put back
+                // ALWAYS reports its return to CrystalWatch first.
+                //
+                // Guarding on the index instead threw that report away, and
+                // CrystalWatch retires a change the moment it reports it -- so the
+                // returned files were never compiled, the picture kept running the
+                // pre-deletion program, and once the scan re-anchored `current`
+                // every description of the screen agreed on a crystal the screen
+                // was not showing. Nothing would ever have corrected it.
+                //
+                // The anchor is what identifies the picture; the index is only
+                // where it currently sits in a list. Reload the thing, not the
+                // position.
+                VaultEntry anchor;
+                if (current != kNoCurrent) {
+                    anchor = vault[current];
+                } else {
+                    anchor.stem = current_stem;
+                    anchor.kind = current_kind;
+                    // Only ever used as a display name -- archive_of_crystal takes
+                    // it and it ends up in the toast. projectM has no stem, and
+                    // archive_for reads the name for exactly that case.
+                    anchor.name = current_kind == VaultKind::kProjectM
+                                      ? "projectM"
+                                      : std::filesystem::path(current_stem).filename().string();
+                }
+
+                const bool have_anchor =
+                    !anchor.stem.empty() || anchor.kind == VaultKind::kProjectM;
+
                 const bool got = showing_sync
                                      ? (archive = archive_of_crystal(kSyncStem, "sync"), true)
-                                     : current != kNoCurrent &&
-                                           archive_for(vault[current], archive, &why);
+                                     : have_anchor && archive_for(anchor, archive, &why);
 
                 if (got && build_stack(archive, next, "reloaded", projectm_ctx, &why)) {
                     // u_time CARRIES ACROSS, layer for layer, so slow motion does

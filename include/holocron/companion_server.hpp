@@ -357,10 +357,24 @@ public:
     // Called when the page asks for a different crystal, BY INDEX into the list
     // the page was given.
     //
-    // An index rather than a name because the vault is fixed for a run and the
-    // page is rendered from it -- and because a name would need escaping in two
-    // directions for crystals whose manifests contain spaces or quotes.
-    using SelectCrystalHandler = std::function<void(std::size_t index)>;
+    // An index rather than a name because the page is rendered from the vault --
+    // and because a name would need escaping in two directions for crystals whose
+    // manifests contain spaces or quotes.
+    //
+    // THE GENERATION TRAVELS WITH THE INDEX ALL THE WAY TO THE RENDER THREAD, and
+    // it has to. Checking it here is necessary and not sufficient: switching
+    // compiles a GL program, so the request is queued and performed a frame or
+    // more later -- and the render loop drains a pending vault re-scan BEFORE it
+    // performs this. An index that was correct when it was accepted can therefore
+    // be applied to a list adopted in between, and because the vault is sorted by
+    // display name that is not an out-of-range rejection: it is a switch to the
+    // wrong crystal, silently. Passing the generation along lets the render thread
+    // re-check it against the list it is actually about to index.
+    //
+    // Zero means "the caller sent no generation" and is never a real one --
+    // generations start at 1 -- so a curl that does not know about any of this
+    // still works. The guard is against a stale page, not against unknown callers.
+    using SelectCrystalHandler = std::function<void(std::size_t index, std::uint64_t generation)>;
 
     // Called when the page asks for the vault directory to be read again.
     //

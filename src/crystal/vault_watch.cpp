@@ -51,7 +51,28 @@ bool VaultWatch::look(Listing& out) const
     }
 
     Listing found;
-    for (const fs::directory_entry& e : it) {
+
+    // INCREMENTED BY HAND, AND THIS IS NOT STYLE.
+    //
+    // A range-for over a directory_iterator steps with the THROWING operator++.
+    // Only the constructor takes an error_code; an enumeration that fails partway
+    // -- ERROR_NETNAME_DELETED when an SMB session drops, ESTALE on NFS -- raises
+    // filesystem_error from the middle of the loop. That is precisely the case
+    // the comment above says is handled, on a worker thread, where the only thing
+    // between it and std::terminate is a catch(...) that ends the thread and
+    // silently kills the hot vault for the life of the process.
+    //
+    // A failed step is a failed LOOK, not a short listing: half a directory
+    // compares unequal to the whole one, which would settle as a change and adopt
+    // a vault with crystals missing.
+    const fs::directory_iterator end;
+    for (; it != end; it.increment(ec)) {
+        if (ec) {
+            return false;
+        }
+
+        const fs::directory_entry& e = *it;
+
         // Not is_regular_file(): that is a second syscall per entry and a
         // directory named `foo.toml` is not a thing anybody has. The stat below
         // is the one that decides, and anything it cannot read is skipped.

@@ -1031,11 +1031,12 @@ void CompanionServer::Impl::install_routes()
             // and there is nothing on this port for a check like that to protect
             // -- refusing would only break a curl somebody uses to script the
             // thing, while stopping nobody.
-            bool stale = false;
+            bool          stale     = false;
+            std::uint64_t posted_gen = 0;
             if (const std::string gen = req.get_param_value("gen"); !gen.empty()) {
+                posted_gen = static_cast<std::uint64_t>(parse_int64(gen, 0));
                 const std::lock_guard<std::mutex> lock(self->control_mutex);
-                stale = static_cast<std::uint64_t>(parse_int64(gen, 0)) !=
-                        self->control.vault_generation;
+                stale = posted_gen != self->control.vault_generation;
             }
 
             if (stale) {
@@ -1069,7 +1070,7 @@ void CompanionServer::Impl::install_routes()
                     }
                 }
                 if (self->select_crystal_handler) {
-                    self->select_crystal_handler(static_cast<std::size_t>(chosen));
+                    self->select_crystal_handler(static_cast<std::size_t>(chosen), posted_gen);
                 }
             }
         }

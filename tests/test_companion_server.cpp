@@ -522,7 +522,7 @@ TEST_CASE("choosing a crystal reaches the handler and redirects back",
     int         calls  = 0;
 
     RunningServer s(fixture(), [&](CompanionServer& srv) {
-        srv.set_select_crystal_handler([&](std::size_t index) {
+        srv.set_select_crystal_handler([&](std::size_t index, std::uint64_t) {
             chosen = index;
             ++calls;
         });
@@ -553,7 +553,7 @@ TEST_CASE("a crystal index that is not a number is ignored",
     bool called = false;
 
     RunningServer s(fixture(), [&](CompanionServer& srv) {
-        srv.set_select_crystal_handler([&](std::size_t) { called = true; });
+        srv.set_select_crystal_handler([&](std::size_t, std::uint64_t) { called = true; });
     });
     REQUIRE(s.error == CompanionError::kOk);
 
@@ -576,12 +576,14 @@ TEST_CASE("a crystal chosen from a page the vault has moved past is refused",
     // after it down one. An index from a page rendered before that does not point
     // at nothing -- it points at the WRONG CRYSTAL, and obeying it switches to
     // something nobody asked for, with no error anywhere.
-    std::size_t chosen = 999;
-    int         calls  = 0;
+    std::size_t   chosen  = 999;
+    std::uint64_t saw_gen = 0;
+    int           calls   = 0;
 
     RunningServer s(fixture(), [&](CompanionServer& srv) {
-        srv.set_select_crystal_handler([&](std::size_t index) {
-            chosen = index;
+        srv.set_select_crystal_handler([&](std::size_t index, std::uint64_t gen) {
+            chosen  = index;
+            saw_gen = gen;
             ++calls;
         });
     });
@@ -606,6 +608,39 @@ TEST_CASE("a crystal chosen from a page the vault has moved past is refused",
     REQUIRE(fresh);
     REQUIRE(calls == 1);
     REQUIRE(chosen == 1);
+
+    // AND THE GENERATION REACHES THE HANDLER, because checking it here is
+    // necessary and not sufficient: switching compiles a GL program, so the
+    // request is queued and performed a frame or more later -- after the render
+    // loop has drained any pending re-scan. The render thread re-checks this
+    // value against the list it is actually about to index.
+    REQUIRE(saw_gen == kGen);
+}
+
+TEST_CASE("a crystal post with no generation reaches the handler as zero",
+          "[plex][companion][control]")
+{
+    // Zero is the "no generation given" signal all the way down, and it is never
+    // a real generation -- they start at 1. The render thread relies on that to
+    // tell a scripted curl from a page whose list has moved.
+    std::uint64_t saw_gen = 99;
+    int           calls   = 0;
+
+    RunningServer s(fixture(), [&](CompanionServer& srv) {
+        srv.set_select_crystal_handler([&](std::size_t, std::uint64_t gen) {
+            saw_gen = gen;
+            ++calls;
+        });
+    });
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_vault({"drift", "pulse"}, kGen);
+
+    auto client = s.client();
+    client.set_follow_location(false);
+    client.Post("/control/crystal", "index=0", "application/x-www-form-urlencoded");
+
+    REQUIRE(calls == 1);
+    REQUIRE(saw_gen == 0);
 }
 
 TEST_CASE("a crystal post with no generation at all is still obeyed",
@@ -617,7 +652,7 @@ TEST_CASE("a crystal post with no generation at all is still obeyed",
     int calls = 0;
 
     RunningServer s(fixture(), [&](CompanionServer& srv) {
-        srv.set_select_crystal_handler([&](std::size_t) { ++calls; });
+        srv.set_select_crystal_handler([&](std::size_t, std::uint64_t) { ++calls; });
     });
     REQUIRE(s.error == CompanionError::kOk);
     s.server.set_control_vault({"drift", "pulse"}, kGen);
