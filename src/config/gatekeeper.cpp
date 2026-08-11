@@ -175,6 +175,7 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     std::string bad;
 
     read_string(tbl, "audio", "backend", out.backend, bad);
+    read_bool(tbl, "audio", "enabled", out.enabled, bad);
     read_double(tbl, "audio", "trim_ms", out.trim_ms, bad);
     read_double(tbl, "audio", "lead_ms", out.lead_ms, bad);
 
@@ -183,6 +184,9 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     read_bool(tbl, "render", "vsync", out.vsync, bad);
     read_bool(tbl, "render", "fullscreen", out.fullscreen, bad);
     read_bool(tbl, "render", "gl_debug", out.gl_debug, bad);
+    read_bool(tbl, "render", "debug_facet", out.debug_facet, bad);
+    read_bool(tbl, "render", "watch", out.watch, bad);
+    read_bool(tbl, "render", "compositor", out.compositor, bad);
     read_double(tbl, "render", "scale", out.render_scale, bad);
     read_double(tbl, "render", "bloom", out.bloom, bad);
     read_double(tbl, "render", "bloom_threshold", out.bloom_threshold, bad);

@@ -55,6 +55,11 @@ struct Gatekeeper {
     // [audio]
     std::string backend = "auto";   // "auto" | "wasapi" | "sdl"
 
+    // Open an audio device at all. False is `--no-audio` made durable: decode
+    // and draw, open nothing. Positive here and negative on the command line for
+    // the reason given in [render] below. Issue 242.
+    bool enabled = true;
+
     // The one number only the owner can measure. See the long note in
     // gatekeeper.example.toml: it is a DIFFERENCE between audio latency after
     // the device clock and the display's own lag, not a latency, which is why
@@ -80,6 +85,22 @@ struct Gatekeeper {
     int  height   = 720;
     bool vsync    = true;
     bool gl_debug = true;
+
+    // FOUR SUBSYSTEM SWITCHES THAT HAD ONLY A COMMAND-LINE FLAG.
+    //
+    // Every one of them was reachable exclusively through argv, and an Activity
+    // launch passes no argv -- so on Android they were not merely inconvenient,
+    // they were unreachable. `debug_facet` is the sharpest case: it exists
+    // BECAUSE the facet is otherwise unreachable (issue 144), so a platform with
+    // no command line had no way to it at all. Issue 242.
+    //
+    // The polarity is POSITIVE here and negative on the command line --
+    // `watch = false` against `--no-watch`. A config file describes a wanted
+    // state and reads better in the affirmative; a flag is a once-off override
+    // of a file and reads better as a negation of it. The flag still wins.
+    bool debug_facet = false;
+    bool watch       = true;
+    bool compositor  = true;
 
     // Fill the display, ignoring width and height. See window.hpp for why this
     // takes the display's CURRENT mode rather than setting one.
