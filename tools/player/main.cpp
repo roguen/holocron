@@ -108,6 +108,8 @@
 #include <fcntl.h>
 #include <io.h>
 #endif
+#include <condition_variable>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -593,6 +595,73 @@ struct LiveStack {
     }
 };
 
+// The one line of a build log worth putting on a projector.
+//
+// NOT LITERALLY THE FIRST LINE, and finding that out cost a screenshot. A crystal
+// that fails to compile produces
+//
+//     <path to the .frag>:
+//     ERROR: 0:3: 'u_bas' : undeclared identifier
+//
+// because crystal_facet.cpp prefixes the driver's infolog with a header saying
+// which file it is about -- in three places, all of the form "<something>:". Take
+// the first line literally and the toast reads out an absolute path, truncated,
+// with the actual error off the end of it. That is not a worse message than
+// nothing; it is a message that actively looks like the diagnostic while
+// containing none of it.
+//
+// So: the first line that is not a header. A header is a line ending in a colon,
+// which is this project's own convention rather than a guess about the driver's
+// output, and the caller has already said which crystal it is anyway.
+std::string first_line(const std::string& text, std::size_t limit = 90)
+{
+    std::string line;
+
+    for (std::size_t at = 0; at <= text.size();) {
+        std::size_t end = text.find_first_of("\r\n", at);
+        if (end == std::string::npos) {
+            end = text.size();
+        }
+
+        // Drivers pad the front of an infolog, and leading spaces on a one-line
+        // overlay read as the text being mis-positioned rather than as
+        // whitespace.
+        const std::size_t begin = text.find_first_not_of(" \t", at);
+        std::string       candidate =
+            begin == std::string::npos || begin >= end ? std::string() : text.substr(begin, end - begin);
+        while (!candidate.empty() && (candidate.back() == ' ' || candidate.back() == '\t')) {
+            candidate.pop_back();
+        }
+
+        // Keep the first thing seen, so a log that is nothing BUT headers still
+        // says something rather than coming back empty.
+        if (line.empty()) {
+            line = candidate;
+        }
+        if (!candidate.empty() && candidate.back() != ':') {
+            line = candidate;
+            break;
+        }
+
+        if (end == text.size()) {
+            break;
+        }
+        at = end + 1;
+    }
+
+    if (line.size() > limit) {
+        // Cut on a byte boundary that cannot split a UTF-8 sequence. A truncated
+        // multi-byte character is not a shorter string, it is an invalid one, and
+        // the rasterizer is handed UTF-8.
+        std::size_t cut = limit;
+        while (cut > 0 && (static_cast<unsigned char>(line[cut]) & 0xC0) == 0x80) {
+            --cut;
+        }
+        line = line.substr(0, cut) + "...";
+    }
+    return line;
+}
+
 // Compile every layer of `archive` into a NEW stack, and hand it back only if all
 // of them built.
 //
@@ -604,8 +673,16 @@ struct LiveStack {
 // ALL OR NOTHING, and that is the other half of the same idea: a
 // stack with one layer missing is not a smaller stack, it is a different picture,
 // and showing it would hide the failure behind something that looks deliberate.
+//
+// `out_error` GETS THE SAME FAILURE THE TERMINAL GETS, cut to one line.
+//
+// Every failure here already prints, and until issue 214 that print was the ONLY
+// signal -- to a terminal on a different machine from the one the author is
+// looking at. From the vault's own seat "not noticed yet", "noticed and did not
+// compile" and "compiled and changed nothing visible" were indistinguishable.
+// The caller puts this on screen; see the toast in the render loop.
 bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
-                 const ProjectMContext& pm)
+                 const ProjectMContext& pm, std::string* out_error = nullptr)
 {
     LiveStack next;
     next.archive = archive;
@@ -622,6 +699,9 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
                              "holocron: %s failed -- this layer needs libprojectM and none is "
                              "loaded\nholocron: still drawing what was already up\n",
                              verb);
+                if (out_error != nullptr) {
+                    *out_error = "no libprojectM loaded";
+                }
                 return false;
             }
 
@@ -631,6 +711,9 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
                 std::fprintf(stderr, "holocron: %s failed -- projectM did not start\n%s\n"
                                      "holocron: still drawing what was already up\n",
                              verb, why.c_str());
+                if (out_error != nullptr) {
+                    *out_error = "projectM: " + first_line(why);
+                }
                 return false;
             }
 
@@ -647,6 +730,12 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
             std::fprintf(stderr, "holocron: %s failed -- %s\n%s\nholocron: still drawing what "
                                  "was already up\n",
                          verb, to_string(err), detail.c_str());
+            if (out_error != nullptr) {
+                // NAMED BY STEM RATHER THAN BY MANIFEST NAME, because the manifest
+                // is what failed to load and its name is exactly the thing that is
+                // not available to quote.
+                *out_error = layer.crystal + ": " + to_string(err);
+            }
             return false;
         }
 
@@ -656,6 +745,9 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
             std::fprintf(stderr, "holocron: %s failed -- `%s` did not build\n%s\n"
                                  "holocron: still drawing what was already up\n",
                          verb, crystal.name.c_str(), log.c_str());
+            if (out_error != nullptr) {
+                *out_error = crystal.name + ": " + first_line(log);
+            }
             return false;
         }
 
@@ -683,7 +775,7 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
 //
 // This is where "a crystal is an archive of one" actually happens, and it is the
 // only place in the player that knows the difference.
-bool archive_for(const VaultEntry& entry, Archive& out)
+bool archive_for(const VaultEntry& entry, Archive& out, std::string* out_error = nullptr)
 {
     if (entry.kind == VaultKind::kProjectM) {
         out = archive_of_projectm(entry.name);
@@ -698,6 +790,9 @@ bool archive_for(const VaultEntry& entry, Archive& out)
     const ArchiveError err = load_archive(entry.stem, out, detail);
     if (err != ArchiveError::kOk) {
         std::fprintf(stderr, "holocron: %s -- %s\n", to_string(err), detail.c_str());
+        if (out_error != nullptr) {
+            *out_error = entry.name + ": " + to_string(err);
+        }
         return false;
     }
     return true;
@@ -2389,7 +2484,21 @@ int main(int argc, char** argv)
         // --crystal names a stem rather than a vault entry, so it is not scanned
         // and its kind is not known. It is a crystal by definition: an archive is
         // something found in a vault.
-        vault.push_back(VaultEntry{opt.crystal, opt.crystal, VaultKind::kCrystal});
+        //
+        // THE DISPLAY NAME IS THE FILENAME, NOT THE STEM, and that is not
+        // cosmetic. vault.hpp says `name` is "what a person should ever be
+        // shown"; a stem is a path, and `--crystal C:\some\long\path\pulse` put
+        // the whole of it everywhere a name goes -- the phone's crystal list, the
+        // "already on X" line, and (which is how it was noticed) a reload toast
+        // that was entirely path and had no room left for anything else.
+        //
+        // The manifest's own name would be better still and is not available
+        // here: nothing has been loaded yet, and the vault is built before the
+        // first build_stack precisely so a failure to load is reported against an
+        // entry that already exists.
+        vault.push_back(VaultEntry{opt.crystal,
+                                   std::filesystem::path(opt.crystal).filename().string(),
+                                   VaultKind::kCrystal});
     }
 
     // projectM joins the same list the crystals and archives are in, at the end.
@@ -2792,6 +2901,54 @@ int main(int argc, char** argv)
     TextureHandle lyric_texture = 0;
     int           lyric_w = 0, lyric_h = 0;
     std::string   drawn_lyric;
+
+    // -- the toast (issue 214) -------------------------------------------------
+    //
+    // WHY A PLAYER GROWS A NOTIFICATION AT ALL, having deliberately refused an
+    // on-screen UI. It is not chrome and it is not the beginning of one: it is the
+    // authoring loop's only feedback channel.
+    //
+    // Every build failure in this program prints to stderr and does nothing else,
+    // and the author is at the vault -- which on this rack is a machine in another
+    // room from the picture, and at M8 is a machine that has no terminal at all.
+    // From that seat three states look identical: the save was not noticed yet,
+    // it was noticed and did not compile, and it compiled and changed nothing
+    // visible. Two of those are bugs in the shader and one is a bug in the player,
+    // and there was no way to tell which without walking to the keyboard.
+    //
+    // So: one line, one corner, two seconds. No queue -- a later message replaces
+    // an earlier one, because during a reload loop the newest result is the only
+    // one anybody wants and a backlog of stale compiler errors would be worse than
+    // silence. It says what happened, not what is true, which is why it expires.
+    std::string                           toast_text;
+    bool                                  toast_bad = false;
+    std::chrono::steady_clock::time_point toast_until{};
+    TextureHandle                         toast_texture = 0;
+    int                                   toast_w = 0, toast_h = 0;
+    std::string                           toast_drawn;   // what the texture says
+
+    // How long a message stays up, and how long it takes to go.
+    //
+    // Two seconds is long enough to read six words while looking at something
+    // else, and short enough that a fast save-compile-save cycle does not leave
+    // the picture permanently captioned. The fade is so the message leaves rather
+    // than blinks out: a hard disappearance in peripheral vision reads as a
+    // flicker in the picture, which is the one thing an author must not have to
+    // second-guess while judging a shader.
+    constexpr auto kToastHold = std::chrono::milliseconds(2000);
+    constexpr auto kToastFade = std::chrono::milliseconds(350);
+
+    // `bad` only changes the colour, and the words still say which it is. The
+    // colour is what makes the answer readable BEFORE the words are -- from the
+    // far end of the room a save that compiled and one that did not are otherwise
+    // the same shape of white line, and telling them apart is the whole question.
+    // It is the same amber the tuning page warns in, deliberately: two surfaces,
+    // one meaning.
+    const auto notify = [&](std::string text, bool bad = false) {
+        toast_text  = std::move(text);
+        toast_bad   = bad;
+        toast_until = std::chrono::steady_clock::now() + kToastHold;
+    };
 
     // Rebuild the card's textures. Called when the track changes, and only then.
     const auto build_card = [&](const std::string& title, const std::string& artist) {
@@ -4010,9 +4167,10 @@ int main(int argc, char** argv)
             // the page is told -- otherwise it highlights a crystal that is not
             // running, which is the exact lie the control-page race fix was about.
             if (cast.take_sync()) {
-                LiveStack next;
+                LiveStack   next;
+                std::string why;
                 if (build_stack(archive_of_crystal(kSyncStem, "sync"), next,
-                                "beat instrument", projectm_ctx)) {
+                                "beat instrument", projectm_ctx, &why)) {
                     showing_sync = true;
                     begin_stack(std::move(next));
                     if (watch) {
@@ -4028,6 +4186,9 @@ int main(int argc, char** argv)
                                  "holocron: %s is loaded relative to the working directory; "
                                  "run holocron from the directory that has instruments/\n",
                                  kSyncStem);
+                    // The request came from the tuning page, so the person who
+                    // made it is holding a phone and looking at the picture.
+                    notify(why.empty() ? std::string("no beat instrument") : why, /*bad=*/true);
                 }
             }
 
@@ -4079,10 +4240,11 @@ int main(int argc, char** argv)
                 // swaps only if every layer built, and all three of its failure
                 // prints end "still drawing what was already up". The picture was
                 // correct and everything describing it was wrong. Issue 216.
-                Archive   archive;
-                LiveStack next;
-                if (archive_for(vault[wanted], archive) &&
-                    build_stack(archive, next, "switched to", projectm_ctx)) {
+                Archive     archive;
+                LiveStack   next;
+                std::string why;
+                if (archive_for(vault[wanted], archive, &why) &&
+                    build_stack(archive, next, "switched to", projectm_ctx, &why)) {
                     current      = wanted;
                     showing_sync = false;
                     // Pushed so the control page follows the ARROW KEYS too. The
@@ -4110,6 +4272,14 @@ int main(int argc, char** argv)
                                  vault[wanted].name.c_str(), vault[current].name.c_str());
                     std::fflush(stderr);
                     companion.set_current_crystal(current);
+
+                    // A REFUSED SWITCH IS THE WORST ONE TO LEAVE SILENT. The
+                    // picture does not change, so from the couch a tap on the
+                    // phone and a tap that landed on a broken crystal look the
+                    // same -- and the phone has already put itself right, which
+                    // makes it look as though nothing was ever pressed.
+                    notify(why.empty() ? "could not switch to " + vault[wanted].name : why,
+                           /*bad=*/true);
                 }
             }
 
@@ -4123,17 +4293,18 @@ int main(int argc, char** argv)
             // compile per layer on a keystroke-and-save, which is what the author
             // was already paying for one.
             if (watch && watch->poll(std::chrono::steady_clock::now())) {
-                Archive   archive;
-                LiveStack next;
+                Archive     archive;
+                LiveStack   next;
+                std::string why;
 
                 // Re-read the archive itself, since the edit may have BEEN the
                 // archive. `showing_sync` is not a vault entry, so it is rebuilt
                 // from its stem.
                 const bool got = showing_sync
                                      ? (archive = archive_of_crystal(kSyncStem, "sync"), true)
-                                     : archive_for(vault[current], archive);
+                                     : archive_for(vault[current], archive, &why);
 
-                if (got && build_stack(archive, next, "reloaded", projectm_ctx)) {
+                if (got && build_stack(archive, next, "reloaded", projectm_ctx, &why)) {
                     // u_time CARRIES ACROSS, layer for layer, so slow motion does
                     // not snap back to zero on every save -- the whole reason the
                     // clock is settable. Only where the stack still has a layer in
@@ -4173,6 +4344,18 @@ int main(int argc, char** argv)
                         watch.emplace(live_stack.archive.watch_paths,
                                       std::chrono::steady_clock::now());
                     }
+
+                    // SAID ON SCREEN AS WELL AS IN THE TERMINAL, and the success
+                    // case earns it as much as the failure does. A save that
+                    // compiles but changes nothing an eye can catch -- a constant
+                    // nudged, a branch that was not taken -- looks exactly like a
+                    // save the player never noticed, and that ambiguity is what
+                    // sends an author looking for a bug in the watch.
+                    notify("reloaded " + live_stack.archive.name);
+                } else {
+                    // build_stack has already printed the whole log. This is the
+                    // one line of it that reaches the room the picture is in.
+                    notify(why.empty() ? std::string("reload failed") : why, /*bad=*/true);
                 }
             }
         }
@@ -4653,6 +4836,97 @@ int main(int argc, char** argv)
                     overlay.draw(colophon_footer_texture, col_x, sh - margin_y + line_h / 2,
                                  colophon_footer_w, colophon_footer_h, glm::vec3(0.72f),
                                  0.95f, sw, sh);
+                }
+            }
+        }
+
+        // -- the toast (issue 214) -----------------------------------------------
+        //
+        // LAST, SO NOTHING CAN HIDE IT, and that is not a layering preference. The
+        // colophon draws a 0.92 panel down the middle of the frame and the card
+        // owns the bottom-left; suppressing the toast behind either would mean the
+        // one build failure an author most needs to see is the one that arrives
+        // while they happen to have a panel open. That is defect S2 coming back in
+        // through the draw order.
+        //
+        // TOP-LEFT, which is the only corner nothing else claims: the card is
+        // bottom-left, the lyric is centred low, the colophon is a centred column.
+        // It can overlap that column at 4K, and it is allowed to -- two seconds of
+        // a compiler error over a licence notice is the right way round.
+        //
+        // NOT GATED BY --overlay. The three overlay flags turn off things somebody
+        // might not want on a projector; this is the diagnostic channel, and an
+        // off switch for it is an off switch for knowing whether the player is
+        // working.
+        if (overlay_ready && !toast_text.empty()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= toast_until) {
+                // Held rather than cleared, so a repeat of the same message does
+                // not re-rasterize identical pixels -- the same discipline the
+                // lyric line uses, and during a reload loop the same message is
+                // exactly what recurs.
+                toast_text.clear();
+            } else {
+                if (toast_text != toast_drawn) {
+                    toast_drawn = toast_text;
+                    release_art(toast_texture);
+                    toast_texture = 0;
+                    toast_w = toast_h = 0;
+
+                    // 38 px, which is the colophon's arithmetic run backwards: it
+                    // reasons that 40 px at 2160 is about 26 arcminutes of
+                    // character height on a 100-inch screen at ten feet, against
+                    // roughly 20 for comfortable reading of unfamiliar text. This
+                    // is unfamiliar text -- a compiler error is the least
+                    // guessable string this program can put on screen -- so it
+                    // sits just above that floor and below the card's 52, which
+                    // is the one thing on screen it must not compete with.
+                    TextRequest req;
+                    req.text         = toast_text;
+                    req.pixel_height = 38;
+                    req.bold         = true;
+
+                    ImageRgba8  bitmap;
+                    std::string detail;
+                    if (render_text(req, bitmap, detail) == TextError::kOk) {
+                        toast_texture = upload_art(bitmap);
+                        toast_w       = bitmap.width;
+                        toast_h       = bitmap.height;
+                    }
+                }
+
+                if (toast_texture != 0 && toast_w > 0) {
+                    const int sw = window.width();
+                    const int sh = window.height();
+
+                    // Scaled down to fit rather than cropped, like the lyric. A
+                    // compiler error is long and the END of it is the part that
+                    // names the symbol.
+                    const int max_w = (sw * 2) / 3;
+                    int       w     = toast_w;
+                    int       h     = toast_h;
+                    if (w > max_w && max_w > 0) {
+                        h = h * max_w / w;
+                        w = max_w;
+                    }
+
+                    // The card's margin, so the two agree on where the edge of the
+                    // frame is. A projector overscans and this is inside the same
+                    // safe area the card was judged against on the rack.
+                    const int pad = sh / 24;
+
+                    // Fades out rather than blinking off -- see kToastFade.
+                    const auto left_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        toast_until - now);
+                    const float alpha =
+                        left_ms < kToastFade
+                            ? static_cast<float>(left_ms.count()) /
+                                  static_cast<float>(kToastFade.count())
+                            : 1.0f;
+
+                    const glm::vec3 ink = toast_bad ? glm::vec3(1.00f, 0.70f, 0.42f)
+                                                    : glm::vec3(0.95f);
+                    overlay.draw_text(toast_texture, pad, pad, w, h, ink, alpha, sw, sh);
                 }
             }
         }
