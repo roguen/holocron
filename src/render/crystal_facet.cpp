@@ -13,6 +13,8 @@
 
 #include <glad/glad.h>
 
+#include "gl_bind.hpp"
+
 #include <chrono>
 #include <cmath>
 #include <utility>
@@ -236,7 +238,7 @@ bool CrystalFacet::init(const Crystal& crystal, std::string& out_log)
     impl_->last_index = 0;
     impl_->saw_any    = false;
 
-    glCreateVertexArrays(1, &impl_->vao);
+    glGenVertexArrays(1, &impl_->vao);
     impl_->start = std::chrono::steady_clock::now();
     return true;
 }
@@ -324,7 +326,7 @@ void CrystalFacet::draw(const AudioFrame& frame, const TrackContext& track, int 
     if (impl_->u_album_art >= 0) {
         // Unit 0, always, and bound even when there is no art so the sampler
         // never points at whatever a previous crystal left there.
-        glBindTextureUnit(0, static_cast<GLuint>(track.album_art_texture));
+        bind_texture_unit(0, static_cast<GLuint>(track.album_art_texture));
         glUniform1i(impl_->u_album_art, 0);
     }
 

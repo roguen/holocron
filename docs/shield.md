@@ -185,6 +185,70 @@ adb connect 192.168.68.38:5555 && adb shell dumpsys SurfaceFlinger > sf.txt
 
 ---
 
+## 4. The DSA call sites — DONE, and the count was 43
+
+**Ported 2026-08-10.** Everything below the line was written before the work and
+is kept because the reasoning still holds; what actually happened is here.
+
+**43 call sites, not 41 or 46.** The hand count was 41 and an audit agent said 46;
+the real number is 43, and the discrepancy was the comments. Both estimates were
+counting text.
+
+**One path, not two.** The obvious shape is DSA on desktop behind an `#ifdef` and
+bind-based for Android. Rejected: bind-based GL is legal on 4.5, so a single path
+runs on the rack, in CI, on both platforms, every day, and is the same code the
+Shield will run. A second path would be exercised only by a build that does not
+exist yet — and this project already has the rule, written on `--no-compositor`:
+a path nothing can reach on purpose is a path nobody finds out is broken.
+
+The cost is the reason DSA was invented. Bind-then-modify mutates global state,
+so a call that only meant to configure an object leaves it bound. That is handled
+by convention in `src/render/gl_bind.hpp`: the active texture unit is
+`GL_TEXTURE0` between operations, and anything binding in order to configure does
+so on unit 0 and unbinds afterwards.
+
+**Three things that were not mechanical:**
+
+- **`glCheckNamedFramebufferStatus` had to stay inside the bind.** Its bind-based
+  form reads the binding as implicit state, so a check hoisted out of the bind
+  would interrogate the *default* framebuffer and report success every time —
+  silently removing D-047's entire fallback.
+- **`RenderTarget::resize` now touches the current draw target**, which it never
+  did under DSA, and it is reachable mid-frame when an archive gains a layer. It
+  restores the default binding rather than leaving the caller pointing somewhere
+  it never asked for.
+- **`glVertexAttribPointer`, not `glVertexAttribFormat`.** ES 3.2 has the
+  separate-format API, so the decoupling could have been kept. It buys something
+  when one format is fed by several buffers or one buffer feeds several formats,
+  and neither is true of one interleaved array behind one debug facet. The simpler
+  call also drops that file's floor from ES 3.1 to ES 2.0.
+
+**Verified by rendering, because no unit test in this project touches GL.** Three
+scenes — the debug facet, a crystal through the compositor and final pass, and a
+multi-layer archive with the colophon over it — rendered at 3840×2160 from the
+pre-port sources and again from the ported ones:
+
+| | |
+|---|---|
+| debug facet | **bit-identical**, max channel delta **0** |
+| `pulse` | max channel delta **1** over 5.669% of bytes |
+| `storm` + colophon | max channel delta **1** over 0.271% of bytes |
+
+**The ±1 is not the port and that was measured rather than assumed.** The same
+binary run twice gives max delta **1 over 5.758%** — statistically the same
+figure. It is the animation clock landing a fraction of a millisecond apart
+between runs, amplified by the grain dither the final pass applies on purpose. A
+binding bug does not produce ±1; it produces a black frame or the wrong texture.
+
+Still true, and still the other half of M8: **the platform layer.**
+`render_text` is behind `_WIN32` with no font dependency, and `WasapiSink`
+likewise. Both need an Android implementation, and neither is a rendering
+problem. `KHR_debug` is core in ES 3.2, so the debug callback survives.
+
+---
+
+### What this section said before the work
+
 ## 4. The actual work: about 41 DSA call sites
 
 Direct state access is the thing ES has at no version. `glCreateTextures`,
