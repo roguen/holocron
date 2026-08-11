@@ -9,6 +9,8 @@
 
 #include <glad/glad.h>
 
+#include "gl_bind.hpp"
+
 #include <string>
 #include <vector>
 
@@ -305,7 +307,7 @@ bool FinalPass::init(std::string& out_log)
     impl_->u_vignette   = glGetUniformLocation(impl_->program, "u_vignette");
     impl_->u_safe_area  = glGetUniformLocation(impl_->program, "u_safe_area");
 
-    glCreateVertexArrays(1, &impl_->vao);
+    glGenVertexArrays(1, &impl_->vao);
     return true;
 }
 
@@ -359,17 +361,17 @@ void FinalPass::draw(TextureHandle picture, const FinalPassSettings& settings, f
 
         impl_->bright.bind();
         glUniform2f(impl_->b_step, 0.0f, 0.0f);
-        glBindTextureUnit(0, static_cast<GLuint>(picture));
+        bind_texture_unit(0, static_cast<GLuint>(picture));
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
         impl_->blur.bind();
         glUniform2f(impl_->b_step, tx, 0.0f);
-        glBindTextureUnit(0, static_cast<GLuint>(impl_->bright.texture()));
+        bind_texture_unit(0, static_cast<GLuint>(impl_->bright.texture()));
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
         impl_->bright.bind();
         glUniform2f(impl_->b_step, 0.0f, ty);
-        glBindTextureUnit(0, static_cast<GLuint>(impl_->blur.texture()));
+        bind_texture_unit(0, static_cast<GLuint>(impl_->blur.texture()));
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
         // Back to the window, which the caller left bound before all of this.
@@ -378,10 +380,10 @@ void FinalPass::draw(TextureHandle picture, const FinalPassSettings& settings, f
 
     glUseProgram(impl_->program);
     glUniform1f(impl_->u_bloom_amount, bloom_amount);
-    glBindTextureUnit(1, static_cast<GLuint>(impl_->bright.texture()));
+    bind_texture_unit(1, static_cast<GLuint>(impl_->bright.texture()));
     glUniform1i(impl_->u_bloom, 1);
 
-    glBindTextureUnit(0, static_cast<GLuint>(picture));
+    bind_texture_unit(0, static_cast<GLuint>(picture));
     glUniform1i(impl_->u_picture, 0);
     glUniform2f(impl_->u_resolution, static_cast<float>(screen_width),
                 static_cast<float>(screen_height));

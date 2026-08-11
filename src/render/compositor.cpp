@@ -9,6 +9,8 @@
 
 #include <glad/glad.h>
 
+#include "gl_bind.hpp"
+
 #include <vector>
 
 namespace holocron {
@@ -196,7 +198,7 @@ bool Compositor::init(std::string& out_log)
     impl_->u_mode    = glGetUniformLocation(impl_->program, "u_mode");
     impl_->u_blend   = glGetUniformLocation(impl_->program, "u_blend");
 
-    glCreateVertexArrays(1, &impl_->vao);
+    glGenVertexArrays(1, &impl_->vao);
     return true;
 }
 
@@ -353,7 +355,7 @@ TextureHandle Compositor::composite(std::span<const LayerState> states, int scre
             glDisable(GL_BLEND);
             glUniform1i(impl_->u_mode, 2);
             glUniform1i(impl_->u_blend, static_cast<GLint>(s.blend));
-            glBindTextureUnit(1, static_cast<GLuint>(impl_->under.texture()));
+            bind_texture_unit(1, static_cast<GLuint>(impl_->under.texture()));
             glUniform1i(impl_->u_under, 1);
         } else if (s.blend == LayerBlend::kAdd) {
             glEnable(GL_BLEND);
@@ -369,7 +371,7 @@ TextureHandle Compositor::composite(std::span<const LayerState> states, int scre
         }
 
         glUniform1f(impl_->u_opacity, s.opacity);
-        glBindTextureUnit(0, static_cast<GLuint>(impl_->layers[i].texture()));
+        bind_texture_unit(0, static_cast<GLuint>(impl_->layers[i].texture()));
         glUniform1i(impl_->u_layer, 0);
 
         glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -384,7 +386,7 @@ TextureHandle Compositor::composite(std::span<const LayerState> states, int scre
         glDisable(GL_BLEND);
         glUniform1i(impl_->u_mode, 0);
         glUniform1f(impl_->u_opacity, 1.0f);
-        glBindTextureUnit(0, static_cast<GLuint>(impl_->canvas.texture()));
+        bind_texture_unit(0, static_cast<GLuint>(impl_->canvas.texture()));
         glUniform1i(impl_->u_layer, 0);
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }

@@ -48,31 +48,55 @@ bool RenderTarget::resize(int width, int height)
 
     shutdown();
 
+    // BIND-THEN-MODIFY THROUGHOUT, because ES has no direct state access at any
+    // version and this is M8's actual work. See src/render/gl_bind.hpp for why
+    // there is one path rather than a DSA path and an ES path.
+    //
     // GL_RGBA16F: crystals exceed 1.0 before their vignette and an 8-bit target
     // would clamp that at every intermediate stage. See the header.
-    glCreateTextures(GL_TEXTURE_2D, 1, &impl_->colour);
-    glTextureStorage2D(impl_->colour, 1, GL_RGBA16F, width, height);
+    glGenTextures(1, &impl_->colour);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, impl_->colour);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA16F, width, height);
 
     // LINEAR so a layer drawn at a fraction of the screen -- which decision 2 of
     // the M3 issue leaves open -- resolves without visible blocking. CLAMP_TO_EDGE
     // because a compositing pass that samples outside the picture is a bug, and
     // repeating the far edge into it would disguise one.
-    glTextureParameteri(impl_->colour, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTextureParameteri(impl_->colour, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTextureParameteri(impl_->colour, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTextureParameteri(impl_->colour, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
 
-    glCreateFramebuffers(1, &impl_->fbo);
-    glNamedFramebufferTexture(impl_->fbo, GL_COLOR_ATTACHMENT0, impl_->colour, 0);
+    // THE FRAMEBUFFER IS BOUND TO BE BUILT, AND THAT BINDING IS NOT FREE.
+    //
+    // Under DSA none of this touched the current draw target. Now it does, and
+    // resize() is reachable mid-frame -- the compositor grows its layer stack when
+    // an archive gains one. Restored to the default below rather than left
+    // pointing at a target the caller never asked for, which would send the next
+    // draw somewhere invisible with no error anywhere.
+    glGenFramebuffers(1, &impl_->fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, impl_->fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, impl_->colour, 0);
 
     // Named explicitly rather than left to default. A framebuffer with one
     // colour attachment defaults correctly, but the default is a property of the
     // object's initial state and a second attachment added later would silently
     // not be written to.
     const GLenum draw_buffer = GL_COLOR_ATTACHMENT0;
-    glNamedFramebufferDrawBuffers(impl_->fbo, 1, &draw_buffer);
+    glDrawBuffers(1, &draw_buffer);
 
-    if (glCheckNamedFramebufferStatus(impl_->fbo, GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    // THE COMPLETENESS CHECK READS THE BINDING RATHER THAN NAMING THE OBJECT, so
+    // it has to stay inside the bind -- which is the one thing docs/shield.md
+    // warns about by name for this port. D-047's whole fallback rests on this
+    // returning something other than COMPLETE for a float target the driver will
+    // not allocate; a check moved outside the bind would interrogate the default
+    // framebuffer instead and cheerfully report success every time.
+    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
         shutdown();
         return false;
     }

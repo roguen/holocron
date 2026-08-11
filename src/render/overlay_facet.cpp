@@ -7,6 +7,8 @@
 
 #include <glad/glad.h>
 
+#include "gl_bind.hpp"
+
 #include <string>
 #include <vector>
 
@@ -162,7 +164,7 @@ bool OverlayFacet::init(std::string& out_log)
     impl_->u_textured = glGetUniformLocation(impl_->program, "u_textured");
     impl_->u_gradient = glGetUniformLocation(impl_->program, "u_gradient");
 
-    glCreateVertexArrays(1, &impl_->vao);
+    glGenVertexArrays(1, &impl_->vao);
     return true;
 }
 
@@ -223,7 +225,7 @@ void OverlayFacet::draw(TextureHandle texture, int x, int y, int width, int heig
     glUniform1i(impl_->u_textured, 1);
     glUniform1i(impl_->u_gradient, 0);
 
-    glBindTextureUnit(0, static_cast<GLuint>(texture));
+    bind_texture_unit(0, static_cast<GLuint>(texture));
     glUniform1i(impl_->u_texture, 0);
 
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);

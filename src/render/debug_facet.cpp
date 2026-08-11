@@ -15,13 +15,23 @@
 // upload and a single draw call has almost no state to get wrong, and if the
 // screen is black the cause is unambiguous.
 //
-// IT USES DSA ON PURPOSE
+// IT USED DSA ON PURPOSE, AND NO LONGER DOES
 //
-// glCreateBuffers / glNamedBufferData / glVertexArrayAttribFormat rather than
-// the bind-to-edit dance. D-012 chose 4.5 core precisely because direct state
-// access is in it, and code that asks for 4.5 and then never uses anything past
-// 3.3 has not tested the decision at all -- the first thing to actually need
-// DSA would be the thing that discovers the context request was wrong.
+// This file was `glCreateBuffers` / `glNamedBufferData` /
+// `glVertexArrayAttribFormat` rather than the bind-to-edit dance, on the
+// argument that D-012 chose 4.5 core precisely to get direct state access and
+// that code asking for 4.5 while never using anything past 3.3 has not tested
+// the decision at all.
+//
+// That argument was right and has been overtaken. D-047 measured direct state
+// access absent from ES at every version, under both the core and the
+// `EXT_direct_state_access` spelling, and M8 puts this on a Shield. So it is
+// bind-then-modify now -- one path, running on the rack and in CI today rather
+// than an ES path nothing can reach. See src/render/gl_bind.hpp.
+//
+// The port is verified rather than asserted: this facet renders BIT-IDENTICALLY
+// before and after, max channel delta 0 over a whole 4K frame, which for the
+// only vertex-attribute setup in the project is the check worth having.
 
 #include <holocron/debug_facet.hpp>
 
@@ -219,19 +229,41 @@ bool DebugFacet::init()
 
     impl_->u_viewport = glGetUniformLocation(impl_->program, "u_viewport");
 
-    glCreateBuffers(1, &impl_->vbo);
-    glCreateVertexArrays(1, &impl_->vao);
+    // BIND-THEN-MODIFY, and the ONLY vertex attribute setup in the project.
+    //
+    // This was the separate-format API -- glVertexArrayAttribFormat plus
+    // glVertexArrayAttribBinding, which decouples "what the data looks like" from
+    // "which buffer it comes from". ES 3.2 does have the bound-object spelling of
+    // that (glVertexAttribFormat / glBindVertexBuffer), so it could have been kept.
+    //
+    // glVertexAttribPointer instead, deliberately. The separation buys something
+    // when one format is fed from several buffers or one buffer feeds several
+    // formats, and neither is true here or is going to be: this is one
+    // interleaved array behind one debug facet. Taking the simpler call also drops
+    // the floor from ES 3.1 to ES 2.0 for this file, which costs nothing and is
+    // one less thing that has to be true about a device.
+    glGenBuffers(1, &impl_->vbo);
+    glGenVertexArrays(1, &impl_->vao);
 
-    glVertexArrayVertexBuffer(impl_->vao, 0, impl_->vbo, 0, static_cast<GLsizei>(sizeof(Vertex)));
+    // ORDER IS LOAD-BEARING NOW, WHERE IT WAS NOT BEFORE. glVertexAttribPointer
+    // records whatever is bound to GL_ARRAY_BUFFER at the moment it is called,
+    // into whatever vertex array is bound at that moment. Under DSA both were
+    // named outright and neither could be got wrong; here the two binds have to
+    // come first, and the VAO has to be unbound before the buffer or the unbind
+    // is recorded into it.
+    glBindVertexArray(impl_->vao);
+    glBindBuffer(GL_ARRAY_BUFFER, impl_->vbo);
 
-    glEnableVertexArrayAttrib(impl_->vao, 0);
-    glVertexArrayAttribFormat(impl_->vao, 0, 2, GL_FLOAT, GL_FALSE, 0);
-    glVertexArrayAttribBinding(impl_->vao, 0, 0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(sizeof(Vertex)),
+                          nullptr);
 
-    glEnableVertexArrayAttrib(impl_->vao, 1);
-    glVertexArrayAttribFormat(impl_->vao, 1, 4, GL_FLOAT, GL_FALSE,
-                              static_cast<GLuint>(sizeof(float) * 2));
-    glVertexArrayAttribBinding(impl_->vao, 1, 0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(sizeof(Vertex)),
+                          reinterpret_cast<const void*>(sizeof(float) * 2));
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     return true;
 }
@@ -440,16 +472,23 @@ void DebugFacet::draw(const AudioFrame& frame, int width, int height, bool playi
 
     const std::size_t bytes = g.verts.size() * sizeof(Vertex);
 
-    // Orphan-and-refill only when the buffer has to grow. glNamedBufferSubData
-    // into an existing allocation avoids a reallocation every frame, and the
-    // vertex count here is small and bounded so the buffer settles almost
-    // immediately.
+    // Orphan-and-refill only when the buffer has to grow. glBufferSubData into an
+    // existing allocation avoids a reallocation every frame, and the vertex count
+    // here is small and bounded so the buffer settles almost immediately.
+    //
+    // Bound rather than named, for M8: see src/render/gl_bind.hpp. Unbound again
+    // afterwards, because GL_ARRAY_BUFFER is global state and the VAO bound below
+    // already carries its own reference to this buffer -- recorded when the
+    // attribute pointers were set up.
+    glBindBuffer(GL_ARRAY_BUFFER, g.vbo);
     if (bytes > g.capacity_bytes) {
-        glNamedBufferData(g.vbo, static_cast<GLsizeiptr>(bytes), g.verts.data(), GL_DYNAMIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(bytes), g.verts.data(),
+                     GL_DYNAMIC_DRAW);
         g.capacity_bytes = bytes;
     } else {
-        glNamedBufferSubData(g.vbo, 0, static_cast<GLsizeiptr>(bytes), g.verts.data());
+        glBufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(bytes), g.verts.data());
     }
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

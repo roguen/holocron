@@ -19,13 +19,23 @@ TextureHandle upload_art(const ImageRgba8& image)
 
     GLuint texture = 0;
 
-    // Direct State Access, which the rack GPU reports and #12 settled on 4.5
-    // core partly to get: no bind, so uploading art cannot disturb whatever
-    // texture the crystal being drawn had bound.
-    glCreateTextures(GL_TEXTURE_2D, 1, &texture);
+    // BIND-THEN-MODIFY, and this call site is the one that lost something real to
+    // the M8 port.
+    //
+    // Under direct state access uploading a sleeve could not disturb whatever the
+    // crystal being drawn had bound, and that was worth having: art arrives on a
+    // worker and is uploaded on the render thread at whatever moment it finishes,
+    // which is to say in the middle of ordinary drawing. ES has no DSA at any
+    // version (D-047), so the upload now binds -- on unit 0, and it unbinds when
+    // it is finished, which is the convention every caller in src/render follows.
+    // Nothing here samples a texture it has not just bound, so the guarantee is
+    // preserved by discipline instead of by the API.
+    glGenTextures(1, &texture);
     if (texture == 0) {
         return 0;
     }
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture);
 
     // How many mip levels a full chain needs. Computed rather than passed as 1,
     // because glGenerateTextureMipmap writes into levels that must already be
@@ -46,20 +56,21 @@ TextureHandle upload_art(const ImageRgba8& image)
     // and the two would disagree about the colour of the same pixel. No error,
     // no warning, and nothing to see except art that never quite matches the
     // colours drawn beside it.
-    glTextureStorage2D(texture, levels, GL_SRGB8_ALPHA8, image.width, image.height);
-    glTextureSubImage2D(texture, 0, 0, 0, image.width, image.height, GL_RGBA, GL_UNSIGNED_BYTE,
-                        image.pixels.data());
-    glGenerateTextureMipmap(texture);
+    glTexStorage2D(GL_TEXTURE_2D, levels, GL_SRGB8_ALPHA8, image.width, image.height);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, image.width, image.height, GL_RGBA, GL_UNSIGNED_BYTE,
+                    image.pixels.data());
+    glGenerateMipmap(GL_TEXTURE_2D);
 
-    glTextureParameteri(texture, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTextureParameteri(texture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
     // CLAMP, NOT REPEAT. A crystal sampling outside 0..1 -- which anything doing
     // a warp or a zoom will -- would otherwise tile the sleeve, and a wall of
     // repeated album covers is not a thing anyone asked for.
-    glTextureParameteri(texture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTextureParameteri(texture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+    glBindTexture(GL_TEXTURE_2D, 0);
     return static_cast<TextureHandle>(texture);
 }
 
