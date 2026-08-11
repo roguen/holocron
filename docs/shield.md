@@ -13,15 +13,60 @@ unit. Holocron's PC is on `SLI05`.
 
 ---
 
-## 1. The shaders port unchanged
+## 1. The shaders port — converted, and checked on both compilers
 
-Settled by **D-046**, and not re-argued here. Every shader in the tree is authored
-as GLSL ES 3.00, and desktop OpenGL has accepted ES shaders since GL 4.3 made
-`ARB_ES3_compatibility` core — this project already requires 4.5. One source, both
-platforms, no shim and no `#ifdef`.
+**All 14 shaders are `#version 300 es`** as of #215, and one source compiles on
+the RX 6800's GL 4.5 core driver and on a real ES compiler.
 
-**The shaders were never the hard part.** About 41 direct-state-access call sites
-are, and they have no ES equivalent at any version. See §4.
+> **This section previously said the shaders were already authored as GLSL ES
+> 3.00 when they were not** — it stated D-046's *intent* as accomplished fact,
+> while D-046's own audit table recorded 14 shaders on `#version 450 core`. The
+> conversion below is what made the claim true.
+
+D-046's *conclusion* survives: desktop OpenGL has accepted ES shaders since GL 4.3
+made `ARB_ES3_compatibility` core, and this project already requires 4.5. What
+D-046 missed is what that source has to contain. Measured against ANGLE's ESSL
+compiler before the conversion:
+
+| variant | result |
+|---|---|
+| as it ships, `#version 450 core` | **4 of 4 fail** — `'core' : invalid version directive` |
+| `#version 300 es`, no precision | **4 of 4 fail** — `'' : No precision specified for (float)` |
+| `#version 300 es` + `precision highp float;` | **4 of 4 compile** |
+
+**A GLSL ES 3.00 fragment shader has no default precision for `float`.** D-046 and
+the session-11 Time-Log both record "zero precision qualifiers anywhere" as
+evidence the bodies were *already ES-clean*. It is the opposite: zero precision
+qualifiers is a hard compile failure on every fragment shader in the vault.
+
+The converted `pulse.frag` was then run against the real RX 6800 GL 4.5 core
+context — it compiled, bound all six uniforms and rendered correctly. So the
+one-source claim holds; it just needs a line nobody had written down.
+
+**ANGLE also rejects a `#version` that is not the literal first line**, though the
+GLSL ES 3.00 spec permits comments before it. Every shader had something above it
+— a licence block in the `.frag` files, and the newline that `R"glsl(` inserts in
+the inline ones. Hoisting costs nothing and satisfies both compilers, so there was
+no reason to find out whether Tegra is equally strict.
+
+### The third requirement, which nobody had written down and would have been silent
+
+**`sampler2D` defaults to `lowp` in the ES fragment language.** `precision highp
+float;` does not cover it.
+
+The compositor samples `GL_RGBA16F` layers that deliberately exceed 1.0 before
+their vignette — that is the entire reason the layers are float (D-036). A `lowp`
+sampler clamps at around ±2, so on the Shield the highlights the float layers exist
+to preserve would have been flattened **with no error, no warning and nothing in a
+log**: bloom would have looked wrong and the cause would have been three layers
+away from the symptom.
+
+Every fragment shader that samples now declares `precision highp sampler2D;`. Four
+do: the compositor, both final-pass shaders and the overlay.
+
+**The shaders are still not the hard part** — the conversion was three lines per
+file and one afternoon. About 41 direct-state-access call sites are, and they have
+no ES equivalent at any version. See §4.
 
 ---
 

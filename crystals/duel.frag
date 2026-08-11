@@ -1,3 +1,5 @@
+#version 300 es
+precision highp float;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // duel -- two stick figures fighting, and the clashes land on the beat.
@@ -78,8 +80,6 @@
 // them together, driven by who has been landing -- see stage_x. Two figures
 // trading blows on one spot reads as a machine; ground being won and lost is most
 // of what a fight looks like from the back of a room.
-
-#version 450 core
 
 in  vec2 v_uv;
 out vec4 frag_colour;

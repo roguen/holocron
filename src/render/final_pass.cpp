@@ -15,8 +15,7 @@
 namespace holocron {
 namespace {
 
-const char* kVertexShader = R"glsl(
-#version 450 core
+const char* kVertexShader = R"glsl(#version 300 es
 out vec2 v_uv;
 void main()
 {
@@ -34,8 +33,9 @@ void main()
 // SEPARABLE, because a 2D Gaussian of radius r costs r^2 taps and two 1D passes
 // cost 2r for the same result. At quarter resolution with a 9-tap kernel that is
 // 18 taps a pixel instead of 81.
-const char* kBloomShader = R"glsl(
-#version 450 core
+const char* kBloomShader = R"glsl(#version 300 es
+precision highp float;
+precision highp sampler2D;
 in  vec2 v_uv;
 out vec4 frag_colour;
 
@@ -69,8 +69,9 @@ void main()
 }
 )glsl";
 
-const char* kFragmentShader = R"glsl(
-#version 450 core
+const char* kFragmentShader = R"glsl(#version 300 es
+precision highp float;
+precision highp sampler2D;
 in  vec2 v_uv;
 out vec4 frag_colour;
 

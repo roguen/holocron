@@ -1,3 +1,5 @@
+#version 300 es
+precision highp float;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // drift -- weather.
@@ -26,8 +28,6 @@
 // directly is what makes a visualizer strobe; displacing the field means loud
 // passages CHURN and quiet ones settle, which is the difference between a
 // picture that reacts and one that behaves.
-
-#version 450 core
 
 in  vec2 v_uv;
 out vec4 frag_colour;

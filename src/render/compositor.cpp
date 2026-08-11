@@ -21,8 +21,7 @@ namespace {
 // texture rendered through an FBO is also the bottom-left. So there is no
 // vertical flip here, and there must not be one -- an upside-down picture is the
 // classic symptom of adding it "to be safe".
-const char* kVertexShader = R"glsl(
-#version 450 core
+const char* kVertexShader = R"glsl(#version 300 es
 out vec2 v_uv;
 void main()
 {
@@ -47,8 +46,9 @@ void main()
 // four blend modes take three different routes through the code is how one of
 // them ends up subtly wrong. One path that reads the destination does all four,
 // and the destination is a texture the compositor already owns.
-const char* kFragmentShader = R"glsl(
-#version 450 core
+const char* kFragmentShader = R"glsl(#version 300 es
+precision highp float;
+precision highp sampler2D;
 in  vec2 v_uv;
 out vec4 frag_colour;
 

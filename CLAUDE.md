@@ -35,7 +35,7 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: M1, M2, M3, M4, M5 and M7 are DONE. M6 is 3 of 4.
+## Status: SEVEN milestones are DONE. Only M8 remains.
 
 **`v0.6.1`.** M1 closed 2026-08-10, ten sessions after its last two criteria were
 first written down as open, and M2's last unbuilt criterion closed the same day:
@@ -44,7 +44,7 @@ first written down as open, and M2's last unbuilt criterion closed the same day:
 |---|---|
 | **M1** | **DONE, 8 of 8, 2026-08-10.** The two that had never been picked up in ten sessions both landed: `tests/fixtures/analysis-golden.csv` diffs 750 frames of a generated fixture against the harness's own CSV writer, and `tests/test_audio_callback.cpp` replaces the global `operator new` to count what the callback allocates — on a real device thread as well as directly. |
 | **M2** | **DONE, 8 of 8, two amended, 2026-08-10.** Per-uniform envelope overrides landed — the last unbuilt piece — and **the owner authorised the closure the same day**. The visual language was his judgement and nobody else's, which is why the milestone stayed open for a few hours after the code was finished. `v0.6.0`. |
-| **M6** | **3 of 4.** The about panel — the **colophon** — is built, and building it found that `THIRD-PARTY-NOTICES.md` carried **no copyright notice for anything**: LGPL-2.1 §6 names "the copyright notice for the Library" *and* a reference to the licence, and the file had only the second. Criterion 1 **amended 2026-08-10 (D-045): the phone IS the control surface**, which is the design rather than a shortfall. **One left, and it is not a task** — legibility on the projector. |
+| **M6** | **DONE, 4 of 4, one amended, 2026-08-10.** Closed by the owner **on the projector**: the card, the lyric line and the colophon's seven pages all read from the couch. Criterion 1 was amended the same day (D-045: the phone IS the control surface). **Three things had to be fixed before the question could honestly be asked** — there was no fullscreen mode at all, the desktop was 1920×1080 upscaled to a 4K signal, and the link was at 29 Hz to carry RGB 10-bit the 8-bit renderer never produces. All three were silent and two looked healthy. D-049. |
 | **M7** | **DONE, 3 of 3, 2026-08-10.** The **herald** runs errands when playback starts and stops -- eISCP over TCP 60128. **Confirmed against the receiver the day it went on the network**: ONKYO TX-RZ720 at `192.168.68.128`, `SLI11` to `SLI05` and `LMD80` to `LMD01` read back from fresh connections, and the player reporting 3 commands sent and 0 failed. **It was found in `LMD80`, Dolby PLII Movie** -- the milestone's own premise, observed. An errand is a URI, so a webhook replaces eISCP by editing a value. D-048. |
 | **M8** | **IN SCOPE, two unknowns settled.** D-046: shaders are authored at `#version 300 es` and compile unchanged on both platforms, because desktop GL has accepted ES shaders since 4.3. **D-047: the float layers port too** -- `GL_RGBA16F` is colour-renderable *and required-renderable* in ES 3.2 core, read out of the spec table and measured on two real ES drivers through ANGLE. The Shield is in the rack at `192.168.68.38`, on the receiver's STRM BOX input. **The work left is about 41 DSA call sites**, which have no ES equivalent at any version. |
 | **M5** | **DONE — all six criteria, one amended.** The last debt closed 2026-08-10 by measuring rather than building: the NAS answers a repeat sleeve in **1 ms**, so the art cache stays in memory (D-044). `artwork_cache.hpp` ships unused on purpose. |
@@ -52,7 +52,10 @@ first written down as open, and M2's last unbuilt criterion closed the same day:
 See the eight-row table at the top of the wiki
 [Roadmap](https://github.com/roguen/holocron/wiki/Roadmap).
 
-**Six milestones are finished.** M7 — the herald, closed 2026-08-10 when the
+**Seven milestones are finished, and only M8 is left.** M6 — on-screen UI, closed
+2026-08-10 by the owner **on the projector**, the first time anything from `v0.3.0`
+to `v0.7.0` had been seen in the room it was built for. M7 — the herald, closed
+2026-08-10 when the
 receiver went on the network and it drove a real amplifier. M1 — the spine,
 closed 2026-08-10 after its last
 two criteria had sat untouched for ten sessions. M2 — crystals, closed the same
@@ -153,7 +156,7 @@ tested:
 | Colophon | **M6's fourth criterion, closed 2026-08-10.** The licence panel: Holocron's GPL-3 notice, then `THIRD-PARTY-NOTICES.md` flattened out of Markdown and paged, seven pages at 1920×1080. Reached from the phone's control page, from **F1**, and from **`holocron --notices`** — three routes because the panel discharges a licence term and the phone route depends on the Companion port being reachable. **The notices are compiled into the binary** (`cmake/embed_notices.cmake`, hex not a string literal): an obligation met only when a file happens to sit beside the executable is not met. Three guards — embedded-equals-file, a copyright line per dependency, and `--notices \| diff` in Linux CI **through the shipped binary**. **`draw`, not `draw_text`**: the outline is sized `height/22`, which is right for one line of type and paints a second copy of a whole 848-pixel page 38 px away. |
 | Text | `render_text` — the **platform** rasterizer behind `_WIN32`, no font dependency, same trade as WASAPI and WinHTTP. Returns white with the coverage in alpha so the caller tints it. `OverlayFacet` composites it over whatever drew. Needs a platform layer at M8, like the audio backend. |
 | Lyrics | `parse_lyrics` reads LRC; `choose_lyric_stream` picks the right `streamType=4` off the track's metadata. **Two tracks in five ADVERTISE timed lyrics** — 16 synced, 14 text-only, 10 with none, from a 40-track sample of 50,414. **Advertised is not the same as fetchable**: the body 404s often, so that is the ceiling and not the rate — and a refused body now gets **one more request, 20 s in** ([#153](https://github.com/roguen/holocron/issues/153)). Never a third: the best guess at the 404 stretches is a rate limit, and a fix for a rate limit must not be more traffic. One line at a time, centred, rasterized only when the line changes. Unsynced lyrics draw **nothing**: a static wall of words over a moving picture is not what was asked for. |
-| Hot reload | `CrystalWatch` — saving the `.frag` or `.toml` rebuilds it in place, on by default with `--crystal`. A shader that fails to compile is reported and the running one keeps drawing; `u_time` carries across. |
+| Hot reload | `CrystalWatch` — saving the `.frag` or `.toml` rebuilds it in place. **On by default in EVERY mode**, not only with `--crystal`; `--no-watch` is the off switch. This row used to say "on by default with `--crystal`", which read as though authoring needed a special mode — it does not, and the vault path prints `watching N file(s)` on every run. It watches the **currently loaded** archive's `watch_paths` and is re-emplaced on each switch, so editing a crystal that is not on screen does nothing until you switch to it — which reloads it anyway. A shader that fails to compile is reported and the running one keeps drawing; `u_time` carries across. **Adding a NEW crystal still needs a restart**: `scan_vault` runs once at startup (#214). |
 | Archives | **A saved facet stack**, which is what the vocabulary has meant since M1. `<stem>.toml` with `[[layer]]` entries, bottom first, each naming a crystal, a blend and an opacity that may **bind to an `AudioFrame` field** — so a layer can breathe with the bass without either shader knowing. Seven blend modes; screen, multiply, overlay and difference need to read what is under them, so they assemble the stack in a canvas, and **nothing allocates that canvas until an archive names one of the four**. Capped at 4 layers because two of `duel` at 4K is already 6.6 ms of a 16.7 ms budget. `crystals/storm` is the first one. |
 | Final pass | `FinalPass` — grain, vignette and a projector safe-area mask, all of which belong to the **display** rather than to any crystal. **Grain is on by default because it is a fix, not a look**: the layers are float and the window is 8-bit, so a dark gradient bands. Measured — the same dark patch of `drift` goes from **208 to 288 distinct colours**, which is quantisation steps being dithered. Costs nothing when everything is zero: the compositor is then told it needs no canvas. Bloom is [#160](https://github.com/roguen/holocron/issues/160) and is what would make the float layers finally pay off. |
 | Facet C ABI | `include/holocron/facet_abi.h` — the M3 criterion **checked by a compiler rather than asserted**: CI compiles it as C11 *and* C++20 under `-Werror`. `AudioFrame` crosses unchanged, as designed. **`TrackContext` does not** — five `std::string`s and a `std::array<glm::vec3>` have no guaranteed layout — so the ABI takes a flattened borrowed view. Finding that now is a struct definition; finding it at M4 is a redesign. Nothing implements it yet, deliberately: a shim with no second caller is a dead path. |
@@ -474,7 +477,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.7.0`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.8.0`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
@@ -484,7 +487,7 @@ the `duel` crystal, the compositor, the crossfade, the tuning page and lyrics al
 landed as patches while M3 was still open. That is the rule working as written,
 not a mistake.
 
-**`v0.7.0` is M7, the SIXTH completed milestone**, and `v0.6.0` is M2, the fifth
+**`v0.8.0` is M6, the SEVENTH completed milestone**, `v0.7.0` is M7 the sixth, and `v0.6.0` is M2 the fifth
 -- after M5 at `v0.2.0`, M3 at
 `v0.3.0`, M4 at `v0.4.0` and M1 at `v0.5.0`. The minor number counts how many are
 finished, not which one; M1 being the first milestone and the fourth to finish is

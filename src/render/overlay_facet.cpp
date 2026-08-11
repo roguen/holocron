@@ -19,8 +19,7 @@ namespace {
 // The rect arrives in NORMALIZED DEVICE COORDINATES already, computed on the CPU
 // from pixels. Doing that conversion here would mean passing the framebuffer size
 // as a second uniform and repeating the arithmetic per vertex for no benefit.
-const char* kVertexShader = R"glsl(
-#version 450 core
+const char* kVertexShader = R"glsl(#version 300 es
 uniform vec4 u_rect;   // x0, y0, x1, y1 in NDC
 out vec2 v_uv;
 void main()
@@ -32,8 +31,9 @@ void main()
 }
 )glsl";
 
-const char* kFragmentShader = R"glsl(
-#version 450 core
+const char* kFragmentShader = R"glsl(#version 300 es
+precision highp float;
+precision highp sampler2D;
 in  vec2 v_uv;
 out vec4 frag_colour;
 
