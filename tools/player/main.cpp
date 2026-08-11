@@ -113,6 +113,7 @@
 #endif
 #include <condition_variable>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -2078,8 +2079,72 @@ extern "C" void on_interrupt(int)
     g_interrupted.store(true, std::memory_order_relaxed);
 }
 
+// Where a generated machine identifier is kept, beside the config.
+//
+// A SIDECAR FILE RATHER THAN A KEY WRITTEN BACK INTO gatekeeper.toml, and that
+// is a deliberate trade.
+//
+// Writing the key back is the obvious move and it means rewriting the config.
+// toml++ can parse and re-serialize, and doing so DESTROYS every comment and all
+// the hand formatting -- and comments surviving is one of the two reasons this
+// project chose TOML over JSON in the first place (see vcpkg.json's note). A
+// program that silently reformats a file the owner hand-edits is a worse bargain
+// than a second small file.
+//
+// It is also the honest category. The identifier is not a preference anybody
+// chooses; it is an identity the program was assigned and must not lose. The
+// config says what the user wants, this says what the program IS.
+//
+// gatekeeper.toml still WINS if it carries the key -- an explicit setting always
+// beats a remembered one, which is what makes it possible to move an identity
+// between machines by hand.
+std::string machine_identifier_path(const char* config_path)
+{
+    const std::string config = resolve_data_path(config_path != nullptr ? config_path : "");
+    const std::size_t slash  = config.find_last_of("/\\");
+    const std::string dir    = slash == std::string::npos ? std::string{} : config.substr(0, slash + 1);
+    return dir + "machine-identifier";
+}
+
+std::string read_saved_machine_identifier(const char* config_path)
+{
+    std::ifstream in(machine_identifier_path(config_path));
+    if (!in) {
+        return {};
+    }
+    std::string id;
+    std::getline(in, id);
+
+    // Trim, because a file somebody has looked at may have gained whitespace or
+    // a CRLF, and a UUID with a stray \r fails validation for a reason nobody
+    // can see by reading the file.
+    while (!id.empty() && (id.back() == '\r' || id.back() == '\n' || id.back() == ' ' ||
+                           id.back() == '\t')) {
+        id.pop_back();
+    }
+    return is_valid_machine_identifier(id) ? id : std::string{};
+}
+
+bool save_machine_identifier(const char* config_path, const std::string& id)
+{
+    const std::string path = machine_identifier_path(config_path);
+    std::ofstream     out(path, std::ios::trunc);
+    if (!out) {
+        return false;
+    }
+    out << id << "\n";
+    return out.good();
+}
+
 // What Holocron will announce, built from the config.
-PlexDevice device_from(const Gatekeeper& cfg)
+//
+// CALL THIS ONCE. It used to be called two and three times in a run, and when
+// the identifier had to be generated each call produced a DIFFERENT one -- so a
+// no-config run announced one identity over GDM and reported progress under
+// another, and printed two "paste this into gatekeeper.toml" blocks with two
+// different values. Issue 248. Saving the generated value is what makes repeat
+// calls agree, but the calls were also reduced to one.
+PlexDevice device_from(const Gatekeeper& cfg, const char* config_path = nullptr)
 {
     PlexDevice d;
     d.name    = cfg.plex_device_name;
@@ -2108,17 +2173,38 @@ PlexDevice device_from(const Gatekeeper& cfg)
                      cfg.plex_machine_identifier.c_str());
     }
 
+    // Remembered from a previous run, if there was one.
+    if (std::string saved = read_saved_machine_identifier(config_path); !saved.empty()) {
+        d.machine_identifier = std::move(saved);
+        return d;
+    }
+
     // Generated rather than refused, so a first run works with no config at all.
-    // The cost is stated plainly: without saving it, every run is a new device.
     d.machine_identifier = make_machine_identifier();
-    std::printf("holocron: no saved machine identifier -- generated one for this run only.\n"
-                "  Until it is saved, Plexamp gains a NEW device entry every time\n"
-                "  Holocron starts. Paste this into %s:\n"
-                "\n"
-                "    [plex]\n"
-                "    machine_identifier = \"%s\"\n"
-                "\n",
-                "gatekeeper.toml", d.machine_identifier.c_str());
+
+    // SAVED, NOT PRINTED FOR SOMEBODY TO PASTE. The old message told the reader
+    // to paste the value into gatekeeper.toml, which is an instruction nobody can
+    // follow on an Android TV -- no keyboard, no editor, no shell. Until it was
+    // followed, every launch was a new device on the account.
+    if (save_machine_identifier(config_path, d.machine_identifier)) {
+        std::printf("holocron: no machine identifier yet -- generated one and saved it to\n"
+                    "  %s\n"
+                    "  It will not change again. Delete that file to be issued a new one.\n",
+                    machine_identifier_path(config_path).c_str());
+    } else {
+        // The old behaviour, kept for the case it was always right for: a
+        // read-only or unwritable location. Then a human really is the only way
+        // the value survives, and the paste instruction is the correct advice.
+        std::printf("holocron: no machine identifier yet, and it could not be saved to\n"
+                    "  %s\n"
+                    "  Plexamp gains a NEW device entry every time Holocron starts until\n"
+                    "  this is recorded. Paste it into your config:\n"
+                    "\n"
+                    "    [plex]\n"
+                    "    machine_identifier = \"%s\"\n"
+                    "\n",
+                    machine_identifier_path(config_path).c_str(), d.machine_identifier.c_str());
+    }
     return d;
 }
 
@@ -2601,13 +2687,13 @@ int main(int argc, char** argv)
     // nothing else, and a run that is signing in has no business also
     // announcing itself.
     if (opt.link) {
-        return run_link(device_from(cfg), opt.config);
+        return run_link(device_from(cfg, opt.config), opt.config);
     }
 
     // --discover always wins here: it cannot be combined with --no-discover
     // (rejected above), so reaching this with opt.discover set means discovery
     // is wanted regardless of what the config says.
-    const PlexDevice device = device_from(cfg);
+    const PlexDevice device = device_from(cfg, opt.config);
 
     if ((cfg.plex_discovery || opt.discover) && !opt.no_discover) {
         if (!start_discovery(device, gdm, companion) && opt.discover) {
@@ -3881,7 +3967,14 @@ int main(int argc, char** argv)
 
     // This player's own identifier, which the server wants on a progress report
     // for the same undocumented reason it wants one on a play queue.
-    const std::string device_identity = device_from(cfg).machine_identifier;
+    //
+    // TAKEN FROM THE DEVICE ALREADY BUILT, not by calling device_from again.
+    // That second call was issue 248: with no identifier in the config it
+    // generated a fresh UUID, so the value reported to the server was NOT the
+    // value announced over GDM -- which is precisely the mismatch that makes a
+    // controller conclude it reached a different player and drop the entry.
+    // There is one device; there is one identifier.
+    const std::string device_identity = device.machine_identifier;
 
     // A fresh identifier for THIS run.
     //
