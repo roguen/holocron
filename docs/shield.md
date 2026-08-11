@@ -484,7 +484,15 @@ honouring `<remove>`. One enum was missing and it was `GL_BGR`, now fixed.
 
 Issue 247 reported that the Companion HTTP port would not bind on the Shield,
 every launch, and named the Shield's own Plex Media Server as the obvious
-suspect. **It is not, and neither is anything else on the device.**
+suspect. **The instinct was right and the component was wrong: it is
+`com.plexapp.android`, the Plex PLAYER app.**
+
+**This section said the opposite for a few hours on 2026-08-11, and the
+correction is the more useful half.** The first pass launched the Plex app,
+watched `netstat` for ten seconds, saw nothing, and concluded it does not bind
+32500. It binds after about **fifteen** seconds. The check was too impatient, and
+"I looked and it was not there" became "it is not there" without the gap being
+noticed.
 
 What was established before any code was written, which is the order the issue
 itself asked for:
@@ -493,14 +501,23 @@ itself asked for:
 |---|---|
 | Is anything listening on 32500? | **No.** `netstat -tlnp` on the device, repeatedly, over a day. |
 | Does Plex Media Server hold it? | **No.** `com.plexapp.mediaserver.smb:service` is running as a foreground service and binds nothing in the 32xxx range. |
-| Does the Plex **player** app hold it? | **No.** `com.plexapp.android` was launched deliberately to check — it is a Plex player and Plex players are what use 32500 — and it makes outbound connections to the server's 32400 and listens on nothing. |
+| Does the Plex **player** app hold it? | **YES**, and this is the answer. `com.plexapp.android` 10.30.8.4222, **uid 10088**, read out of `/proc/net/tcp6` because `netstat` will not name a socket owned by another uid. It is that app's ONLY listening socket. Force-stopping it frees the port; relaunching it rebinds after about **fifteen seconds**. |
 | Does it bind today? | **Yes.** Clean launch, `0.0.0.0:32500` LISTEN, `/control` answers **HTTP 200 in 2.5 ms** from the rack, `/resources` correct. |
 | Is the fault "in use" or "not permitted"? | **In use.** Holding the port with `nc -l -p 32500` reproduces the reported message byte for byte. The app's uid is in `gid 3003` (`AID_INET`), so `android.permission.INTERNET` was never the problem. |
 
-So the port is available on this Shield and the report was real. The occupant on
-the day cannot be named after the fact, because nothing logged it — which is the
-actual defect, and the reason a session went hunting a media server that was
-never holding anything.
+So the port is available only when the Plex app happens not to be running, and
+that app is normally resident on this box — it restarted itself within an hour of
+being force-stopped. **On a Shield with the Plex app installed, Holocron cannot
+reliably have 32500 at all**, which makes the fallback the only reason the control
+page exists there rather than a defensive nicety.
+
+The socket is `tcp6 :::32500`, a dual-stack wildcard, so it blocks Holocron's
+IPv4 `0.0.0.0` bind. That is why the port can be held by something `netstat -tln`
+shows on a line most readers skip.
+
+Note what the old error message cost: it said "in use or not permitted", named no
+errno and no owner, so a session went hunting a media server that was never
+holding anything.
 
 **Two things about the app's lifecycle that make an occupant plausible and are
 worth knowing on their own:** Holocron holds the port for the whole life of its
@@ -524,7 +541,79 @@ manager's kill against the new process's bind.
   refusing to start is the one outcome that cannot be recovered from.
 - The bound port is now what gets announced. It previously was not: `[plex] port
   = 0` bound an ephemeral port and announced **0** to every controller on the
-  LAN, and published `http://<ip>:0` to the account.
+  LAN, and published `http://<ip>:0` to the account. **This turned out to be
+  load-bearing rather than tidy:** on the first real cast the Shield had been
+  pushed off 32500 by the Plex app, and what it registered with plex.tv was
+  `http://192.168.68.38:36599` — the port it actually had. Without this fix it
+  would have published 32500, which the Plex app was holding, and every cast
+  would have been delivered to the wrong process.
+
+### THE SHIELD HAS BEEN CAST TO, 2026-08-11
+
+A 44.1 kHz 16-bit FLAC, streamed from `Garage67-NAS` **over HTTPS** — the server
+publishes only `plex.direct` HTTPS connections, so this is also the first proof
+that FFmpeg's Android TLS (issue 239) works against a real server rather than
+against a config header.
+
+```
+companion: play "QOTSA - Songs For The Deaf" -- flac flac, 0 ms in
+holocron: registered with your Plex account at http://192.168.68.38:36599
+```
+
+**Measured while it played:** position advanced **39.98 s against 40.02 s of wall
+clock**, `drift` drawing at 3840x2160 and tinted from the track's palette rather
+than the no-track default. The cast was driven by posting `playMedia` at the
+Companion port directly, as a controller would, so it exercises the same path
+Plexamp uses.
+
+#### The token is NOT portable between devices, and that cost the first attempt
+
+Copying the rack's token to the Shield leaves it **authenticated and off the
+account**. Measured: `GET /api/v2/user` with a valid token and the full
+`X-Plex-*` header set returns **200 and creates nothing** for an identifier that
+was not linked. Four requests, two endpoints, re-checked after a delay: the
+device never appeared in `/devices.xml`.
+
+So `CLAUDE.md`'s claim that a device is "created by *any* authenticated request
+carrying the full `X-Plex-*` header set" is **wrong**. The device record is
+created by the **PIN exchange**, bound to the `X-Plex-Client-Identifier` sent at
+link time.
+
+**The way through needs no argv on the target.** Run `--link` anywhere convenient
+with a config carrying the *target's* machine identifier:
+
+```toml
+[plex]
+machine_identifier = "<the Shield's UUID, from its machine-identifier sidecar>"
+```
+
+`holocron --link --config that.toml` prints a click-through URL, and the token it
+issues is bound to the Shield. Push that token to the device's `gatekeeper.toml`.
+The account then lists the device with `platform` corrected to **Android** by the
+Shield's own first registration, and it appears in `/api/v2/resources` — the list
+controllers actually read.
+
+#### Issue 240 does NOT fire here, and the reasoning that said it would was wrong
+
+It looked certain: every mixer output on the Shield is 48 kHz, the source was
+44.1 kHz, and `played_us` divides device frames by the **source** rate. The
+prediction was a timeline running 8.8% fast.
+
+**Measured: 39.98 s reported against 40.02 s of wall clock.** Correct.
+
+`dumpsys media.audio_flinger` says why. Holocron's own AudioTrack — track 624,
+client pid 2315 — runs at **`SRate 44100`, format PCM_FLOAT**. AudioFlinger
+resamples 44.1 to 48 and requantises float to 16-bit **below** the frame counter
+SDL reports. So the device rate SDL sees *is* the source rate, and the division
+is right.
+
+The lesson is the usual one in a new hat: **"the OS resamples" and "the frame
+counter is at the OS rate" are different claims**, and only the second one makes
+issue 240 fire. It remains a real bug on any sink that opens at a rate different
+from the source's — WASAPI shared mode on Windows still does.
+
+D-053's conclusion is untouched: the output is **not** bit-perfect on this
+device, and now that is observed rather than derived.
 
 ### Also worth knowing before the first device run
 
