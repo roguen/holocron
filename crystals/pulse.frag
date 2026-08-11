@@ -1,3 +1,5 @@
+#version 300 es
+precision highp float;
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // pulse -- the reference crystal.
@@ -9,8 +11,6 @@
 // the plumbing rather than in anyone's taste.
 //
 // Every uniform below is declared in pulse.toml and fed from AudioFrame by name.
-
-#version 450 core
 
 in  vec2 v_uv;          // 0..1 across the framebuffer
 out vec4 frag_colour;

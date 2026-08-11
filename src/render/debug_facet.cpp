@@ -67,8 +67,7 @@ constexpr Colour kOnset      = {1.000f, 0.400f, 0.700f, 1.00f};
 constexpr Colour kMarker     = {0.600f, 0.400f, 0.900f, 1.00f};
 constexpr Colour kStopped    = {0.400f, 0.420f, 0.470f, 1.00f};
 
-const char* kVertexShader = R"glsl(
-#version 450 core
+const char* kVertexShader = R"glsl(#version 300 es
 layout(location = 0) in vec2 a_pos;
 layout(location = 1) in vec4 a_colour;
 uniform vec2 u_viewport;
@@ -84,8 +83,8 @@ void main()
 }
 )glsl";
 
-const char* kFragmentShader = R"glsl(
-#version 450 core
+const char* kFragmentShader = R"glsl(#version 300 es
+precision highp float;
 in vec4 v_colour;
 out vec4 frag_colour;
 void main()
