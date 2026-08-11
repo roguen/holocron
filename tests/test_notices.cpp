@@ -91,6 +91,11 @@ TEST_CASE("every shipped dependency has a copyright notice", "[notices]")
         "David Herberth",            // glad
         "Max-Planck-Society",        // pocketfft
         "G-Truc Creation",           // glm
+        // Android only, and asserted on EVERY platform anyway. The notices are
+        // compiled into one file that ships everywhere, and the Android build is
+        // the one that cannot run this test -- so if the requirement were only
+        // checked where the library is linked, it would never be checked at all.
+        "The OpenSSL Project Authors",
     };
 
     for (const char* holder : holders) {
