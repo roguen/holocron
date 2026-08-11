@@ -553,6 +553,19 @@ token = ""
 #
 # Input codes (SLI): 00 VCR/DVR, 01 CBL/SAT, 02 GAME, 03 AUX, 05 PC, 10 BD/DVD,
 # 11 STRM BOX, 12 TV, 22 PHONO, 23 TV/CD, 24 FM, 2B NET, 80 SOURCE.
+#
+# LEAVE THE LISTENING MODE OUT IF SOMETHING ELSE ON YOUR RACK OWNS IT.
+#
+# A receiver stores a listening mode PER INPUT, so it is a piece of shared state
+# and two programs writing it is not "the last one wins" -- it is a preference
+# being overwritten for whatever somebody is actually listening to. If you run a
+# dedicated listening-mode manager, give it the mode and keep only PWR and SLI
+# here. Holocron is the only one of the two that knows "I am about to make sound
+# on this input" early enough to wake an amplifier and select it; a mode manager
+# is the only one that knows the library, the codec and the title. See D-060.
+#
+# That split is live on this project's own rack: the PC input keeps LMD01 below
+# because nothing else claims it, and the Shield's config sends PWR and SLI only.
 on_start = []
 
 # What to send when playback stops.
