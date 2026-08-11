@@ -18,9 +18,17 @@
 // inside a single translation unit. This is the same arrangement and the same
 // trade.
 //
-// THE COST IS STATED RATHER THAN HIDDEN: like `WasapiSink` and `https_client`,
-// this does not port to Android at M8 and will need a platform layer there. That
-// is already true of the audio backend, so M8 was never going to be a recompile.
+// THE COST WAS STATED RATHER THAN HIDDEN, AND IT HAS NOW BEEN PAID. This used to
+// read "does not port to Android at M8 and will need a platform layer there".
+// It got one, and it is the same trade a second time: Android reaches
+// `android.graphics` through JNI, so there is still no font dependency and the
+// rasterizer is still the platform's own. See the `__ANDROID__` branch of
+// text_render.cpp, which also records why `AFontMatcher` was rejected.
+//
+// On Android this is not decoration. The third-party notices are reachable three
+// ways on Windows; two of them need a rasterizer and the third needs a command
+// line, and an Android TV has no command line its owner can use -- so without
+// this there is no user route to the colophon at all.
 //
 // A HAND-AUTHORED BITMAP FONT WAS THE ALTERNATIVE and was rejected. 95 glyphs of
 // hand-entered bit patterns is a large amount of data that cannot be reviewed by

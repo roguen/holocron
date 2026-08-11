@@ -16,7 +16,9 @@ Two files, sharing a stem:
 `mine.frag`
 
 ```glsl
-#version 450 core
+#version 300 es
+precision highp float;
+precision highp sampler2D;
 
 in  vec2 v_uv;          // 0..1 across the framebuffer
 out vec4 frag_colour;
@@ -47,6 +49,33 @@ holocron.exe track.flac --crystal mine
 ```
 
 Note the stem — no extension. The loader appends `.toml` and `.frag` itself.
+
+### Those first three lines are not boilerplate
+
+They used to read `#version 450 core`, and a crystal written that way runs on a
+desktop and **fails to compile on the Shield**, which is M8's target. Measured
+against a real OpenGL ES compiler and recorded in
+[`docs/shield.md`](shield.md#1-the-shaders-port--converted-and-checked-on-both-compilers):
+
+| what the shader says | what an ES compiler does |
+|---|---|
+| `#version 450 core` | fails — `'core' : invalid version directive` |
+| `#version 300 es` with no precision line | fails — `'' : No precision specified for (float)` |
+| `#version 300 es` + `precision highp float;` | compiles |
+
+Desktop OpenGL has accepted ES shaders since 4.3, so one source runs on both.
+There is nothing to gain from `450 core` and a whole platform to lose.
+
+**`precision highp sampler2D;` is the third line and it is the one that will bite
+silently.** A `sampler2D` defaults to `lowp` in the ES fragment language, and the
+float line does not cover it. A `lowp` sampler clamps around ±2 — so if you sample
+`u_album_art`, or anything else, on a platform where that applies, values above
+that are flattened **with no error, no warning and nothing in a log**. Declare it
+even in a shader that samples nothing; it costs a line and removes a class.
+
+**`#version` must be the literal first line.** The GLSL ES specification permits
+comments before it, and at least one real compiler does not. Put the licence
+block, if you want one, after it.
 
 ---
 

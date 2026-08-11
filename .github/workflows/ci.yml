@@ -142,24 +142,41 @@ jobs:
           echo "ANDROID_NDK_LATEST_HOME=$ANDROID_NDK_LATEST_HOME"
           test -d "$ANDROID_NDK_LATEST_HOME" || { echo "::error::no NDK on this runner"; exit 1; }
 
-      # text_render.cpp is one of the files carrying an __ANDROID__ branch, and
-      # it reaches glm through palette.hpp. Without glm it would be SKIPPED, and
-      # the script fails deliberately when a covered file is skipped — so the
-      # header has to be here or this job cannot do its job.
+      # The files carrying an __ANDROID__ branch need headers, and the script
+      # fails deliberately when one of them is SKIPPED for a missing dependency
+      # — so they have to be here or this job cannot do its job.
       #
-      # COPIED RATHER THAN POINTED AT. glm is header-only and architecture
-      # independent, so the host package's copy is the right content; but
-      # `-isystem /usr/include` in a cross-compile puts glibc's headers ahead of
-      # the NDK's sysroot, which produces failures that look like Android bugs
-      # and are not. Copying the one directory out keeps that impossible.
-      - name: glm, and only glm, on the cross include path
+      # text_render.cpp reaches glm through palette.hpp; window.cpp needs SDL3.
+      #
+      # THROUGH VCPKG FOR THE arm64-android TRIPLET, not through apt. Two
+      # reasons. Ubuntu has no SDL3 package at all, so apt could not supply it
+      # anyway. And the host packages are the wrong content in a way that is
+      # easy to miss: putting `-isystem /usr/include` on a cross-compile line
+      # searches glibc's headers ahead of the NDK's sysroot, which produces
+      # failures that look like Android bugs and are not.
+      #
+      # Header-only ports (glm) cost seconds. SDL3 is a real build and is the
+      # bulk of this job's time; it is cached by vcpkg's own binary cache
+      # between runs on the same runner image.
+      #
+      # Classic mode rather than the manifest, so this installs TWO ports rather
+      # than the project's whole dependency set — FFmpeg for arm64-android is
+      # seventeen minutes and buys this check nothing. The cost is that these two
+      # come from vcpkg's own baseline rather than the manifest's pinned one. A
+      # header difference between them would surface here as a compile error,
+      # which is a visible failure rather than a silent one.
+      - name: SDL3 and glm for arm64-android
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
         run: |
-          sudo apt-get update && sudo apt-get install -y libglm-dev
-          mkdir -p /tmp/android-inc
-          cp -r /usr/include/glm /tmp/android-inc/
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet arm64-android \
+              --x-install-root=/tmp/android-vcpkg glm sdl3
+          ls /tmp/android-vcpkg/arm64-android/include
 
       - name: Cross-compile src/ for aarch64-linux-android
-        run: HOLOCRON_ANDROID_INCLUDE=/tmp/android-inc bash scripts/android-check.sh
+        run: |
+          HOLOCRON_ANDROID_INCLUDE=/tmp/android-vcpkg/arm64-android/include \
+              bash scripts/android-check.sh
 
   build:
     name: Build and test (${{ matrix.name }})
