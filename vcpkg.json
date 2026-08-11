@@ -47,7 +47,8 @@
       "features": [
         "loader",
         "gl-api-45"
-      ]
+      ],
+      "platform": "!android"
     },
     "tomlplusplus"
   ],

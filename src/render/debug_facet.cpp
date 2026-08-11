@@ -37,7 +37,7 @@
 
 #include <holocron/audio_frame.hpp>
 
-#include <glad/glad.h>
+#include "gl_api.hpp"
 
 #include <algorithm>
 #include <cmath>

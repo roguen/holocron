@@ -51,7 +51,7 @@
 
 #pragma once
 
-#include <glad/glad.h>
+#include "gl_api.hpp"
 
 namespace holocron {
 

@@ -15,7 +15,7 @@
 #include <windows.h>
 #endif
 
-#include <glad/glad.h>
+#include "gl_api.hpp"
 
 #include <SDL3/SDL_error.h>
 #include <SDL3/SDL_events.h>
@@ -32,10 +32,40 @@ namespace holocron {
 
 namespace {
 
+#if !defined(__ANDROID__)
 // GL entry points are per-process, not per-context, as far as glad 0.1 is
 // concerned: it fills one global function table. Loading twice is harmless but
 // pointless, and loading zero times is a crash, so it is tracked.
 bool g_gl_loaded = false;
+#endif
+
+// Make GL's entry points callable. Returns false if they could not be resolved,
+// which the caller turns into kLoaderFailed.
+//
+// ON ANDROID THERE IS NOTHING TO RESOLVE, and this is not a stub standing in for
+// work not done. OpenGL ES entry points are exported by libGLESv3.so and linked
+// like any other library function -- there is no loader, no function-pointer
+// table and no initialisation step, which is exactly why gl_api.hpp gives
+// Android the platform's own header instead of a second glad configuration.
+// See issue 237.
+bool load_gl_entry_points()
+{
+#if defined(__ANDROID__)
+    return true;
+#else
+    if (g_gl_loaded) {
+        return true;
+    }
+    // SDL_GL_GetProcAddress returns SDL_FunctionPointer; glad wants a
+    // void*(*)(const char*). The cast is unavoidable at this boundary and is
+    // the only one in the file.
+    if (gladLoadGLLoader(reinterpret_cast<GLADloadproc>(SDL_GL_GetProcAddress)) == 0) {
+        return false;
+    }
+    g_gl_loaded = true;
+    return true;
+#endif
+}
 
 void APIENTRY gl_debug_message(GLenum        /*source*/,
                                GLenum        type,
@@ -171,9 +201,27 @@ WindowError Window::open(const WindowConfig& cfg)
 
     // Requested BEFORE window creation -- SDL applies these when the GL window
     // is created, and setting them afterwards silently does nothing.
+    //
+    // TWO PROFILES, ONE BODY OF CALLS. The version and profile asked for are the
+    // only thing that differs between the desktop and the Shield; nothing below
+    // this point in the render library has a platform conditional in it, and
+    // that is what the DSA port bought (docs/shield.md section 4). Bind-based GL
+    // is legal on 4.5 core and on ES 3.2 alike.
+    //
+    // ES 3.2 rather than 3.1 because the float layers depend on it: RGBA16F is
+    // colour-renderable AND required-renderable in ES 3.2 core, where at 3.0 and
+    // 3.1 it needs GL_EXT_color_buffer_float. D-047. The Shield reports 3.2 and
+    // the extension both, but asking for the version that makes it core means
+    // the guarantee comes from the context rather than from a string compare.
+#if defined(__ANDROID__)
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+#else
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+#endif
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     if (cfg.gl_debug) {
@@ -217,19 +265,13 @@ WindowError Window::open(const WindowConfig& cfg)
         return WindowError::kContextCreateFailed;
     }
 
-    if (!g_gl_loaded) {
-        // SDL_GL_GetProcAddress returns SDL_FunctionPointer; glad wants a
-        // void*(*)(const char*). The cast is unavoidable at this boundary and
-        // is the only one in the file.
-        if (gladLoadGLLoader(reinterpret_cast<GLADloadproc>(SDL_GL_GetProcAddress)) == 0) {
-            SDL_GL_DestroyContext(impl_->ctx);
-            SDL_DestroyWindow(impl_->window);
-            impl_->ctx    = nullptr;
-            impl_->window = nullptr;
-            SDL_QuitSubSystem(SDL_INIT_VIDEO);
-            return WindowError::kLoaderFailed;
-        }
-        g_gl_loaded = true;
+    if (!load_gl_entry_points()) {
+        SDL_GL_DestroyContext(impl_->ctx);
+        SDL_DestroyWindow(impl_->window);
+        impl_->ctx    = nullptr;
+        impl_->window = nullptr;
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        return WindowError::kLoaderFailed;
     }
 
     // A driver may hand back MORE than was asked for. Report what was actually
@@ -378,6 +420,25 @@ bool Window::save_bmp(const char* path) const
 
     std::vector<unsigned char> pixels(static_cast<std::size_t>(pixel_bytes), 0);
 
+    // READ RGBA AND SWIZZLE, RATHER THAN ASKING GL FOR BGR.
+    //
+    // This used to be a single `glReadPixels(..., GL_BGR, GL_UNSIGNED_BYTE, ...)`
+    // straight into the BMP's own byte order, which is neat and is desktop-only:
+    // GL_BGR does not exist in OpenGL ES at any version, so that line did not
+    // compile for the Shield at all. Found by scripts/android-check.sh, which is
+    // the entire reason that script exists -- nothing else in the project would
+    // have noticed until an Android build was attempted.
+    //
+    // GL_RGBA with GL_UNSIGNED_BYTE is the one combination ES 3.2 REQUIRES
+    // glReadPixels to accept for a normalised fixed-point buffer (everything
+    // else is one implementation-defined pair you have to query). It is equally
+    // valid on desktop 4.5, so this is one path rather than two.
+    //
+    // The cost is a scratch buffer and a byte shuffle on a debug path that runs
+    // once per --shot invocation. It is not on any frame's critical path.
+    std::vector<unsigned char> rgba(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4,
+                                    0);
+
     // THE WINDOW'S FRAMEBUFFER, EXPLICITLY.
     //
     // glReadPixels reads whatever is bound as GL_READ_FRAMEBUFFER, and since M3
@@ -389,8 +450,26 @@ bool Window::save_bmp(const char* path) const
     // would be a wrong answer that looks like a right one.
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 
-    glPixelStorei(GL_PACK_ALIGNMENT, 4);
-    glReadPixels(0, 0, w, h, GL_BGR, GL_UNSIGNED_BYTE, pixels.data());
+    // Alignment 1, not 4: this reads into a tightly packed RGBA buffer with no
+    // row padding of its own. The BMP's 4-byte row padding is applied below, to
+    // the destination, where it belongs.
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+
+    // RGBA, bottom-up (glReadPixels' own row order, which is also the BMP's) to
+    // BGR with the BMP's 4-byte row padding. Alpha is dropped: the window's
+    // framebuffer is opaque and a 24-bit BMP has nowhere to put it.
+    for (int y = 0; y < h; ++y) {
+        const unsigned char* src = rgba.data() + static_cast<std::size_t>(y) *
+                                                     static_cast<std::size_t>(w) * 4;
+        unsigned char* dst = pixels.data() + static_cast<std::size_t>(y) *
+                                                 static_cast<std::size_t>(padded_row);
+        for (int x = 0; x < w; ++x) {
+            dst[static_cast<std::size_t>(x) * 3 + 0] = src[static_cast<std::size_t>(x) * 4 + 2];
+            dst[static_cast<std::size_t>(x) * 3 + 1] = src[static_cast<std::size_t>(x) * 4 + 1];
+            dst[static_cast<std::size_t>(x) * 3 + 2] = src[static_cast<std::size_t>(x) * 4 + 0];
+        }
+    }
 
     const int header_bytes = 14 + 40;
     const int file_bytes   = header_bytes + pixel_bytes;

@@ -11,7 +11,7 @@
 #include <holocron/frame_binding.hpp>
 #include <holocron/track_context.hpp>
 
-#include <glad/glad.h>
+#include "gl_api.hpp"
 
 #include "gl_bind.hpp"
 

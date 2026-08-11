@@ -7,7 +7,7 @@
 
 #include <holocron/palette.hpp>
 
-#include <glad/glad.h>
+#include "gl_api.hpp"
 
 namespace holocron {
 

@@ -437,7 +437,18 @@ target_link_libraries(holocron_projectm
 # written to our warning discipline and is not ours to fix.
 # ---------------------------------------------------------------------------
 
-find_package(glad CONFIG REQUIRED)
+# NOT ON ANDROID (issue 237). glad's job is to resolve desktop GL entry points at
+# runtime; OpenGL ES has no such problem -- its entry points are exported by the
+# vendor's libGLESv3.so and link like any other library function. Asking vcpkg
+# for glad on an Android triplet does not produce an ES loader either: the
+# feature pinned in vcpkg.json is `gl-api-45`, and a feature is not
+# triplet-dependent, so what arrives is the DESKTOP 4.5 loader. It compiles
+# perfectly and every entry point in it is null on an ES driver.
+#
+# See src/render/gl_api.hpp for the header swap and for the rejected alternative.
+if(NOT ANDROID)
+    find_package(glad CONFIG REQUIRED)
+endif()
 
 add_library(holocron_render STATIC
     src/render/window.cpp
@@ -469,13 +480,22 @@ target_link_libraries(holocron_render
             holocron::visual
     PRIVATE holocron::warnings
             SDL3::SDL3
-            glad::glad
 )
 
 target_include_directories(holocron_render SYSTEM PRIVATE
     $<TARGET_PROPERTY:SDL3::Headers,INTERFACE_INCLUDE_DIRECTORIES>
-    $<TARGET_PROPERTY:glad::glad,INTERFACE_INCLUDE_DIRECTORIES>
 )
+
+if(ANDROID)
+    # The platform's own ES 3.2 library. GLESv3 carries the 3.x entry points;
+    # the headers come from the NDK, through src/render/gl_api.hpp.
+    target_link_libraries(holocron_render PRIVATE GLESv3 EGL)
+else()
+    target_link_libraries(holocron_render PRIVATE glad::glad)
+    target_include_directories(holocron_render SYSTEM PRIVATE
+        $<TARGET_PROPERTY:glad::glad,INTERFACE_INCLUDE_DIRECTORIES>
+    )
+endif()
 
 # ---------------------------------------------------------------------------
 # Playback session

@@ -27,20 +27,25 @@
 # exists this becomes redundant and should be deleted rather than kept as a
 # second, weaker check.
 #
-# AND THERE IS ONE THING IT PROVABLY CANNOT CATCH, FOUND BY THIS SCRIPT ITSELF.
+# IT ALREADY EARNED ITS KEEP, AND THE FIRST THING IT CAUGHT WAS ITSELF.
 #
-# Point HOLOCRON_ANDROID_INCLUDE at a real arm64-android vcpkg install and the
-# whole render library compiles, cleanly, with nothing skipped. That is not
-# evidence that it works: `vcpkg.json` pins glad to `gl-api-45`, so the header
-# installed for the Android triplet is the DESKTOP GL 4.5 loader -- it declares
-# GL_VERSION_4_5, gladLoadGLLoader, and even the DSA entry points. Every one of
-# those declarations compiles on any platform. On an ES driver they would all
-# resolve to null at load time.
+# Before issue 237 was fixed, pointing HOLOCRON_ANDROID_INCLUDE at a real
+# arm64-android vcpkg install compiled the WHOLE render library cleanly with
+# nothing skipped -- and that was not evidence of anything. `vcpkg.json` pinned
+# glad to `gl-api-45`, and a vcpkg feature is not triplet-dependent, so the
+# header installed for the Android triplet was the DESKTOP GL 4.5 loader. It
+# declared GL_VERSION_4_5, gladLoadGLLoader and the DSA entry points, all of
+# which compile anywhere and all of which are null on an ES driver.
 #
-# So a green run here says the C++ is portable. It says nothing about whether the
-# GL those files call exists on the device. That is issue 237, and the reason it
-# is stated here is that a check whose limits are not written down gets read as
-# covering more than it does.
+# src/render/gl_api.hpp fixed that: Android now compiles against the NDK's
+# <GLES3/gl32.h>, ES 3.2 core and nothing else. So a green run here now does say
+# that every GL name the render library uses exists in ES 3.2 -- which is a real
+# claim, and it immediately found two that did not: APIENTRY, which the ES
+# headers spell GL_APIENTRY, and GL_BGR in the --shot screenshot path, which ES
+# does not have at any version.
+#
+# WHAT IT STILL DOES NOT SAY: that anything links, packages, or behaves. A
+# declaration existing is not a driver implementing it.
 #
 # NO HAND-MAINTAINED FILE LIST, AND THAT IS DELIBERATE
 #
@@ -232,6 +237,6 @@ fi
 
 echo
 echo "android-check: OK -- these translation units COMPILE for $target."
-echo "  Not proven here: that they link, that they package, or that the GL they"
-echo "  call exists on the device. glad is generated for desktop GL 4.5 (issue"
-echo "  237), so the render library compiling is not evidence about ES."
+echo "  What that says: every name they use, GL included, exists in ES 3.2 core."
+echo "  What it does not: that anything links, packages, or runs. A declaration"
+echo "  existing is not a driver implementing it, and nothing has run on a device."
