@@ -400,3 +400,45 @@ TEST_CASE("a whole-number projectm duration is accepted as written", "[gatekeepe
     REQUIRE(load_gatekeeper(path, cfg, detail) == GatekeeperError::kOk);
     CHECK(cfg.projectm_preset_duration == 45.0);
 }
+
+TEST_CASE("the four argv-only switches have config keys", "[gatekeeper][android]")
+{
+    // Issue 242. Each of these was reachable only through a command-line flag,
+    // and an Android Activity launch passes no argv -- so on a television they
+    // were not inconvenient, they were unreachable. `debug_facet` is the sharp
+    // case: it exists BECAUSE the facet is otherwise unreachable (issue 144).
+    //
+    // THE POLARITY IS POSITIVE HERE AND NEGATIVE ON THE COMMAND LINE. A config
+    // file describes a wanted state; a flag is a once-off negation of it. This
+    // test pins that, because a later reader "fixing" the config keys to match
+    // the flag names would invert three of them silently.
+    Scratch           s;
+    const std::string path = s.write("[audio]\n"
+                                     "enabled = false\n"
+                                     "[render]\n"
+                                     "debug_facet = true\n"
+                                     "watch = false\n"
+                                     "compositor = false\n");
+
+    Gatekeeper  cfg;
+    std::string detail;
+    INFO(detail);
+    REQUIRE(load_gatekeeper(path, cfg, detail) == GatekeeperError::kOk);
+    CHECK_FALSE(cfg.enabled);
+    CHECK(cfg.debug_facet);
+    CHECK_FALSE(cfg.watch);
+    CHECK_FALSE(cfg.compositor);
+}
+
+TEST_CASE("the four argv-only switches default to the flagless behaviour",
+          "[gatekeeper][android]")
+{
+    // The defaults must be what the player did before these keys existed, or
+    // adding them would have changed behaviour for everyone who never asked.
+    // Audio on, hot reload on, compositor on, debug facet off.
+    Gatekeeper g;
+    CHECK(g.enabled);
+    CHECK(g.watch);
+    CHECK(g.compositor);
+    CHECK_FALSE(g.debug_facet);
+}

@@ -2598,6 +2598,28 @@ int main(int argc, char** argv)
                            : cfg.backend == "sdl"  ? Options::kSdl
                                                    : Options::kAuto;
             }
+
+            // FOUR SWITCHES THAT HAD ONLY A FLAG, AND AN ACTIVITY PASSES NO
+            // argv. Issue 242.
+            //
+            // An OR rather than an `opt.given` entry, and that is exact rather
+            // than a shortcut. Every one of these flags is one-way: it defaults
+            // to false and the parser only ever sets it true, so "the user asked
+            // for it" IS the field being true. The `given` machinery exists for
+            // the fields where it cannot be -- `--width 1280` is
+            // indistinguishable from the default 1280 without it.
+            //
+            // Flags still beat the file, in both directions where the file says
+            // yes and the flag says no: `--no-watch` turns off a `watch = true`,
+            // and a `watch = false` cannot be turned back on for one run. The
+            // second half is a real asymmetry and the reason is that there is no
+            // `--watch` to add without inventing a flag nobody asked for; the
+            // config is one edit away on every platform that has a keyboard, and
+            // on the one that does not, the file IS the interface.
+            opt.debug_facet   = opt.debug_facet || cfg.debug_facet;
+            opt.no_watch      = opt.no_watch || !cfg.watch;
+            opt.no_compositor = opt.no_compositor || !cfg.compositor;
+            opt.no_audio      = opt.no_audio || !cfg.enabled;
         }
     }
 

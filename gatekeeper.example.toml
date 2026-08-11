@@ -25,6 +25,34 @@
 # built-in default. A flag is what you reach for to try something once, so it has
 # to win against a file you edited a month ago.
 #
+# WHAT IS DELIBERATELY NOT HERE, AND WHY.
+#
+# An Activity launch on Android passes no argv, so a flag with no key here is
+# unreachable on a television. Every flag that names a DURABLE PREFERENCE now has
+# one. The rest are argv-only on purpose, in three groups:
+#
+#   Modes that print and exit          --help, --notices, --list-bindings,
+#                                      --link, --discover, --calibrate
+#     Each needs a terminal to read the answer off, and each has a route on a
+#     device that does not: the notices are on F1 and the phone, the trim is on
+#     /control/tuning, and --link runs on any machine carrying the target's
+#     machine identifier (D-059). A config key would ask a television to enter a
+#     mode it cannot report the result of.
+#
+#   Verification aids for --frames/--shot   --overlay, --colophon-page, --frames,
+#                                           --shot
+#     These exist so a screenshot can capture a state that is otherwise only
+#     reachable over HTTP. On a device there IS a screen, and
+#     `adb exec-out screencap -p` is a better instrument than --shot -- which
+#     writes to the working directory, and an Android process has cwd `/`.
+#
+#   Bootstrap                          --config
+#     It names this file. It cannot live in it.
+#
+# The once-off overrides -- --no-audio, --no-watch, --no-compositor,
+# --no-discover, --no-herald, --fullscreen/--windowed -- all have keys, and the
+# flag wins over the file in every case.
+#
 # An UNRECOGNISED key is ignored without complaint, because an unedited copy of
 # this template is full of them. A key that IS live and holds a bad value is
 # fatal -- silently falling back to a default would mean the trim you measured
@@ -44,6 +72,17 @@
 #
 # LIVE. Today also: --sink
 backend = "auto"
+
+# Open an audio device at all.
+#
+# False decodes and analyses and draws, and opens nothing -- which is how the
+# renderer is checked on a machine whose audio device is busy, and how a run is
+# made silent without unplugging anything. The visuals are unaffected: they are
+# driven by the analysis, which happens either way.
+#
+# `--no-audio` does the same for one run and still wins. Here because an Activity
+# launch passes no argv (issue 242). LIVE.
+enabled = true
 
 # Empty means the system default playback device. Set it to a substring of the
 # endpoint's friendly name to pin a specific one -- useful when the receiver is
@@ -273,6 +312,44 @@ safe_area = 0.0
 # silent misuse into a message at the moment it happens rather than a black
 # screen twenty draw calls later. LIVE.
 gl_debug = true
+
+# Draw the debug facet -- every AudioFrame field as bars and markers -- instead
+# of a crystal.
+#
+# THIS KEY EXISTS BECAUSE THE FACET WAS UNREACHABLE ON ANDROID. It already needed
+# a flag once (issue 144): the only path to it was an empty vault and no crystal,
+# and the config's vault defaults to "crystals", so on any normal setup the
+# branch could not be entered. `--debug-facet` fixed that on the desk -- and an
+# Activity launch passes no argv, so on a television the fix did not apply. Issue
+# 242.
+#
+# `--debug-facet` still works and still wins. LIVE.
+debug_facet = false
+
+# Rebuild a crystal in place when its .frag or .toml is saved.
+#
+# ON BY DEFAULT IN EVERY MODE, because the authoring loop is what it exists for
+# and a flag you have to remember is a flag you forget -- leaving you editing a
+# file the player is ignoring. It also watches the vault directory, so a crystal
+# copied in appears in about three seconds (issue 214), which on a device with no
+# shell is the whole authoring story.
+#
+# `--no-watch` turns it off for one run. LIVE.
+watch = true
+
+# Draw through the layer stack rather than straight to the window.
+#
+# NOT A DEAD SWITCH. The direct path is taken automatically when a float
+# framebuffer cannot be allocated, and a path nothing can reach on purpose is a
+# path nobody finds out is broken. It is also the only way to measure what the
+# compositor costs.
+#
+# Turning it off loses archives, crossfades, the final pass and every blend mode:
+# those all live in the stack. Set it false to find out whether the compositor is
+# what is wrong, not as a setting to keep.
+#
+# `--no-compositor` turns it off for one run. LIVE.
+compositor = true
 
 
 # ---------------------------------------------------------------------------
