@@ -361,12 +361,52 @@ TEST_CASE("controllable claims exactly what is implemented", "[plex][playback]")
     // assumed.
     REQUIRE(xml.find("seekTo") != std::string::npos);
 
-    // Volume is REPORTED so the controller's model stays consistent, and is
-    // STILL not in `controllable`, because applying it in software would end
-    // bit-perfect output. See the note in timeline_xml.
+    // Volume is REPORTED so the controller's model stays consistent, and is not
+    // claimed here because this fixture has no receiver to forward it to. It is
+    // still never applied in software -- that would end bit-perfect output. See
+    // the note in timeline_xml, and the two cases below.
     REQUIRE(xml.find("volume=\"100\"") != std::string::npos);
     REQUIRE(xml.find("controllable=\"") != std::string::npos);
-    REQUIRE(xml.find("volume,") == std::string::npos);
+    REQUIRE(xml.find(",volume") == std::string::npos);
+}
+
+TEST_CASE("volume is claimed only when there is a receiver to forward it to",
+          "[plex][playback][volume]")
+{
+    // ISSUE 126. The slider works by going to the RECEIVER, which attenuates in
+    // its own domain -- so the signal stays bit-perfect and the control is real.
+    //
+    // Claiming it unconditionally would put a working-looking slider on the phone
+    // for every rack that has not configured a receiver: the dead-button failure
+    // this list exists to avoid, and the exact complaint issue 126 was filed
+    // over, reintroduced from the other side.
+    TimelineState with       = playing_fixture();
+    with.volume_controllable = true;
+
+    const std::string xml = timeline_xml("7", with);
+    REQUIRE(xml.find(",volume\"") != std::string::npos);
+}
+
+TEST_CASE("the timeline reports the volume that was SENT, not a constant",
+          "[plex][playback][volume]")
+{
+    // SENT AND NOT APPLIED, which is the only honest reading available: the
+    // receiver can be turned up by its own remote at any moment and nothing here
+    // would know. The last commanded level is the most this can truthfully claim.
+    TimelineState state       = playing_fixture();
+    state.volume_controllable = true;
+    state.volume_sent         = 63;
+
+    const std::string xml = timeline_xml("7", state);
+    REQUIRE(xml.find("volume=\"63\"") != std::string::npos);
+    REQUIRE(xml.find("volume=\"100\"") == std::string::npos);
+
+    // And -1 keeps the old constant, which is right both before the first command
+    // and for a player that forwards nothing: it really is passing the signal
+    // through unattenuated.
+    TimelineState untouched = playing_fixture();
+    untouched.volume_sent   = -1;
+    REQUIRE(timeline_xml("7", untouched).find("volume=\"100\"") != std::string::npos);
 }
 
 TEST_CASE("a paused player still reports a position and a track", "[plex][playback]")

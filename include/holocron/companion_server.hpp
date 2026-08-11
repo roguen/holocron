@@ -129,6 +129,19 @@ public:
     // of the track, matching every other position in this protocol.
     using SeekHandler = std::function<void(std::int64_t position_ms)>;
 
+    // Called when a controller moves the volume slider. 0..100, Plex's scale.
+    //
+    // NOT A CHANGE OF MIND ABOUT SOFTWARE VOLUME. Scaling samples here would end
+    // bit-perfect output, which is what WASAPI exclusive mode exists for. This
+    // exists because M7 made a better answer available: the handler forwards to
+    // the receiver, which attenuates in its own domain, downstream of everything
+    // this program touches. The slider works and the signal stays exact.
+    //
+    // Called once per command, and a drag is one command per pixel -- 44 of them
+    // for a single gesture, measured on the rack. Coalescing belongs to whatever
+    // acts on it, not here.
+    using VolumeHandler = std::function<void(int level)>;
+
     // Called when a controller says its play queue has changed and the player
     // should re-read it. `play_queue_id` is the queue the controller means.
     //
@@ -475,6 +488,7 @@ public:
     void set_queue_handler(QueueHandler handler);
     void set_skip_handler(SkipHandler handler);
     void set_seek_handler(SeekHandler handler);
+    void set_volume_handler(VolumeHandler handler);
     void set_refresh_queue_handler(RefreshQueueHandler handler);
 
     // What to report to a controller that asks.

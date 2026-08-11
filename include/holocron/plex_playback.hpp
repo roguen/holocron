@@ -188,6 +188,22 @@ const char* to_string(TransportState state);
 struct TimelineState {
     TransportState state = TransportState::kStopped;
 
+    // Whether the player can act on a volume command at all, and what it last
+    // COMMANDED if it has. Issue 126.
+    //
+    // TWO FIELDS, BECAUSE THEY ARE TWO FACTS AND COLLAPSING THEM DEADLOCKS. The
+    // first attempt claimed `volume` in `controllable` when a level had been
+    // sent -- so no slider appeared, so no command arrived, so no level was ever
+    // sent. Capability is known at startup; the last value is not.
+    //
+    // `volume_sent` is SENT, NOT APPLIED, which is the only honest reading
+    // available: the receiver can be turned up by its own remote at any moment
+    // and nothing here would know. -1 reports the old constant 100, which is
+    // right both before the first command and when nothing is being driven --
+    // Holocron really is passing the signal through unattenuated.
+    bool volume_controllable = false;
+    int  volume_sent         = -1;
+
     // Where in the track, and how long it is. MILLISECONDS, and the position
     // must INCLUDE any start offset -- a resumed track that reports its
     // position relative to where decoding began makes a controller's scrubber
