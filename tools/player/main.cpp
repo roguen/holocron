@@ -226,6 +226,12 @@ struct Options {
     // flag you forget -- leaving you editing a file the player is ignoring. The
     // negative form matches --no-audio.
     bool        no_watch = false;
+
+    // Fill the display, or refuse to. BOTH DIRECTIONS, because the theatre wants
+    // it on from the config and the desk wants it off for one run without editing
+    // the file. Issue 219.
+    bool        fullscreen = false;
+    bool        windowed   = false;
     // Draw straight to the window instead of through the layer stack.
     //
     // NOT A DEAD FLAG. That fallback exists whether or not anything can reach
@@ -365,6 +371,10 @@ Options parse(int argc, char** argv)
             o.no_herald = true;
         } else if (std::strcmp(a, "--no-watch") == 0) {
             o.no_watch = true;
+        } else if (std::strcmp(a, "--fullscreen") == 0) {
+            o.fullscreen = true;
+        } else if (std::strcmp(a, "--windowed") == 0) {
+            o.windowed = true;
         } else if (std::strcmp(a, "--no-compositor") == 0) {
             o.no_compositor = true;
         } else if (std::strcmp(a, "--debug-facet") == 0) {
@@ -423,6 +433,10 @@ void usage()
         "  --trim-ms N    shift the analysis tap N ms earlier, to compensate for\n"
         "                 latency downstream of the device clock (DAC, HDMI,\n"
         "                 receiver). Positive means the picture waits longer\n"
+        "  --fullscreen   fill the display, ignoring --width/--height. Takes the\n"
+        "                 display's CURRENT mode rather than setting one, so the\n"
+        "                 resolution and refresh rate stay the driver's business.\n"
+        "  --windowed     force a window even if the config asks for fullscreen.\n"
         "  --no-watch     do not reload the crystal when its files change. With\n"
         "                 --crystal, saving the .frag or .toml rebuilds it in\n"
         "                 place by default; a shader that fails to compile is\n"
@@ -2223,6 +2237,18 @@ int main(int argc, char** argv)
     // no-op in that case rather than a second source of truth.
     wc.vsync    = cfg.vsync;
     wc.gl_debug = cfg.gl_debug;
+
+    // Config first, then the flags, in the order the rest of the file already
+    // follows: flags beat the file, the file beats the defaults. Both directions
+    // exist because the theatre wants it on from the config and the desk wants to
+    // override that for one run without editing anything.
+    wc.fullscreen = cfg.fullscreen;
+    if (opt.fullscreen) {
+        wc.fullscreen = true;
+    }
+    if (opt.windowed) {
+        wc.fullscreen = false;
+    }
 
     Window window;
     const WindowError werr = window.open(wc);

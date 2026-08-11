@@ -209,6 +209,66 @@ vsync = true
 # first thing to try if a heavy crystal cannot hold the refresh rate.
 scale = 1.0
 
+# Fill the display, ignoring width and height above. LIVE. Also --fullscreen,
+# and --windowed to override this for one run.
+#
+# TAKES THE DISPLAY'S CURRENT MODE rather than setting one. The resolution and
+# refresh rate belong to the graphics driver and to whatever the HDMI link
+# negotiated -- a player that changed them would make that setting invisible and
+# would invalidate `trim_ms`, which is a difference measured against display
+# latency.
+#
+# Off by default because the desk is where every test run happens and a window
+# that steals the display each time is hostile. The theatre asks for it.
+fullscreen = false
+
+# ---------------------------------------------------------------------------
+# The final pass. THESE FOUR BELONG TO THE DISPLAY, not to any crystal, which is
+# why they live here and not in a manifest -- a vignette or a safe-area inset
+# changes the look of every crystal ever authored.
+#
+# All four were LIVE and read from this section long before they were written
+# down here, which meant that following this file could not turn bloom on and
+# there was no way to discover it existed. See issue 219.
+# ---------------------------------------------------------------------------
+
+# Bloom: how much of the over-threshold light is smeared back over the picture.
+#
+# THIS IS WHAT THE FLOAT LAYERS ARE FOR. Layers are GL_RGBA16F precisely so a
+# crystal can exceed 1.0 before its vignette, and bloom is the pass that does
+# something with the part above 1.0. At 0.0 that headroom is computed and thrown
+# away. Measured at 70 microseconds at 4K on an RX 6800.
+#
+# 0.0 is off. Try 0.25 to see it at all; 0.6 is heavy.
+bloom = 0.0
+
+# What counts as "bright" for bloom, in the same units the layers work in. 1.0 is
+# white. Lower catches more of the picture; above 1.0 catches only what a crystal
+# deliberately pushed past white.
+bloom_threshold = 1.0
+
+# Film grain, as a fraction of an 8-bit step.
+#
+# ON BY DEFAULT BECAUSE IT IS A FIX, NOT A LOOK. The layers are float and the
+# window is 8-bit, so a dark gradient bands. Measured: the same dark patch of
+# `drift` goes from 208 to 288 distinct colours with grain at 1.0. Costs nothing
+# when everything on this list is zero -- the compositor is then told it needs no
+# canvas at all.
+grain = 1.0
+
+# Vignette: darken the corners. 0.0 is off.
+#
+# `pulse`, `drift` and `duel` each roll their own today, so this stacks with
+# theirs rather than replacing it.
+vignette = 0.0
+
+# Safe-area mask, as a fraction inset from each edge. 0.0 is off; 0.02 is the
+# classic television action-safe inset.
+#
+# A PROPERTY OF A PARTICULAR PROJECTOR'S GEOMETRY -- for when overscan or a lens
+# loses the edge of the picture. Judge it on the projector, not on a monitor.
+safe_area = 0.0
+
 # Ask the driver for a debug context and log GL errors. Cheap, and it turns a
 # silent misuse into a message at the moment it happens rather than a black
 # screen twenty draw calls later. LIVE.

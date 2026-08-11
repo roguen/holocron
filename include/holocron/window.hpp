@@ -95,6 +95,23 @@ struct WindowConfig {
     bool          resizable  = true;
     bool          vsync      = true;
 
+    // Fill the display. OFF BY DEFAULT, and that is not timidity: the desk is
+    // where every test run happens, and a window that steals the display on each
+    // one is hostile. The theatre asks for it explicitly.
+    //
+    // BORDERLESS-DESKTOP FULLSCREEN, NOT A MODE SET. SDL3's plain
+    // SDL_WINDOW_FULLSCREEN takes the display's CURRENT mode rather than changing
+    // it, which is what is wanted: the mode belongs to the graphics driver and to
+    // the HDMI link it negotiated -- see issue 211, where the rack is at 4K 29 Hz
+    // because the link is RGB 10-bit. A player that quietly changed the mode would
+    // make that setting invisible and the trim measurement meaningless, because
+    // `trim_ms` is a difference against display latency and one refresh at 29 Hz
+    // is 34.5 ms.
+    //
+    // `width` and `height` are ignored when this is set; the drawable is queried
+    // back from SDL, which the render loop already does every frame.
+    bool          fullscreen = false;
+
     // Ask the driver for a debug context and install a KHR_debug callback.
     // Cheap, and it turns a silent misuse into a message at the moment it
     // happens rather than a black screen twenty draw calls later.
