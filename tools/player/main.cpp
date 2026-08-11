@@ -2696,8 +2696,19 @@ int main(int argc, char** argv)
     // there is one path rather than two. Rejected for now: begin_stack is a lambda
     // declared with the render loop's state and moving it above the vault means
     // hoisting `layered`, `fade_started` and both stacks with it, which is a large
-    // edit to fix a one-word bug. The two places that raise this both take a max,
-    // so neither can lower it -- that is the property that matters.
+    // edit to fix a one-word bug.
+    //
+    // THERE ARE THREE PLACES THAT RAISE THIS, NOT TWO. This comment said two, and
+    // the third -- the hot-reload path -- was the one that did not do it, so an
+    // archive that gained a `[[layer]]` while on screen lost the new layer
+    // silently (issue 217). The count is stated because getting it wrong is
+    // exactly how that happened: begin_stack raises it twice, the reload path
+    // once, and the reload path is easy to miss precisely because it deliberately
+    // does NOT go through begin_stack.
+    //
+    // All three take a max, so none can lower it -- that is the property that
+    // matters, and it is what makes raising it on the reload path safe even when
+    // the stack got smaller.
     std::size_t layers_wanted = std::max<std::size_t>(1, live_stack.size());
 
     // Printed when it changes, because this is the branch the whole render path
@@ -4047,16 +4058,38 @@ int main(int argc, char** argv)
             }
 
             if (switching) {
-                current      = wanted;
-                showing_sync = false;
-                // Pushed so the control page follows the ARROW KEYS too. The page
-                // already knows about its own POSTs; this is the other direction.
-                companion.set_current_crystal(current);
-
+                // NOTHING IS RECORDED UNTIL THE STACK IS BUILT.
+                //
+                // `current`, `showing_sync` and the page's selection used to be
+                // set here, BEFORE anything that can refuse the switch --
+                // `archive_for` fails on a broken archive and `build_stack` fails
+                // on any layer that will not compile, which build_stack's own
+                // comment notes is most of the time an author is editing.
+                //
+                // On a refusal that left three things describing a picture that
+                // was not on screen: `current` named a crystal that was not
+                // drawing so the next arrow press moved from the wrong place, the
+                // phone highlighted the wrong entry, and -- the one that would
+                // really have cost an evening -- `watch` was not re-emplaced,
+                // because the re-emplace sits in the success branch. An author who
+                // switched to a broken crystal and then edited it to fix it got no
+                // reload, because nothing was watching the file being edited.
+                //
+                // build_stack was always right: it builds beside the live stack and
+                // swaps only if every layer built, and all three of its failure
+                // prints end "still drawing what was already up". The picture was
+                // correct and everything describing it was wrong. Issue 216.
                 Archive   archive;
                 LiveStack next;
-                if (archive_for(vault[current], archive) &&
+                if (archive_for(vault[wanted], archive) &&
                     build_stack(archive, next, "switched to", projectm_ctx)) {
+                    current      = wanted;
+                    showing_sync = false;
+                    // Pushed so the control page follows the ARROW KEYS too. The
+                    // page already knows about its own POSTs; this is the other
+                    // direction.
+                    companion.set_current_crystal(current);
+
                     begin_stack(std::move(next));
                     if (watch) {
                         // The watch has to follow, or an author would edit what is
@@ -4064,6 +4097,19 @@ int main(int argc, char** argv)
                         watch.emplace(live_stack.archive.watch_paths,
                                       std::chrono::steady_clock::now());
                     }
+                } else {
+                    // The switch was refused and `current` still names what is
+                    // actually drawing. Say so, and correct the page -- which
+                    // wrote its own selection optimistically before its 303,
+                    // because the browser's follow-up GET usually beats the render
+                    // loop. Without this it keeps showing a switch that did not
+                    // happen, and the same correction is already made for an
+                    // out-of-range index a few lines above.
+                    std::fprintf(stderr,
+                                 "holocron: could not switch to \"%s\" -- still on \"%s\"\n",
+                                 vault[wanted].name.c_str(), vault[current].name.c_str());
+                    std::fflush(stderr);
+                    companion.set_current_crystal(current);
                 }
             }
 
@@ -4098,6 +4144,27 @@ int main(int argc, char** argv)
                         next.facets[i]->set_elapsed(live_stack.facets[i]->elapsed());
                     }
                     live_stack = std::move(next);
+
+                    // THE THIRD PLACE THAT RAISES layers_wanted, and it was
+                    // missing. A reload deliberately does not go through
+                    // begin_stack -- that is what starts a crossfade, and a reload
+                    // must not fade -- so it also skipped the only two places that
+                    // sized the compositor.
+                    //
+                    // Add a [[layer]] to the archive on screen and save it:
+                    // build_stack succeeded, live_stack grew, and layers_wanted did
+                    // not, so compositor.resize() was still sized for the old count,
+                    // bind_layer failed for the extra layer, the loop broke, and the
+                    // new layer was neither drawn nor composited. Nothing was
+                    // printed either, because the announcement is gated on
+                    // `announced_layers != layers_wanted` -- suppressed by the same
+                    // bug that caused it. Issue 217, and the same silence as #166.
+                    //
+                    // This only ever grows, like the other two, which is why it
+                    // cannot regress a stack that got smaller: the compositor is
+                    // deliberately not shrunk mid-run, because reallocating layers
+                    // on the frame a transition begins is the worst moment for it.
+                    layers_wanted = std::max(layers_wanted, live_stack.size());
 
                     // A reload is NOT a transition and must not fade -- it
                     // replaces a picture with a recompiled version of itself, and
