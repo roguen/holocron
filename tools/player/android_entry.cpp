@@ -49,6 +49,7 @@
 #include <holocron/platform_paths.hpp>
 
 #include <SDL3/SDL_filesystem.h>
+#include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_main.h>
 #include <SDL3/SDL_system.h>
 
@@ -141,6 +142,32 @@ int main(int argc, char** argv)
 
     // FIRST, before anything can print. Everything the player says is on stdout.
     redirect_stdio_to_logcat();
+
+    // KEEP RUNNING WHILE BACKGROUNDED. The owner's decision, 2026-08-11.
+    //
+    // SDL's default is the opposite and it is not a mild default: with
+    // SDL_ANDROID_BLOCK_ON_PAUSE at its default of "1", SDL_PollEvent BLOCKS
+    // INDEFINITELY once the Activity is paused. The render loop is
+    // `while (window.pump())`, so the entire loop stops -- and with it every
+    // command from the phone, both timelines and the herald. The music would
+    // keep playing, because the decode thread and the audio callback are
+    // independent of the loop, and the phone would keep showing a progress bar
+    // that no longer moved and buttons that did nothing.
+    //
+    // For a cast target that is the wrong behaviour. Holocron on a television is
+    // meant to be driven from a phone in another room; whether its Activity
+    // happens to be foreground is not something the person holding the phone
+    // knows or should have to care about.
+    //
+    // The obligation this takes on: with the loop still running there is no
+    // surface, so it must not touch GL. That is handled in the render loop,
+    // which skips everything below its drawing boundary while
+    // `window.visible()` is false.
+    //
+    // BEFORE THE VIDEO SUBSYSTEM STARTS, which is why it is here rather than in
+    // window.cpp -- SDL reads this hint when it initialises video, and this file
+    // is the first Holocron code that runs.
+    SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE, "0");
 
     JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
     if (env != nullptr) {
