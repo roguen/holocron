@@ -27,7 +27,11 @@
       "features": [
         "avcodec",
         "avformat",
-        "swresample"
+        "swresample",
+        {
+          "name": "openssl",
+          "platform": "!windows"
+        }
       ]
     },
     {

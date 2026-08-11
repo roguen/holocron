@@ -24,6 +24,41 @@ These are linked into `holocron` or `holocron-analyze` and ship alongside them.
 | pocketfft | 2024-11-30 | BSD-3-Clause | header-only, compiled in | [pocketfft-BSD-3-Clause.txt](licenses/pocketfft-BSD-3-Clause.txt) |
 | glm | 1.0.3 | MIT | header-only, compiled in | [glm-MIT.txt](licenses/glm-MIT.txt) |
 
+### On Android only, and the differences are not cosmetic
+
+The Android build is a single shared object, `libholocron.so`, so **every library
+above is statically linked into it** rather than shipped as a separate file. It
+also carries one library the Windows build does not.
+
+| Library | Version | Licence | Linkage on Android | Text |
+|---|---|---|---|---|
+| OpenSSL | 3.6.3 | **Apache-2.0** | static, inside `libholocron.so` | [openssl-Apache-2.0.txt](licenses/openssl-Apache-2.0.txt) |
+
+**Why it is there.** FFmpeg is what opens the Plex stream, and a Plex media server
+is reached over HTTPS. On Windows FFmpeg gets TLS from **schannel**, which is part
+of the operating system and is neither linked nor shipped. There is no schannel on
+Android, and vcpkg's FFmpeg port offers exactly one alternative, so the `openssl`
+feature is requested **only where schannel is unavailable** — `vcpkg.json` carries
+`"platform": "!windows"` on it. The Windows build is byte-for-byte unaffected and
+does not gain this dependency.
+
+**Apache-2.0 is one-way compatible with GPL-3.0**, which is the direction that
+matters here: Holocron is GPL-3.0-or-later, so it may incorporate Apache-2.0 code.
+This is worth stating explicitly because the old OpenSSL licence (1.x, with the
+advertising clause) was **not** GPL-compatible and is the reason FFmpeg has
+historically warned about `--enable-openssl`. OpenSSL 3.x relicensed to Apache-2.0
+and that warning no longer applies to this configuration.
+
+**FFmpeg becomes LGPL-3.0-or-later on Android**, not 2.1. vcpkg's `openssl`
+feature pulls in FFmpeg's own `version3` feature — `--enable-version3` — which
+upgrades FFmpeg's licence. LGPL-3.0-or-later is compatible with GPL-3.0-or-later,
+so nothing here is blocked; the version is recorded because it differs by platform
+and a reader checking the Windows binary would otherwise conclude 2.1 everywhere.
+
+**§6(b) still applies** and is still satisfied the same way: the whole thing is
+GPL-3.0-or-later, the corresponding source is the repository, and static linkage
+of an LGPL library into a GPL work is exactly what the LGPL permits.
+
 ## Build- and test-time only
 
 Not linked into anything that ships, listed so the distinction is explicit
@@ -76,6 +111,7 @@ does not put the escape back.
 | glad | Copyright (c) 2013-2021 David Herberth |
 | pocketfft | Copyright (C) 2010-2018 Max-Planck-Society |
 | glm | Copyright (c) 2005 - G-Truc Creation |
+| OpenSSL (**Android only**) | Copyright (c) 1998-2026 The OpenSSL Project Authors. Individual files additionally carry "Copyright 1995-2026 The OpenSSL Project Authors. All Rights Reserved.", and some carry third-party lines — Oracle and Nokia among them. The Apache-2.0 text vcpkg ships as the package's copyright file contains no project line at all, so the line above is taken from the source tree rather than from that file. |
 
 **FFmpeg is the only shipped dependency under the LGPL**, so it is the only one
 §6 governs. The rest are permissive — MIT, BSD-3-Clause, Zlib — and every one of
