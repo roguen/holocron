@@ -615,6 +615,46 @@ from the source's — WASAPI shared mode on Windows still does.
 D-053's conclusion is untouched: the output is **not** bit-perfect on this
 device, and now that is observed rather than derived.
 
+### The receiver on the Shield: power and input only, deliberately no listening mode
+
+The Shield sits on the receiver's STRM BOX input, `SLI11`. Its `gatekeeper.toml`
+carries a herald, and what it does **not** contain is the interesting part:
+
+```toml
+[herald]
+on_start = [
+    "eiscp://192.168.68.128/PWR01",
+    "wait://4000",
+    "eiscp://192.168.68.128/SLI11",
+]
+on_stop = []
+```
+
+**No `LMD`.** The rack's own config sends `LMD01` (Direct) on the PC input and
+should keep doing so, because nothing else on this rack claims input 05. Input 11
+is different: a dedicated listening-mode manager owns it, and a receiver's
+listening mode is stored **per input**, so two writers is not "last one wins" — it
+is a stored preference being overwritten for whatever somebody is actually
+listening to.
+
+The split is by what each program can know:
+
+| | knows | writes |
+|---|---|---|
+| Holocron | *"I am about to make sound on this input"*, before anything else does | `PWR`, `SLI` |
+| the mode manager | library, codec, title, and the receiver's current state | `LMD` |
+
+D-060. Note the herald needed no change for this — an errand is a URI, so the
+split is one line deleted from a config file. That is the M7 design working as
+intended rather than a concession to it.
+
+**A warning that belongs to whoever writes the mode**, and is recorded in
+`include/holocron/eiscp.hpp` where it will be missed by anybody not reading C++:
+`LMD11` is **Pure Audio**, which on several Onkyo models shuts down the video
+circuitry along with the front panel display. On an input whose entire purpose is
+a picture on a projector, that is a black screen and a confused evening. `LMD01`
+is Direct and is the one to want.
+
 ### Also worth knowing before the first device run
 
 - **The dependency chain is not a risk.** All eleven ports build for
