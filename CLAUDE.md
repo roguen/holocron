@@ -35,7 +35,7 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: M1, M2, M3, M4, M5 and M7 are DONE. M6 is 3 of 4.
+## Status: SEVEN milestones are DONE. Only M8 remains.
 
 **`v0.6.1`.** M1 closed 2026-08-10, ten sessions after its last two criteria were
 first written down as open, and M2's last unbuilt criterion closed the same day:
@@ -44,7 +44,7 @@ first written down as open, and M2's last unbuilt criterion closed the same day:
 |---|---|
 | **M1** | **DONE, 8 of 8, 2026-08-10.** The two that had never been picked up in ten sessions both landed: `tests/fixtures/analysis-golden.csv` diffs 750 frames of a generated fixture against the harness's own CSV writer, and `tests/test_audio_callback.cpp` replaces the global `operator new` to count what the callback allocates — on a real device thread as well as directly. |
 | **M2** | **DONE, 8 of 8, two amended, 2026-08-10.** Per-uniform envelope overrides landed — the last unbuilt piece — and **the owner authorised the closure the same day**. The visual language was his judgement and nobody else's, which is why the milestone stayed open for a few hours after the code was finished. `v0.6.0`. |
-| **M6** | **3 of 4.** The about panel — the **colophon** — is built, and building it found that `THIRD-PARTY-NOTICES.md` carried **no copyright notice for anything**: LGPL-2.1 §6 names "the copyright notice for the Library" *and* a reference to the licence, and the file had only the second. Criterion 1 **amended 2026-08-10 (D-045): the phone IS the control surface**, which is the design rather than a shortfall. **One left, and it is not a task** — legibility on the projector. |
+| **M6** | **DONE, 4 of 4, one amended, 2026-08-10.** Closed by the owner **on the projector**: the card, the lyric line and the colophon's seven pages all read from the couch. Criterion 1 was amended the same day (D-045: the phone IS the control surface). **Three things had to be fixed before the question could honestly be asked** — there was no fullscreen mode at all, the desktop was 1920×1080 upscaled to a 4K signal, and the link was at 29 Hz to carry RGB 10-bit the 8-bit renderer never produces. All three were silent and two looked healthy. D-049. |
 | **M7** | **DONE, 3 of 3, 2026-08-10.** The **herald** runs errands when playback starts and stops -- eISCP over TCP 60128. **Confirmed against the receiver the day it went on the network**: ONKYO TX-RZ720 at `192.168.68.128`, `SLI11` to `SLI05` and `LMD80` to `LMD01` read back from fresh connections, and the player reporting 3 commands sent and 0 failed. **It was found in `LMD80`, Dolby PLII Movie** -- the milestone's own premise, observed. An errand is a URI, so a webhook replaces eISCP by editing a value. D-048. |
 | **M8** | **IN SCOPE, two unknowns settled.** D-046: shaders are authored at `#version 300 es` and compile unchanged on both platforms, because desktop GL has accepted ES shaders since 4.3. **D-047: the float layers port too** -- `GL_RGBA16F` is colour-renderable *and required-renderable* in ES 3.2 core, read out of the spec table and measured on two real ES drivers through ANGLE. The Shield is in the rack at `192.168.68.38`, on the receiver's STRM BOX input. **The work left is about 41 DSA call sites**, which have no ES equivalent at any version. |
 | **M5** | **DONE — all six criteria, one amended.** The last debt closed 2026-08-10 by measuring rather than building: the NAS answers a repeat sleeve in **1 ms**, so the art cache stays in memory (D-044). `artwork_cache.hpp` ships unused on purpose. |
@@ -52,7 +52,10 @@ first written down as open, and M2's last unbuilt criterion closed the same day:
 See the eight-row table at the top of the wiki
 [Roadmap](https://github.com/roguen/holocron/wiki/Roadmap).
 
-**Six milestones are finished.** M7 — the herald, closed 2026-08-10 when the
+**Seven milestones are finished, and only M8 is left.** M6 — on-screen UI, closed
+2026-08-10 by the owner **on the projector**, the first time anything from `v0.3.0`
+to `v0.7.0` had been seen in the room it was built for. M7 — the herald, closed
+2026-08-10 when the
 receiver went on the network and it drove a real amplifier. M1 — the spine,
 closed 2026-08-10 after its last
 two criteria had sat untouched for ten sessions. M2 — crystals, closed the same
@@ -474,7 +477,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.7.0`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.8.0`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
@@ -484,7 +487,7 @@ the `duel` crystal, the compositor, the crossfade, the tuning page and lyrics al
 landed as patches while M3 was still open. That is the rule working as written,
 not a mistake.
 
-**`v0.7.0` is M7, the SIXTH completed milestone**, and `v0.6.0` is M2, the fifth
+**`v0.8.0` is M6, the SEVENTH completed milestone**, `v0.7.0` is M7 the sixth, and `v0.6.0` is M2 the fifth
 -- after M5 at `v0.2.0`, M3 at
 `v0.3.0`, M4 at `v0.4.0` and M1 at `v0.5.0`. The minor number counts how many are
 finished, not which one; M1 being the first milestone and the fourth to finish is
