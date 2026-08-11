@@ -204,8 +204,9 @@ Shield at M8, where there is no such cache.
 **`--trim-ms` does NOT need re-measuring for this.** The M3 issue flagged the
 compositor as a risk to the calibration, and the measurement answers it: the pass
 is an extra draw call inside the same frame before the same swap, so it adds no
-buffering stage — only 0.06 ms of GPU time, against a trim of −90 ms recorded on a
-5 ms grid. Three orders of magnitude below the resolution of the instrument. This
+buffering stage — only 0.06 ms of GPU time, against a trim of −30 ms recorded on a
+5 ms grid with a ±25 ms resolution. Nearly three orders of magnitude below the
+resolution of the instrument. This
 supersedes the warning in issue 139 and in the session-7 handoff.
 
 **`--no-compositor` draws straight to the window.** Not a dead flag: that fallback
@@ -352,11 +353,19 @@ hot reload and the vault all exist and are tested. The undecided part is the
 should inherit from the debug facet, which is an instrument panel. That call is
 the owner's and should not be made from a screenshot.
 
-**`--trim-ms` is measured: `-90` on this rack.** Bracketed 2026-08-04 against the
-generated click track — clearly early at `-135`, clearly late at `-50`, so the
-estimate is the midpoint **−92.5 ± 42 ms**, recorded as `-90` on the 5 ms grid
-the tool steps in. It lives in `gatekeeper.toml`; re-measure with
-`holocron <track> --calibrate`.
+**`--trim-ms` is measured: `-30` on this rack.** Re-measured **2026-08-10 at 4K
+60 Hz, RGB 8-bit** against the generated click track — bracketed late at `0` and
+early at `-50`, midpoint `-25`, taken as **`-30`** on the 5 ms grid the tool steps
+in, so the resolution is about **±25 ms**. It lives in `gatekeeper.toml`;
+re-measure with `holocron <track> --calibrate`.
+
+**It was `-90` until then, and that figure is still all over the older
+documents.** −90 was measured 2026-08-04 at 4K **29 Hz**, RGB 10-bit. The
+projector evening changed the link to 4K 60 Hz 8-bit (D-049), and two refreshes of
+vsync'd present pipeline went from 69 ms to 33 ms — which accounts for about 36 of
+the 60 ms move. The rest is plausibly the projector processing 4K60 8-bit faster
+than 4K30 10-bit and is not separately measured. **A trim is a property of the
+whole rack, and the refresh rate is part of the rack.**
 
 **Three independent estimates agree**, which is what makes it a property of the
 rack rather than of whatever was playing: this bracket gave −92.5, an earlier

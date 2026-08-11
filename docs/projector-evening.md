@@ -77,6 +77,14 @@ at `/control/tuning`, which is where the judgement is actually easier to make.
 Expect somewhere around **−55 to −70**. If nudging stops helping, read the line —
 it tells you when you have run out of lead rather than leaving you guessing.
 
+> **OUTCOME, 2026-08-10: −30.** Outside the range predicted here, and in the same
+> direction — the move was larger than the refresh-rate arithmetic alone predicts.
+> Bracketed late at 0 and early at −50, midpoint −25, taken as −30 on the 5 ms
+> grid, so the resolution is about ±25 ms and the prediction is only about one
+> resolution away from the result. Two refreshes went from 69 ms to 33 ms, which
+> accounts for roughly 36 of the 60 ms; the rest is plausibly the projector
+> processing 4K60 8-bit faster than 4K30 10-bit and was not separately measured.
+
 ---
 
 ## Running it

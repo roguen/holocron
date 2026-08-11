@@ -143,7 +143,7 @@ Kept because each looks reasonable until it is used, and none announced itself.
 The first instrument drew `pow(onset_strength, 3.0)`. Brightness *followed* the
 envelope, so the screen ramped up and back down with no edge anywhere. Timing a
 fade biases the answer positive by roughly the attack time. It reported this rack
-as 0 when it is −90.
+as 0 when, at the time, it was −90.
 
 **2. A six-fold rotation — reported `-235`.**
 `pulse` spins a six-fold pattern once per beat, so the picture looks identical
@@ -194,6 +194,17 @@ WASAPI exclusive, 160-frame period.
 | Clearly late | −50 |
 | **Midpoint** | **−92.5**, recorded as **−90** |
 | Resolution | ±42 ms |
+
+> **SUPERSEDED AS A CURRENT VALUE, KEPT AS A RECORD.** This whole run was made on
+> 2026-08-04 at **4K 29 Hz, RGB 10-bit**. The projector evening changed the link
+> to 4K 60 Hz 8-bit, and the trim was re-measured on 2026-08-10: late at 0, early
+> at −50, midpoint −25, **taken as −30** with a resolution of about ±25 ms. Two
+> refreshes of vsync'd present pipeline went from 69 ms to 33 ms, which accounts
+> for about 36 of the 60 ms move.
+>
+> The procedure below is unchanged and is what produced both numbers. **The
+> refresh rate is part of the rack**, which is the rule this page already states,
+> demonstrated the expensive way.
 
 Three independent estimates agree, which is what makes it a property of the rack
 rather than of whatever was playing:
