@@ -34,23 +34,34 @@
 // exactly what this becomes on the Shield at M8 -- so the awkward part is being
 // paid for once rather than rewritten there.
 //
-// THE HTTPS CLIENT IS WinHTTP, AND THAT IS A TRADE
+// THE HTTPS CLIENT IS `https_client`, AND IT USED NOT TO BE
 //
-// plex.tv is HTTPS-only. cpp-httplib can do TLS but only against OpenSSL, and
-// that feature is deliberately off (see vcpkg.json) -- Companion is plain HTTP
-// on the LAN and did not need it.
+// plex.tv is HTTPS-only. This file used to carry **its own private WinHTTP
+// client** -- a near-duplicate of the Windows body of https_client.cpp, with
+// everything above it inside `#ifdef _WIN32` and a `#else` that returned
+// kUnsupportedPlatform from all three entry points.
 //
-// Rather than take an OpenSSL dependency for three requests, this uses WinHTTP,
-// which is in the platform SDK and needs nothing acquired. That follows the
-// WasapiSink precedent exactly: the implementation is behind `_WIN32` INSIDE the
-// source, and the file is compiled on every platform on purpose so the Linux
-// compiler still reads it. On a non-Windows build every call returns
-// kUnsupportedPlatform rather than pretending.
+// That made it a FOURTH Windows-only file at a milestone that had listed three,
+// and the cost was not subtle: `holocron --link` could not obtain a token, and
+// even with a token copied from elsewhere `register_player` refused -- so no
+// device with `provides=player` was created and no connection URI was published.
+// The four-step chain in CLAUDE.md says GDM alone gets nowhere near a cast list.
 //
-// The cost is honest and worth stating: this does not port to Android at M8.
-// Neither does WasapiSink, and the platform layer was always going to be the
-// part that does not port (D-029). If a second real platform ever arrives,
-// swapping in OpenSSL or libcurl is a contained change behind this interface.
+// It now calls `https_request`. The duplicate was deleted rather than ported:
+// one HTTPS client in the project, and a platform that gains one gains the
+// account path with it. Issue 241.
+//
+// kUnsupportedPlatform survives and still means something -- a build whose
+// `https_client` has no implementation. It is kept distinct from
+// kNetworkFailure because the recoveries are opposite: a network failure is
+// worth retrying and a build with no client never will be.
+//
+// WHAT REMAINS PLATFORM-SPECIFIC HERE is one UDP socket, in
+// `local_address_towards`, using the same winsock/POSIX idiom as
+// gdm_responder.cpp. It also used to be a stub returning nothing off Windows,
+// which was a SECOND and independent reason registration did not happen: the
+// caller reports "cannot work out this machine's LAN address" and returns
+// before `register_player` is ever reached.
 
 #pragma once
 
@@ -63,7 +74,7 @@ namespace holocron {
 enum class LinkError : std::uint8_t {
     kOk = 0,
 
-    kUnsupportedPlatform,  // built somewhere without the WinHTTP path
+    kUnsupportedPlatform,  // this build has no HTTPS client at all
     kNetworkFailure,       // could not reach plex.tv
     kRejected,             // plex.tv answered, and said no
     kMalformedResponse,    // answered with something unreadable

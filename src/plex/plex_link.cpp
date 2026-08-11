@@ -3,19 +3,37 @@
 //
 // See plex_link.hpp.
 //
-// The WinHTTP half is behind _WIN32 INSIDE this file, and the file is compiled
-// on every platform on purpose -- the same arrangement wasapi_sink.cpp uses, and
-// for the same reason: the Linux job is the project's only case-sensitive,
-// second-opinion compiler, and excluding a file from it means nothing ever reads
-// it but MSVC.
+// THIS FILE USED TO CARRY ITS OWN WINHTTP CLIENT, and that is the whole of issue
+// 241. `plex_request` was a near-duplicate of the Windows body of
+// https_client.cpp -- same handles, same header assembly, same read loop -- with
+// everything above it inside `#ifdef _WIN32` and a `#else` that returned
+// kUnsupportedPlatform from all three entry points.
+//
+// It was a FOURTH Windows-only file, and M8 had listed three. The consequence
+// was not subtle: `holocron --link` could not obtain a token, and even with a
+// token copied from elsewhere `register_player` refused, so no device with
+// `provides=player` was ever created and no connection URI was ever published.
+// CLAUDE.md's own four-step chain says GDM alone gets nowhere near a cast list.
+//
+// It now goes through `https_request`, which grew an Android body at v0.8.4. The
+// duplicate is deleted rather than ported: one HTTPS client, and a platform that
+// gains one gains it here for free.
+//
+// WHAT IS LEFT OF THE PLATFORM SPLIT is a UDP socket, for exactly the reason
+// gdm_responder.cpp has one, and it uses that file's idiom rather than a second
+// invention.
 
 #include <holocron/plex_link.hpp>
+
+#include <holocron/https_client.hpp>
 
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #ifdef _WIN32
 // clang-format off
@@ -25,8 +43,18 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-#include <winhttp.h>
 // clang-format on
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
+#ifdef __ANDROID__
+// android_get_device_api_level, for X-Plex-Platform-Version. No permission, no
+// JNI -- it reads a system property the libc already caches.
+#include <android/api-level.h>
 #endif
 
 namespace holocron {
@@ -35,7 +63,7 @@ const char* to_string(LinkError e)
 {
     switch (e) {
     case LinkError::kOk:                  return "ok";
-    case LinkError::kUnsupportedPlatform: return "linking is only implemented on Windows";
+    case LinkError::kUnsupportedPlatform: return "this build has no HTTPS client";
     case LinkError::kNetworkFailure:      return "could not reach plex.tv";
     case LinkError::kRejected:            return "plex.tv refused the request";
     case LinkError::kMalformedResponse:   return "plex.tv answered with something unreadable";
@@ -199,46 +227,45 @@ std::string link_url(const PlexPin& pin, const std::string& client_identifier,
 // The HTTPS client
 // ---------------------------------------------------------------------------
 
-#ifdef _WIN32
-
 namespace {
 
-std::wstring widen(const std::string& s)
+// What this device calls itself to the account. It shows in the Plex device list
+// and in a controller's cast list, so a Shield announcing "Windows" is not
+// cosmetic -- it is the wrong answer to a question the user can see.
+//
+// The old code hardcoded "Windows" in both fields, which was correct while
+// Windows was the only platform that could link at all.
+#if defined(_WIN32)
+constexpr const char* kPlatformName = "Windows";
+#elif defined(__ANDROID__)
+constexpr const char* kPlatformName = "Android";
+#else
+constexpr const char* kPlatformName = "Linux";
+#endif
+
+// Empty means "do not send X-Plex-Platform-Version at all", which is better than
+// sending a wrong one: the field is displayed, and a guess is a guess on somebody
+// else's screen.
+std::string platform_version()
 {
-    if (s.empty()) {
-        return {};
-    }
-    const int needed = ::MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()),
-                                             nullptr, 0);
-    if (needed <= 0) {
-        return {};
-    }
-    std::wstring out(static_cast<std::size_t>(needed), L'\0');
-    ::MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), needed);
-    return out;
+#if defined(_WIN32)
+    return "10";
+#elif defined(__ANDROID__)
+    // The real API level rather than a guess. android_get_device_api_level is in
+    // the NDK's <android/api-level.h> and needs no permission and no JNI.
+    const int level = android_get_device_api_level();
+    return level > 0 ? std::to_string(level) : std::string{};
+#else
+    return {};
+#endif
 }
 
-// Closes on the way out whatever the exit path, including the early returns
-// below. Three nested handles and five failure points is exactly where a leak
-// hides otherwise.
-struct Handle {
-    HINTERNET h = nullptr;
-    ~Handle()
-    {
-        if (h != nullptr) {
-            ::WinHttpCloseHandle(h);
-        }
-    }
-    Handle() = default;
-    explicit Handle(HINTERNET handle) : h(handle) {}
-    Handle(const Handle&)            = delete;
-    Handle& operator=(const Handle&) = delete;
-    explicit operator bool() const { return h != nullptr; }
-};
-
-// One request against plex.tv. `verb` is L"GET" or L"POST"; `path` includes any
-// query string.
-LinkError plex_request(const wchar_t* verb, const std::string& path,
+// One request against plex.tv.
+//
+// EVERY BYTE OF THE WIRE WORK IS https_request's NOW. What is left here is the
+// X-Plex-* header set, which is the part that is actually about Plex and the part
+// that took a session to get right -- see the notes on each header below.
+LinkError plex_request(const char* verb, const std::string& path,
                        const std::string& client_identifier, const std::string& product,
                        std::string& out_body, std::string& out_detail,
                        const std::string& token = {}, const std::string& version = {},
@@ -246,28 +273,6 @@ LinkError plex_request(const wchar_t* verb, const std::string& path,
                        const char* accept = "application/json")
 {
     out_body.clear();
-
-    Handle session(::WinHttpOpen(L"Holocron", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
-    if (!session) {
-        out_detail = "WinHttpOpen failed (" + std::to_string(::GetLastError()) + ")";
-        return LinkError::kNetworkFailure;
-    }
-
-    Handle connect(::WinHttpConnect(session.h, L"plex.tv", INTERNET_DEFAULT_HTTPS_PORT, 0));
-    if (!connect) {
-        out_detail = "cannot reach plex.tv (" + std::to_string(::GetLastError()) + ")";
-        return LinkError::kNetworkFailure;
-    }
-
-    const std::wstring wide_path = widen(path);
-    Handle request(::WinHttpOpenRequest(connect.h, verb, wide_path.c_str(), nullptr,
-                                        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                        WINHTTP_FLAG_SECURE));
-    if (!request) {
-        out_detail = "WinHttpOpenRequest failed (" + std::to_string(::GetLastError()) + ")";
-        return LinkError::kNetworkFailure;
-    }
 
     // X-Plex-Client-Identifier must be the SAME value the device announces over
     // GDM. plex.tv keys the token to it, and linking under one identifier while
@@ -283,64 +288,75 @@ LinkError plex_request(const wchar_t* verb, const std::string& path,
     // Samsung TV and Plexamp itself. Whether a controller requires it is not
     // written down anywhere, and the reference implementations are the only
     // authority; the same reasoning that put `navigation` back.
-    std::string headers =
-        "X-Plex-Product: " + product + "\r\n" +
-        "X-Plex-Client-Identifier: " + client_identifier + "\r\n" +
-        "X-Plex-Device: Windows\r\n"
-        "X-Plex-Platform: Windows\r\n"
-        "X-Plex-Platform-Version: 10\r\n"
-        "X-Plex-Provides: player,pubsub-player\r\n" +
-        "Accept: " + accept + "\r\n";
+    std::vector<std::pair<std::string, std::string>> headers{
+        {"X-Plex-Product", product},
+        {"X-Plex-Client-Identifier", client_identifier},
+        {"X-Plex-Device", kPlatformName},
+        {"X-Plex-Platform", kPlatformName},
+        {"X-Plex-Provides", "player,pubsub-player"},
+        {"Accept", accept},
+    };
+
+    if (const std::string pv = platform_version(); !pv.empty()) {
+        headers.emplace_back("X-Plex-Platform-Version", pv);
+    }
     if (!version.empty()) {
-        headers += "X-Plex-Version: " + version + "\r\n";
+        headers.emplace_back("X-Plex-Version", version);
     }
     if (!device_name.empty()) {
-        headers += "X-Plex-Device-Name: " + device_name + "\r\n";
+        headers.emplace_back("X-Plex-Device-Name", device_name);
     }
     if (!token.empty()) {
-        headers += "X-Plex-Token: " + token + "\r\n";
+        headers.emplace_back("X-Plex-Token", token);
     }
-    const std::wstring wide_headers = widen(headers);
 
-    if (::WinHttpSendRequest(request.h, wide_headers.c_str(),
-                             static_cast<DWORD>(wide_headers.size()), WINHTTP_NO_REQUEST_DATA, 0,
-                             0, 0) == FALSE) {
-        out_detail = "send failed (" + std::to_string(::GetLastError()) + ")";
+    HttpsResponse   response;
+    const HttpError herr = https_request(verb, "plex.tv", 443, path, headers, response, out_detail);
+
+    if (herr == HttpError::kUnsupported) {
+        // Kept as its own LinkError rather than folded into kNetworkFailure: the
+        // recovery is completely different. A network failure is worth retrying
+        // and a build with no HTTPS client never will be.
+        out_detail = "this build has no HTTPS client, so it cannot reach plex.tv";
+        return LinkError::kUnsupportedPlatform;
+    }
+    if (herr != HttpError::kOk) {
+        if (out_detail.empty()) {
+            out_detail = to_string(herr);
+        }
         return LinkError::kNetworkFailure;
     }
-    if (::WinHttpReceiveResponse(request.h, nullptr) == FALSE) {
-        out_detail = "no response (" + std::to_string(::GetLastError()) + ")";
-        return LinkError::kNetworkFailure;
-    }
 
-    DWORD status      = 0;
-    DWORD status_size = sizeof(status);
-    ::WinHttpQueryHeaders(request.h, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                          WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_size,
-                          WINHTTP_NO_HEADER_INDEX);
+    out_body = std::move(response.body);
 
-    for (;;) {
-        DWORD available = 0;
-        if (::WinHttpQueryDataAvailable(request.h, &available) == FALSE || available == 0) {
-            break;
-        }
-        std::string chunk(available, '\0');
-        DWORD       read = 0;
-        if (::WinHttpReadData(request.h, chunk.data(), available, &read) == FALSE) {
-            break;
-        }
-        out_body.append(chunk, 0, read);
-    }
-
-    if (status >= 400) {
+    if (response.status >= 400) {
         // The body carries plex.tv's own explanation and is the only useful
         // thing to show; a bare status code here has cost people whole evenings.
-        out_detail = "plex.tv returned HTTP " + std::to_string(status) +
+        // https_request deliberately returns kOk for a 4xx so this is reachable.
+        out_detail = "plex.tv returned HTTP " + std::to_string(response.status) +
                      (out_body.empty() ? std::string{} : (": " + out_body));
         return LinkError::kRejected;
     }
     return LinkError::kOk;
 }
+
+// ---------------------------------------------------------------------------
+// One UDP socket, which is the only platform split left in this file.
+//
+// Same idiom as gdm_responder.cpp rather than a second invention.
+// ---------------------------------------------------------------------------
+
+#ifdef _WIN32
+using native_socket                = SOCKET;
+constexpr native_socket kNoSocket  = INVALID_SOCKET;
+using socklen_type                 = int;
+void close_socket(native_socket s) { ::closesocket(s); }
+#else
+using native_socket                = int;
+constexpr native_socket kNoSocket  = -1;
+using socklen_type                 = socklen_t;
+void close_socket(native_socket s) { ::close(s); }
+#endif
 
 }  // namespace
 
@@ -350,7 +366,7 @@ LinkError request_pin(const std::string& client_identifier, const std::string& p
     out = PlexPin{};
 
     std::string      body;
-    const LinkError err = plex_request(L"POST", "/api/v2/pins?strong=true", client_identifier,
+    const LinkError err = plex_request("POST", "/api/v2/pins?strong=true", client_identifier,
                                        product, body, out_detail);
     if (err != LinkError::kOk) {
         return err;
@@ -376,7 +392,7 @@ LinkError await_token(PlexPin& pin, const std::string& client_identifier, int ti
         }
 
         std::string      body;
-        const LinkError err = plex_request(L"GET", "/api/v2/pins/" + pin.id + "?code=" + pin.code,
+        const LinkError err = plex_request("GET", "/api/v2/pins/" + pin.id + "?code=" + pin.code,
                                            client_identifier, "Holocron", body, out_detail);
         if (err != LinkError::kOk) {
             return err;
@@ -405,6 +421,13 @@ std::string local_address_towards(const std::string& peer)
     //
     // Nothing is sent. A UDP socket is "connected" purely so the OS picks a
     // source address for that destination, which is then read back.
+    // THIS USED TO BE A STUB RETURNING {} OFF WINDOWS, and that was a second,
+    // independent reason the account path did not work there: main.cpp prints
+    // "cannot work out this machine's LAN address; not registering with the
+    // account" and RETURNS BEFORE register_player is called. Fixing the HTTPS
+    // client alone would have left the device unregistered and the fault looking
+    // identical.
+#ifdef _WIN32
     static const bool winsock_ready = [] {
         WSADATA data{};
         return ::WSAStartup(MAKEWORD(2, 2), &data) == 0;
@@ -412,9 +435,10 @@ std::string local_address_towards(const std::string& peer)
     if (!winsock_ready) {
         return {};
     }
+#endif
 
-    const SOCKET sock = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock == INVALID_SOCKET) {
+    const native_socket sock = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == kNoSocket) {
         return {};
     }
 
@@ -422,14 +446,14 @@ std::string local_address_towards(const std::string& peer)
     to.sin_family = AF_INET;
     to.sin_port   = ::htons(80);
     if (::inet_pton(AF_INET, peer.c_str(), &to.sin_addr) != 1) {
-        ::closesocket(sock);
+        close_socket(sock);
         return {};
     }
 
     std::string address;
     if (::connect(sock, reinterpret_cast<const sockaddr*>(&to), sizeof(to)) == 0) {
-        sockaddr_in mine{};
-        int         length = sizeof(mine);
+        sockaddr_in  mine{};
+        socklen_type length = sizeof(mine);
         if (::getsockname(sock, reinterpret_cast<sockaddr*>(&mine), &length) == 0) {
             char text[INET_ADDRSTRLEN] = {};
             if (::inet_ntop(AF_INET, &mine.sin_addr, text, sizeof(text)) != nullptr) {
@@ -437,7 +461,7 @@ std::string local_address_towards(const std::string& peer)
             }
         }
     }
-    ::closesocket(sock);
+    close_socket(sock);
     return address;
 }
 
@@ -450,7 +474,7 @@ LinkError register_player_impl(const std::string& token, const std::string& clie
     //    full X-Plex-* header set does it -- there is no dedicated endpoint, and
     //    that is why it is easy to miss: it succeeds as a side effect.
     std::string body;
-    LinkError   err = plex_request(L"GET", "/api/v2/user", client_identifier, product, body,
+    LinkError   err = plex_request("GET", "/api/v2/user", client_identifier, product, body,
                                    out_detail, token, version, device_name, "application/xml");
     if (err != LinkError::kOk) {
         return err;
@@ -458,7 +482,7 @@ LinkError register_player_impl(const std::string& token, const std::string& clie
 
     // 2. Find the numeric id. The endpoint that publishes a connection is keyed
     //    by it rather than by the client identifier everything else uses.
-    err = plex_request(L"GET", "/devices.xml", client_identifier, product, body, out_detail, token,
+    err = plex_request("GET", "/devices.xml", client_identifier, product, body, out_detail, token,
                        version, device_name, "application/xml");
     if (err != LinkError::kOk) {
         return err;
@@ -483,7 +507,7 @@ LinkError register_player_impl(const std::string& token, const std::string& clie
         }
     }
 
-    err = plex_request(L"PUT", "/devices/" + device_id + ".xml?Connection%5B%5D%5Buri%5D=" + encoded,
+    err = plex_request("PUT", "/devices/" + device_id + ".xml?Connection%5B%5D%5Buri%5D=" + encoded,
                        client_identifier, product, body, out_detail, token, version, device_name,
                        "application/xml");
     if (err != LinkError::kOk) {
@@ -497,37 +521,6 @@ LinkError register_player_impl(const std::string& token, const std::string& clie
     return LinkError::kOk;
 }
 
-#else  // !_WIN32
-
-LinkError request_pin(const std::string&, const std::string&, PlexPin& out,
-                      std::string& out_detail)
-{
-    out        = PlexPin{};
-    out_detail = "built without the WinHTTP path; see plex_link.hpp";
-    return LinkError::kUnsupportedPlatform;
-}
-
-LinkError await_token(PlexPin&, const std::string&, int, const std::atomic<bool>*,
-                      std::string& out_detail)
-{
-    out_detail = "built without the WinHTTP path; see plex_link.hpp";
-    return LinkError::kUnsupportedPlatform;
-}
-
-std::string local_address_towards(const std::string&)
-{
-    return {};
-}
-
-LinkError register_player_impl(const std::string&, const std::string&, const std::string&,
-                               const std::string&, const std::string&, const std::string&,
-                               std::string& out_detail)
-{
-    out_detail = "built without the WinHTTP path; see plex_link.hpp";
-    return LinkError::kUnsupportedPlatform;
-}
-
-#endif  // _WIN32
 
 LinkError register_player(const std::string& token, const std::string& client_identifier,
                           const std::string& device_name, const std::string& product,
