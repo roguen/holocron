@@ -31,8 +31,7 @@ namespace {
 // a visible line in any shader doing derivative-based work.
 //
 // An empty VAO must still be bound; core profile refuses to draw without one.
-const char* kVertexShader = R"glsl(
-#version 450 core
+const char* kVertexShader = R"glsl(#version 300 es
 out vec2 v_uv;
 void main()
 {
