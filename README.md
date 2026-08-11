@@ -175,10 +175,13 @@ What exists:
 | **Plex** | GDM discovery, `--link` sign-in through the plex.tv PIN flow, automatic device registration and connection publishing, play queues built on the server, timeline reporting to both the controller and the media server, and every transport command a phone sends. |
 | **Playback** | `PlaybackSession` — decoder, analysis, ring, device and decode thread behind one object that can be started, **replaced** and **seeked**, which is what casting requires. |
 | **Track context** | `TrackContext` — what is playing, the album art as a texture, and a **palette** extracted from it: five swatches, a primary and a contrast accent, supplied to every crystal in linear RGB. |
-| **Tests** | **293 cases, green on Windows and Linux.** |
+| **Tests** | **544 cases, green on Windows and Linux.** |
 
-What is *not* done: the compositor, projectM, and the on-screen UI. And within M2,
-the part that is judgement rather than plumbing — see below.
+**Seven of the eight milestones are finished.** What is left is M8 — Holocron on
+the NVIDIA Shield — and it now runs there: an ES 3.2 context on Tegra, the float
+compositor layers, a crystal on screen and the licence panel legible. What it
+cannot yet do on that box is **be cast to**, because it has no Plex token there
+and the Companion port does not bind. See the milestone table below.
 
 **The `AudioFrame` contract is signed off** (2026-08-01). Section 9 of
 [`docs/audio-frame.md`](docs/audio-frame.md) records the decisions behind it — the
@@ -198,13 +201,17 @@ field may not change.
 | | Milestone | Scope | Status |
 |---|---|---|---|
 | **M1** | **Spine and audio** | CMake, SDL3 window, GL 4.5 core context, FFmpeg decode, `AudioSink` + `WasapiSink`, the analysis stage that fills `AudioFrame`, the lock-free triple buffer, and a debug facet that draws every field so the numbers can be trusted before anything is built on them. | **the spine is complete** |
-| **M2** | Crystals | Vault loading, the `.frag` + `.toml` crystal format, manifest uniform binding against the contract, hot reload. | **plumbing complete; the visual language is open** |
-| M3 | Compositor | The facet stack: layering, blend modes, transitions, archives. | planned |
-| M4 | projectM | libprojectM 4.x driven as a facet source, reading MilkDrop presets from a user-supplied path. | planned |
+| **M2** | Crystals | Vault loading, the `.frag` + `.toml` crystal format, manifest uniform binding against the contract, hot reload. | **DONE — `v0.6.0`** |
+| **M3** | Compositor | The facet stack: layering, blend modes, transitions, archives. | **DONE — `v0.3.0`** |
+| **M4** | projectM | libprojectM 4.x driven as a facet source, reading MilkDrop presets from a user-supplied path. | **DONE — `v0.4.0`** |
 | **M5** | **Plex playback target** | **The primary use case.** GDM discovery so Holocron appears in Plexamp's cast list, the Plex Companion control endpoints, timeline reporting, streaming the selected track, and metadata and album art into `TrackContext`. | **DONE — `v0.2.0`** |
-| M6 | On-screen UI | Now-playing and facet control rendered in-app. **Not a library browser** — Plexamp is the browser, and building a second one would be duplicating the better tool. | planned |
-| M7 | eISCP receiver control | Power, input, and volume control of the receiver over the network. | planned |
-| M8 | Android TV | Holocron on the Shield, so the theater does not need the PC powered on. A new platform layer — NDK, OpenGL **ES**, a different audio backend — but the contract, the analysis stage, the crystals and all of M5's protocol work port unchanged. | possible |
+| **M6** | On-screen UI | Now-playing and facet control rendered in-app. **Not a library browser** — Plexamp is the browser, and building a second one would be duplicating the better tool. | **DONE — `v0.8.0`** |
+| **M7** | eISCP receiver control | Power, input, and volume control of the receiver over the network. | **DONE — `v0.7.0`** |
+| **M8** | **Android TV** | Holocron on the Shield, so the theater does not need the PC powered on. A new platform layer — NDK, OpenGL **ES**, a different audio backend — but the contract, the analysis stage, the crystals and all of M5's protocol work port unchanged. | **IN PROGRESS. It runs there** — see Platform support |
+
+**The minor version counts milestones finished, not milestone numbers.** M5 was
+taken first on purpose, so `v0.2.0` is M5 and `v0.5.0` is M1. `1.0.0` is reserved
+for the first build that plays music and renders end to end.
 
 **M1's spine works end to end.** `holocron` decodes a file, analyses it, plays it
 bit-perfect through WASAPI in exclusive mode, and draws every `AudioFrame` field —
@@ -381,9 +388,16 @@ pull requests are not.
 
 | Platform | Role | State today |
 |---|---|---|
-| **Windows x86-64 + discrete GPU** | The target, and the machine the work happens on | **Runs.** Plays bit-perfect through `WasapiSink` in exclusive mode and draws the debug facet. |
+| **Windows x86-64 + discrete GPU** | The build and test target | **Runs everything.** Plays bit-perfect through `WasapiSink` in exclusive mode, is cast to from Plexamp, and draws the whole facet stack. |
+| **Android TV — NVIDIA Shield** | Where it is going | **Runs and draws.** An ES 3.2 context on Tegra, the `RGBA16F` compositor layers, crystals, hot reload and the licence panel. **Cannot be cast to yet:** no Plex token on the device, and the Companion HTTP port does not bind there. |
 | **Linux** | CI only | Builds and hygiene checks run here. Not a deployment target. |
 | **macOS** | Not supported | Was the development host until 2026-08-01. No longer in the project. |
+
+**The Shield will not be bit-perfect, and that is the device rather than the
+code.** Every mixer output on it is 48 kHz 16-bit, and every output that carries
+44.1 kHz is `AUDIO_OUTPUT_FLAG_DIRECT`, which the NDK does not expose — so a
+44.1 kHz file is resampled whichever audio API is underneath. `is_bit_perfect()`
+reports that truthfully rather than claiming otherwise.
 
 The target is a dedicated Windows box in a home-theater rack, HDMI to an Onkyo
 receiver. Verified on that machine: GL **4.6 core** on a Radeon RX 6800 — the
