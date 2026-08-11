@@ -169,7 +169,10 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
         run: |
-          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet arm64-android \
+          # --classic is required, not optional: vcpkg finds the repo's own
+          # vcpkg.json, switches to manifest mode, and manifest mode rejects
+          # individual package arguments outright.
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --classic --triplet arm64-android \
               --x-install-root=/tmp/android-vcpkg glm sdl3
           ls /tmp/android-vcpkg/arm64-android/include
 
