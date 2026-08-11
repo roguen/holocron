@@ -152,20 +152,39 @@ Three consequences worth stating plainly:
   vcpkg baseline actually installs, and this one is not installed by anything
   here. A user who obtains libprojectM receives its `LICENSE.txt` with it.
 
-### The SPDX identifier is `LGPL-2.1-or-later`, and the vcpkg port disagrees
+### The SPDX identifier is `LGPL-2.1-or-later`, and the project's own manifest disagrees with its own headers
 
 The wiki's Preset-Packs checklist asks for this to be recorded exactly when the
 dependency lands, because "only" and "or later" behave differently against a
-GPL-3.0 work. **Checked, and the two available sources do not agree:**
+GPL-3.0 work. **Checked, and the sources do not agree:**
 
-- **vcpkg's `ports/projectm/vcpkg.json` says `LGPL-2.1-only`.**
-- **Every C API header in the 4.1.7 release says otherwise**, in the same words
+- **vcpkg's `ports/projectm/vcpkg.json` says
+  `LGPL-2.1-only AND MIT AND MIT-0 AND Apache-2.0`.**
+- **Upstream's own `vcpkg.json`, inside the 4.1.7 release tarball, says
+  `LGPL-2.1-only`.**
+- **Every C API header in that same release says otherwise**, in the same words
   in each file: *"either version 2.1 of the License, or (at your option) any
   later version."* Checked across `core.h`, `audio.h`, `render_opengl.h` and
   `playlist.h`.
 
 The grant in the work itself is what governs, so it is **LGPL-2.1-or-later**.
-vcpkg's port metadata is a downstream packager's summary and is wrong here.
+
+**This passage previously said vcpkg's metadata was "a downstream packager's
+summary and is wrong here", and that was wrong twice.** Corrected 2026-08-10
+after installing the port and reading both manifests:
+
+- **The `-only` originates upstream, not with the packager.** The 4.1.7 tarball's
+  own `vcpkg.json` says `LGPL-2.1-only`, so vcpkg is faithfully repeating what the
+  project told it. The disagreement is between upstream's manifest and upstream's
+  headers, which is a more interesting fact and a more careful thing to say.
+- **The other three terms are not errors, they are information we lacked.** The
+  source tree bundles `vendor/hlslparser` (MIT), `vendor/SOIL2` (MIT-0, carrying
+  Apache-2.0 ETC1 and MIT PowerVR code). vcpkg's four-term expression is *more*
+  complete than the single term recorded here, and dismissing the whole expression
+  as "wrong" threw away three correct terms to reject one.
+
+Only the `-only` is contradicted. The rest stands, and anyone shipping libprojectM
+owes notices for those bundled works as well as for libprojectM itself.
 
 It happens not to matter for Holocron, since nothing is linked or shipped. It
 would matter to anyone distributing the two together: "or later" upgrades cleanly
