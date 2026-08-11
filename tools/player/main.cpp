@@ -1084,6 +1084,24 @@ struct CastCommand {
         return true;
     }
 
+    // Show a crystal the moment it arrives. Tri-state like the overlay toggles:
+    // 0 is "nothing asked", not "off".
+    int follow_new_asked = 0;
+
+    void request_follow_new(bool on)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        follow_new_asked = on ? 1 : -1;
+    }
+
+    int take_follow_new()
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const int asked  = follow_new_asked;
+        follow_new_asked = 0;
+        return asked;
+    }
+
     // -- tuning, from the control page's sub-page ---------------------------
     //
     // ACCUMULATED RATHER THAN REPLACED, which is the opposite of every other
@@ -2411,6 +2429,7 @@ int main(int argc, char** argv)
         cast.request_crystal(index);
     });
     companion.set_rescan_handler([&cast] { cast.request_rescan(); });
+    companion.set_follow_new_handler([&cast](bool on) { cast.request_follow_new(on); });
     companion.set_projectm_step_handler([&cast](int step) { cast.request_projectm_step(step); });
     companion.set_projectm_shuffle_handler([&cast](bool on) {
         cast.request_projectm_shuffle(on);
@@ -3223,6 +3242,18 @@ int main(int argc, char** argv)
     std::string last_error;
     bool        diagnostics_dirty = true;
 
+    // Switch to a crystal as it arrives. Off by default -- see
+    // ControlState::follow_new for the argument and for the rejected alternative.
+    bool follow_new = false;
+
+    // Which entry to move to because it just arrived, or kNoCurrent.
+    //
+    // A HANDOFF RATHER THAN A DIRECT SWITCH, because the drain runs before the
+    // block that owns switching -- deliberately, so no index outlives the list it
+    // was validated against. Building a stack needs the GL context, so the
+    // arrival cannot act on itself where it is noticed.
+    std::size_t follow_target = kNoCurrent;
+
     const auto notify = [&](std::string text, bool bad = false) {
         if (bad) {
             last_error        = text;
@@ -3357,8 +3388,17 @@ int main(int argc, char** argv)
         // one in look identical from the couch: the picture carries on either way
         // and the new name either is or is not in a list on a phone that has to
         // be picked up to find out.
+        // FIRST BY VAULT ORDER when several land at once, which is deterministic
+        // rather than right -- there is no way to know which of three crystals
+        // copied in together was the interesting one. Copying them in one at a
+        // time is the way to be shown each, and that is what an author does
+        // anyway.
+        if (follow_new && !arrived.empty()) {
+            follow_target = arrived.front();
+        }
+
         if (arrived.size() == 1) {
-            notify("new: " + vault[arrived.front()].name);
+            notify((follow_new ? "showing new: " : "new: ") + vault[arrived.front()].name);
         } else if (!arrived.empty() && departed > 0) {
             notify(std::to_string(arrived.size()) + " new, " + std::to_string(departed) +
                    " gone");
@@ -4538,6 +4578,11 @@ int main(int argc, char** argv)
         // colophon consuming the arrow keys is a reason not to MOVE, never a
         // reason to hold a stale list. The debug facet nulls the vault so there is
         // no scanner in that case at all.
+        if (const int asked = cast.take_follow_new(); asked != 0) {
+            follow_new = asked == 1;
+            std::printf("holocron: following new crystals %s\n", follow_new ? "on" : "off");
+            std::fflush(stdout);
+        }
         if (cast.take_rescan() && vault_scanner) {
             vault_scanner->rescan_now();
         }
@@ -4711,6 +4756,28 @@ int main(int argc, char** argv)
                     // was refused.
                     companion.set_current_crystal(current);
                 }
+            }
+
+            // -- a crystal that just arrived, if we are following them ---------
+            //
+            // LAST, AND ONLY IF NOTHING ELSE ASKED. An arrow press, an
+            // auto-advance and a tap on the phone are all somebody saying what
+            // they want, and every one of them beats a file landing in a
+            // directory.
+            //
+            // NOT WHILE THE BEAT INSTRUMENT IS UP, for the reason auto-advance is
+            // not either: somebody is measuring with it, and a measuring tool
+            // that wanders off is worse than one that cannot be reached.
+            //
+            // Consumed either way. A follow that was refused for any of these
+            // reasons is not saved up for later -- by the time the instrument
+            // comes down, "new" is no longer news.
+            if (follow_target != kNoCurrent) {
+                if (!switching && !showing_sync && follow_target < vault.size()) {
+                    wanted    = follow_target;
+                    switching = true;
+                }
+                follow_target = kNoCurrent;
             }
 
             if (switching) {

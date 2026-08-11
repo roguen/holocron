@@ -212,6 +212,29 @@ public:
         bool now_playing_visible = false;
         bool lyrics_visible      = false;
 
+        // Switch to a crystal the moment it appears in the vault. Issue 214.
+        //
+        // DEFAULT OFF, and that is the recommendation rather than an accident. An
+        // author copying a crystal in wants to see it and pays one tap; a listener
+        // gets a visualization replaced mid-track by something they did not ask
+        // for, which is disruptive and unexplainable to anyone else in the room.
+        // A missed switch costs a tap. An unwanted one costs the moment.
+        //
+        // INTENT, owned by the POST handler like the overlay toggles and for the
+        // same reason: the button carries the state it wants to move TO, so a page
+        // rendered from a stale read sends the wrong target and the control
+        // flip-flops on alternate taps.
+        //
+        // THE REJECTED ALTERNATIVE, recorded because it is the better answer if
+        // this toggle turns out to be switched on at the start of every authoring
+        // session: follow only while nothing is playing, derived from
+        // session.active() -- the same predicate the herald reads. That is ON for
+        // authoring and OFF for listening with no toggle at all. It was rejected
+        // as the default because it makes the behaviour conditional on invisible
+        // state, and "why did it switch that time and not this time" is a worse
+        // question than "why didn't it switch".
+        bool follow_new = false;
+
         // The licence panel. INTENT, owned by the POST handler like the other
         // two toggles.
         //
@@ -347,6 +370,11 @@ public:
     using LyricsHandler     = std::function<void(bool visible)>;
     using NowPlayingHandler = std::function<void(bool visible)>;
 
+    // Called when the page turns "show new crystals as they arrive" on or off.
+    // Its own alias rather than borrowing one of the two above: those are named
+    // for overlays and this is not one, and a reader should not have to check.
+    using FollowNewHandler = std::function<void(bool on)>;
+
     // Move the trim by `delta_ms`, and show the beat-alignment instrument.
     //
     // A DELTA, NOT A VALUE, and that is the whole reason the tuning page does not
@@ -367,6 +395,7 @@ public:
 
     void set_select_crystal_handler(SelectCrystalHandler handler);
     void set_rescan_handler(RescanHandler handler);
+    void set_follow_new_handler(FollowNewHandler handler);
     void set_lyrics_handler(LyricsHandler handler);
     void set_colophon_handler(LyricsHandler handler);
 

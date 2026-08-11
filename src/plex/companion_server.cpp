@@ -233,6 +233,18 @@ std::string control_page(const CompanionServer::ControlState& state)
     if (state.vault_rescannable) {
         out += "<form method=\"post\" action=\"/control/rescan\">"
                "<button type=\"submit\">Look for new crystals</button></form>";
+
+        // Beside the rescan button, because the two are the same thought a beat
+        // apart: find what arrived, and put it up. Off by default -- see
+        // ControlState::follow_new for why, and for what would replace it.
+        out += "<form method=\"post\" action=\"/control/follownew\">";
+        out += "<input type=\"hidden\" name=\"on\" value=\"";
+        out += state.follow_new ? "0" : "1";
+        out += "\"><button class=\"";
+        out += state.follow_new ? "on" : "";
+        out += "\" type=\"submit\">Show new ones as they arrive</button></form>";
+        out += "<div class=\"sub\">For authoring. Leave it off while somebody is "
+               "listening -- it changes the picture mid-track.</div>";
     }
 
     // -- projectM, only when one is actually drawing --------------------------
@@ -539,6 +551,7 @@ struct CompanionServer::Impl {
     CompanionServer::RefreshQueueHandler  refresh_queue_handler;
     CompanionServer::SelectCrystalHandler select_crystal_handler;
     CompanionServer::RescanHandler        rescan_handler;
+    CompanionServer::FollowNewHandler     follow_new_handler;
     CompanionServer::LyricsHandler        lyrics_handler;
     CompanionServer::LyricsHandler        colophon_handler;
     CompanionServer::NowPlayingHandler    now_playing_handler;
@@ -1083,6 +1096,28 @@ void CompanionServer::Impl::install_routes()
         redirect_to_control(res);
     });
 
+    self->server.Post("/control/follownew", [self, redirect_to_control](
+                                                const httplib::Request& req,
+                                                httplib::Response&      res) {
+        self->decorate(res);
+        const bool on = req.get_param_value("on") == "1";
+
+        // WRITTEN HERE AND NOT PUSHED FROM THE RENDER LOOP. This is a toggle, so
+        // the button carries the state it wants to move TO -- a page rendered from
+        // a stale read would send the wrong target and the control would
+        // flip-flop on alternate taps. Same ownership split as the overlays.
+        {
+            const std::lock_guard<std::mutex> lock(self->control_mutex);
+            self->control.follow_new = on;
+        }
+        std::printf("control: follow new crystals %s\n", on ? "on" : "off");
+        std::fflush(stdout);
+        if (self->follow_new_handler) {
+            self->follow_new_handler(on);
+        }
+        redirect_to_control(res);
+    });
+
     self->server.Post("/control/advance", [self, redirect_to_control](
                                               const httplib::Request& req,
                                               httplib::Response&      res) {
@@ -1466,6 +1501,11 @@ void CompanionServer::set_select_crystal_handler(SelectCrystalHandler handler)
 void CompanionServer::set_rescan_handler(RescanHandler handler)
 {
     impl_->rescan_handler = std::move(handler);
+}
+
+void CompanionServer::set_follow_new_handler(FollowNewHandler handler)
+{
+    impl_->follow_new_handler = std::move(handler);
 }
 
 void CompanionServer::set_lyrics_handler(LyricsHandler handler)

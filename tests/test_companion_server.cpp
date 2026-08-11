@@ -750,6 +750,60 @@ TEST_CASE("the rescan button reaches the handler and is not shadowed by the catc
     REQUIRE(calls == 1);
 }
 
+TEST_CASE("following new crystals is off until asked for, and toggles both ways",
+          "[plex][companion][control]")
+{
+    // DEFAULT OFF is the decision, not an accident of initialisation -- an
+    // unwanted switch mid-track is disruptive and unexplainable to anyone else in
+    // the room, while a missed one costs a tap. Asserted on the rendered page
+    // rather than on the field, because what the button SENDS is the thing that
+    // can be wrong: a toggle carries the state it wants to move to, so an
+    // off-by-default control whose button also says "0" never turns on.
+    std::vector<bool> asked;
+
+    RunningServer s(fixture(), [&](CompanionServer& srv) {
+        srv.set_follow_new_handler([&](bool on) { asked.push_back(on); });
+    });
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_info({"pulse"}, kGen, "", "", false);
+    s.server.set_vault_rescannable(true);
+
+    auto client = s.client();
+    auto before = client.Get("/control");
+    REQUIRE(before);
+    REQUIRE(before->body.find("action=\"/control/follownew\"><input type=\"hidden\" "
+                              "name=\"on\" value=\"1\"") != std::string::npos);
+
+    client.set_follow_location(false);
+    client.Post("/control/follownew", "on=1", "application/x-www-form-urlencoded");
+    client.Post("/control/follownew", "on=0", "application/x-www-form-urlencoded");
+
+    REQUIRE(asked.size() == 2);
+    REQUIRE(asked[0] == true);
+    REQUIRE(asked[1] == false);
+}
+
+TEST_CASE("the follow-new button offers the state it is not already in",
+          "[plex][companion][control]")
+{
+    // The failure this catches has bitten this page before: a toggle rendered
+    // from a stale read sends the wrong target and flip-flops on alternate taps.
+    // Turning it on must make the button offer "off".
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_info({"pulse"}, kGen, "", "", false);
+    s.server.set_vault_rescannable(true);
+
+    auto client = s.client();
+    client.set_follow_location(false);
+    client.Post("/control/follownew", "on=1", "application/x-www-form-urlencoded");
+
+    auto after = client.Get("/control");
+    REQUIRE(after);
+    REQUIRE(after->body.find("action=\"/control/follownew\"><input type=\"hidden\" "
+                             "name=\"on\" value=\"0\"") != std::string::npos);
+}
+
 TEST_CASE("the lyrics toggle reaches the handler both ways",
           "[plex][companion][control]")
 {
