@@ -22,6 +22,7 @@
 #include <SDL3/SDL_init.h>
 #include <SDL3/SDL_video.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -92,11 +93,61 @@ struct Window::Impl {
     SDL_GLContext ctx    = nullptr;
 
     bool open    = false;
-    bool quit    = false;
     int  width   = 0;
     int  height  = 0;
     int  major   = 0;
     int  minor   = 0;
+
+    // ATOMIC BECAUSE THEY ARE WRITTEN FROM ANOTHER THREAD.
+    //
+    // Both are set by the event watch below, which SDL calls from whichever
+    // thread posted the event -- on Android that is the UI thread inside
+    // onPause/onDestroy, not the thread running the render loop. A plain `bool`
+    // here is a data race with no symptom on x86 and an unpredictable one on the
+    // ARM target, which is the worst possible place to find it.
+    std::atomic<bool> quit{false};
+
+    // Is there a surface to draw on?
+    //
+    // False from WILL_ENTER_BACKGROUND -- before the surface goes -- and true
+    // again only at DID_ENTER_FOREGROUND, after it is back. Stopping early and
+    // resuming late is deliberate: the window either side of those events is
+    // where a GL call has no surface under it.
+    std::atomic<bool> visible{true};
+
+    // WHY A WATCH AND NOT THE POLL LOOP.
+    //
+    // SDL3's own header says of every one of these events: "This event must be
+    // handled in a callback set with SDL_AddEventWatch()." They are delivered
+    // synchronously from the platform's lifecycle callback and the app is
+    // expected to have acted before that callback returns; a handler in
+    // pump()'s SDL_PollEvent loop runs whenever the render thread next gets
+    // round to it, which on Android may be after the surface has already gone.
+    //
+    // It would have appeared to work. That is the reason this is written down.
+    static bool SDLCALL watch(void* userdata, SDL_Event* e)
+    {
+        auto* self = static_cast<Impl*>(userdata);
+        switch (e->type) {
+        case SDL_EVENT_WILL_ENTER_BACKGROUND:
+            self->visible.store(false, std::memory_order_relaxed);
+            break;
+        case SDL_EVENT_DID_ENTER_FOREGROUND:
+            self->visible.store(true, std::memory_order_relaxed);
+            break;
+        case SDL_EVENT_TERMINATING:
+            // The OS is taking the process. Not a quit the user asked for, but
+            // the render loop's exit condition is the only lever available and
+            // an orderly stop beats being killed mid-write.
+            self->quit.store(true, std::memory_order_relaxed);
+            break;
+        default:
+            break;
+        }
+        // Watches do not filter. Returning true leaves the event in the queue,
+        // so pump() still sees anything it also cares about.
+        return true;
+    }
 
     // Edges seen during the most recent pump(), cleared at the start of the
     // next. See Window::pressed.
@@ -266,7 +317,8 @@ WindowError Window::open(const WindowConfig& cfg)
     }
 
     if (!load_gl_entry_points()) {
-        SDL_GL_DestroyContext(impl_->ctx);
+        SDL_RemoveEventWatch(&Impl::watch, impl_.get());
+    SDL_GL_DestroyContext(impl_->ctx);
         SDL_DestroyWindow(impl_->window);
         impl_->ctx    = nullptr;
         impl_->window = nullptr;
@@ -299,7 +351,13 @@ WindowError Window::open(const WindowConfig& cfg)
     impl_->refresh_size();
     impl_->report_density();
     impl_->open = true;
-    impl_->quit = false;
+    impl_->quit.store(false, std::memory_order_relaxed);
+    impl_->visible.store(true, std::memory_order_relaxed);
+
+    // Installed with the window rather than at startup, because the flags it
+    // sets describe a window that now exists. Removed in close(), or the watch
+    // would outlive the Impl it writes into.
+    SDL_AddEventWatch(&Impl::watch, impl_.get());
     return WindowError::kOk;
 }
 
@@ -318,6 +376,8 @@ void Window::close()
 
 bool Window::is_open() const { return impl_->open; }
 
+bool Window::visible() const { return impl_->visible.load(std::memory_order_relaxed); }
+
 bool Window::pump()
 {
     for (bool& k : impl_->keys) {
@@ -328,7 +388,7 @@ bool Window::pump()
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
         case SDL_EVENT_QUIT:
-            impl_->quit = true;
+            impl_->quit.store(true, std::memory_order_relaxed);
             break;
         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
             impl_->refresh_size();
@@ -336,7 +396,7 @@ bool Window::pump()
         case SDL_EVENT_KEY_DOWN:
             if (e.key.key == SDLK_ESCAPE) {
                 if (!e.key.repeat) {
-                    impl_->quit = true;
+                    impl_->quit.store(true, std::memory_order_relaxed);
                 }
             } else if (e.key.key == SDLK_LEFT) {
                 // AUTO-REPEAT FILTERED HERE AND ALLOWED BELOW, which is a real
@@ -370,7 +430,7 @@ bool Window::pump()
             break;
         }
     }
-    return !impl_->quit;
+    return !impl_->quit.load(std::memory_order_relaxed);
 }
 
 bool Window::pressed(Key k) const

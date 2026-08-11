@@ -5338,6 +5338,36 @@ int main(int argc, char** argv)
         }
         const bool fading = fade > 0.0f;
 
+        // -- backgrounded: keep playing, stop drawing ----------------------------
+        //
+        // EVERYTHING ABOVE THIS LINE STILL RUNS WHILE THE APP IS IN THE
+        // BACKGROUND, and everything below it does not. That is the whole of the
+        // Android lifecycle decision, and the split is where it is because of
+        // what each half is for.
+        //
+        // Above: commands from the phone, the herald, both timelines, the control
+        // page, the trim, hot reload, the vault re-scan and auto-advance. A cast
+        // target that stopped obeying its controller the moment somebody pressed
+        // HOME would be broken in the most confusing way available -- the music
+        // still playing, the phone still showing a progress bar, and every button
+        // on it doing nothing.
+        //
+        // Below: GL. There is no surface while paused, so drawing is not merely
+        // wasteful, it has nowhere to go.
+        //
+        // NOTHING STOPS THE AUDIO. The decode thread, the ring and the device
+        // callback are all independent of this loop and never knew it paused.
+        //
+        // The tick matches the foreground frame time on purpose rather than being
+        // as slow as it can get away with. Several things above count loops
+        // rather than seconds, so a background loop running at a different rate
+        // would quietly change their behaviour -- and the process is playing
+        // music, so it is not asleep and there is no wake-up to save.
+        if (!window.visible()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            continue;
+        }
+
         // -- where the picture goes ----------------------------------------------
         //
         // Into layer 0 when there is a stack, straight to the window when there is

@@ -136,6 +136,20 @@ public:
     void        close();
     bool        is_open() const;
 
+    // Is there a surface to draw on?
+    //
+    // Always true on the desktop. On Android it goes false when the Activity is
+    // paused and true again when it resumes, tracked through an SDL event watch
+    // because SDL's own header requires those events to be handled that way
+    // rather than by polling.
+    //
+    // THE CALLER IS EXPECTED TO KEEP RUNNING WHILE THIS IS FALSE. Holocron is a
+    // cast target: backgrounding it must not stop the music, and the phone must
+    // still be able to skip, pause and change the visuals. What it must stop is
+    // GL -- there is no surface under it, and on Android the render loop would
+    // otherwise be drawing into nothing. See the render loop in main.cpp.
+    bool        visible() const;
+
     // Pump the OS event queue. Returns false once the user has asked to quit,
     // which is the render loop's termination condition.
     bool pump();
