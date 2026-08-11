@@ -175,14 +175,16 @@ What exists:
 | **Plex** | GDM discovery, `--link` sign-in through the plex.tv PIN flow, automatic device registration and connection publishing, play queues built on the server, timeline reporting to both the controller and the media server, and every transport command a phone sends. |
 | **Playback** | `PlaybackSession` — decoder, analysis, ring, device and decode thread behind one object that can be started, **replaced** and **seeked**, which is what casting requires. |
 | **Track context** | `TrackContext` — what is playing, the album art as a texture, and a **palette** extracted from it: five swatches, a primary and a contrast accent, supplied to every crystal in linear RGB. |
-| **Tests** | **548 cases on Windows, 549 on Linux, green on both.** |
+| **Tests** | **550 cases on Windows, 551 on Linux, green on both.** |
 
 **Seven of the eight milestones are finished.** What is left is M8 — Holocron on
 the NVIDIA Shield — and it now runs there: an ES 3.2 context on Tegra, the float
 compositor layers, a crystal on screen and the licence panel legible. **It has
 now been cast to** as well — a FLAC streamed from the NAS over HTTPS, playing in
-real time with the crystal driven by it. What is left on that box is argv, APK
-assets, the multicast lock and lifecycle handling. See the milestone table below.
+real time with the crystal driven by it. It keeps playing and stays
+controllable from the phone while backgrounded, it takes a Wi-Fi multicast lock,
+and the vault ships inside the APK and unpacks itself on first run. What is left
+on that box is the audio criterion. See the milestone table below.
 
 **The `AudioFrame` contract is signed off** (2026-08-01). Section 9 of
 [`docs/audio-frame.md`](docs/audio-frame.md) records the decisions behind it — the
