@@ -56,6 +56,7 @@
 #include <holocron/notices_view.hpp>
 #include <holocron/overlay_facet.hpp>
 #include <holocron/palette.hpp>
+#include <holocron/platform_paths.hpp>
 #include <holocron/text_render.hpp>
 #include <holocron/track_context.hpp>
 #include <holocron/gdm_responder.hpp>
@@ -2341,7 +2342,25 @@ int wait_for_discovery(const GdmResponder& gdm, const CompanionServer& companion
 
 }  // namespace
 
+// THE ENTRY POINT HAS A DIFFERENT NAME ON ANDROID, AND SDL IS NOT INCLUDED HERE.
+//
+// SDL3's Android port is launched by a Java Activity, which dlopens the app's
+// shared object and calls the C symbol `SDL_main` out of it. Getting that symbol
+// is a one-line job -- `#include <SDL3/SDL_main.h>` macro-renames `main` -- and
+// doing it in THIS file would put SDL into the one translation unit that has
+// managed to stay free of it. The project holds SDL, FFmpeg, GL and httplib to
+// exactly one translation unit each, and that rule is what keeps "swap the sink"
+// real rather than aspirational.
+//
+// So the SDL_main glue lives in player/android_entry.cpp, which also hands the
+// JavaVM to the platform layer, and calls this. The body below is identical on
+// every platform.
+#if defined(__ANDROID__)
+int holocron_main(int argc, char** argv);
+int holocron_main(int argc, char** argv)
+#else
 int main(int argc, char** argv)
+#endif
 {
 #ifdef _WIN32
     // THE CONSOLE IS NOT UTF-8 BY DEFAULT, AND EVERYTHING ELSE HERE IS.
@@ -2429,8 +2448,20 @@ int main(int argc, char** argv)
     Gatekeeper  cfg;
     std::string cfg_detail;
 
+    // Backing store for the resolved vault and crystal paths. Declared out here
+    // for the same reason cfg is: opt.vault ends up pointing into one of them.
+    std::string vault_path_storage;
+    std::string crystal_path_storage;
+
     {
-        const GatekeeperError gerr = load_gatekeeper(opt.config, cfg, cfg_detail);
+        // RESOLVED AGAINST THE PLATFORM'S DATA DIRECTORY, which is empty on every
+        // desktop build -- so this is `opt.config` unchanged there, and the whole
+        // mechanism costs a string compare. On Android an Activity launches with
+        // cwd `/`, and without this the config is looked for at `/gatekeeper.toml`
+        // and silently never found. See platform_paths.hpp.
+        const std::string config_path = resolve_data_path(opt.config);
+
+        const GatekeeperError gerr = load_gatekeeper(config_path.c_str(), cfg, cfg_detail);
 
         if (gerr == GatekeeperError::kUnparseable || gerr == GatekeeperError::kBadValue) {
             std::fprintf(stderr, "holocron: %s\n%s\n", to_string(gerr), cfg_detail.c_str());
@@ -2439,7 +2470,7 @@ int main(int argc, char** argv)
         if (gerr == GatekeeperError::kNotFound) {
             std::printf("holocron: %s\n", cfg_detail.c_str());
         } else {
-            std::printf("holocron: config %s\n", opt.config);
+            std::printf("holocron: config %s\n", config_path.c_str());
 
             if (!opt.given.trim_ms) {
                 opt.trim_ms = cfg.trim_ms;
@@ -2478,6 +2509,22 @@ int main(int argc, char** argv)
     if (opt.debug_facet && !opt.calibrate) {
         opt.crystal = nullptr;
         opt.vault   = nullptr;
+    }
+
+    // The vault, and any named crystal, resolved against the platform's data
+    // directory -- once, here, rather than at each of the half-dozen places that
+    // read them afterwards. Empty on every desktop build, so both are unchanged
+    // there. See platform_paths.hpp.
+    //
+    // The storage outlives opt because opt.vault may point into cfg.vault, and
+    // now may point in here instead.
+    if (opt.vault != nullptr) {
+        vault_path_storage = resolve_data_path(opt.vault);
+        opt.vault          = vault_path_storage.c_str();
+    }
+    if (opt.crystal != nullptr) {
+        crystal_path_storage = resolve_data_path(opt.crystal);
+        opt.crystal          = crystal_path_storage.c_str();
     }
 
     // -- Plex discovery (M5, #102) --------------------------------------------

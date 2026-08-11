@@ -14,7 +14,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(holocron
-    VERSION 0.8.4
+    VERSION 0.8.5
     DESCRIPTION "GPU music visualization engine that is also the music player"
     LANGUAGES CXX
 )
@@ -142,6 +142,7 @@ target_link_libraries(holocron_notices PUBLIC holocron::contract PRIVATE holocro
 
 add_library(holocron_platform STATIC
     src/platform/android_jni.cpp
+    src/platform/platform_paths.cpp
 )
 add_library(holocron::platform ALIAS holocron_platform)
 
