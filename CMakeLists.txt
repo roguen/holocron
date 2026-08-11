@@ -142,6 +142,7 @@ target_link_libraries(holocron_notices PUBLIC holocron::contract PRIVATE holocro
 
 add_library(holocron_platform STATIC
     src/platform/android_jni.cpp
+    src/platform/asset_seed.cpp
     src/platform/multicast_lock.cpp
     src/platform/platform_paths.cpp
 )
@@ -155,7 +156,10 @@ target_link_libraries(holocron_platform
 if(ANDROID)
     # log for __android_log_print, which is where a Java stack trace goes when a
     # JNI call throws -- there is nowhere else for it to be seen on a TV.
-    target_link_libraries(holocron_platform PUBLIC log)
+    #
+    # android for AAssetManager, which is how the shipped vault gets out of the
+    # APK and onto a filesystem the player can scan. See asset_seed.hpp.
+    target_link_libraries(holocron_platform PUBLIC android log)
 endif()
 
 # ---------------------------------------------------------------------------
