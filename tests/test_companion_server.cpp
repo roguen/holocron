@@ -30,6 +30,15 @@
 
 #include <httplib.h>
 
+// A PRIVATE header of the Plex sources, reached by relative path on purpose.
+// The port tests at the bottom of this file ask the kernel a question -- can
+// this port be taken from under a running server -- and that question needs the
+// same socket options the server itself binds with. Going through the public
+// API instead would test the probe rather than the options, which is the
+// mistake the comment on the first of those tests records. AFTER httplib.h, for
+// the winsock ordering reason given in companion_server.cpp.
+#include "../src/plex/server_socket.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
@@ -1130,4 +1139,162 @@ TEST_CASE("descriptive projectM state does not overwrite the toggles",
     REQUIRE(after);
     CHECK(after->body.find("later preset") != std::string::npos);
     CHECK(after->body.find("class=\"on\" type=\"submit\">Hold this preset<") != std::string::npos);
+}
+
+// -- the port itself, which is issue 247 ------------------------------------
+//
+// These three exist because "is this port in use" had no truthful answer before
+// them. cpp-httplib's default socket options are SO_REUSEPORT on POSIX and
+// SO_REUSEADDR on Windows, and BOTH admit a second live listener: measured on
+// the rack on 2026-08-11, two holocron.exe bound 0.0.0.0:32500, netstat listed
+// both as LISTENING, and every request went to the first. The second announced
+// itself over GDM, printed a control-page URL, and served nothing.
+
+TEST_CASE("a port another server holds cannot be taken, and is moved away from",
+          "[plex][companion][port]")
+{
+    // The first server takes an ephemeral port; the second is then asked for
+    // that exact one. Ephemeral rather than hardcoded for the reason at the top
+    // of this file -- but the port is real and really held, so the exclusion
+    // being checked is the real one.
+    PlexDevice first_device               = fixture();
+    first_device.machine_identifier       = "11111111-2222-4333-8444-555555555555";
+    RunningServer first(first_device);
+    REQUIRE(first.error == CompanionError::kOk);
+    const std::uint16_t taken = first.server.bound_port();
+    REQUIRE(taken != 0);
+
+    PlexDevice second_device         = fixture();
+    second_device.port               = taken;
+    second_device.machine_identifier = "66666666-7777-4888-8999-aaaaaaaaaaaa";
+    RunningServer second(second_device);
+
+    // Started, because losing the control surface is worse than moving.
+    REQUIRE(second.error == CompanionError::kOk);
+    REQUIRE(second.server.running());
+
+    // BUT NOT ON THAT PORT.
+    //
+    // WHAT THIS DOES AND DOES NOT PROVE, because the control was run and the
+    // first answer was wrong. Commenting out the exclusive socket options and
+    // rebuilding leaves this test PASSING: the probe in start() uses those
+    // options on its own socket, sees the port held, and moves before httplib is
+    // ever asked. So this covers the moving, not the exclusion. The exclusion
+    // has its own test below, and it does go red without them.
+    CHECK(second.server.bound_port() != taken);
+    CHECK(second.server.bound_port() != 0);
+
+    // And it says so rather than moving quietly.
+    CHECK_FALSE(second.detail.empty());
+    CHECK(second.detail.find(std::to_string(taken)) != std::string::npos);
+    CHECK(second.detail.find(std::to_string(second.server.bound_port())) != std::string::npos);
+}
+
+TEST_CASE("both servers answer, each on its own port", "[plex][companion][port]")
+{
+    // The failure this rules out is the one actually observed: a second server
+    // that binds, reports success, and is deaf. Distinct machine identifiers,
+    // because two servers agreeing on the same document would prove nothing
+    // about which of them answered.
+    PlexDevice first_device         = fixture();
+    first_device.machine_identifier = "11111111-2222-4333-8444-555555555555";
+    RunningServer first(first_device);
+    REQUIRE(first.error == CompanionError::kOk);
+
+    PlexDevice second_device         = fixture();
+    second_device.port               = first.server.bound_port();
+    second_device.machine_identifier = "66666666-7777-4888-8999-aaaaaaaaaaaa";
+    RunningServer second(second_device);
+    REQUIRE(second.error == CompanionError::kOk);
+    REQUIRE(second.server.bound_port() != first.server.bound_port());
+
+    auto from_first = first.client().Get("/resources");
+    REQUIRE(from_first);
+    CHECK(from_first->body.find(first_device.machine_identifier) != std::string::npos);
+
+    auto from_second = second.client().Get("/resources");
+    REQUIRE(from_second);
+    CHECK(from_second->body.find(second_device.machine_identifier) != std::string::npos);
+}
+
+TEST_CASE("a port can be bound again immediately after a server that served on it stopped",
+          "[plex][companion][port]")
+{
+    // THE MEASUREMENT THAT JUSTIFIES SO_EXCLUSIVEADDRUSE ON WINDOWS.
+    //
+    // Swapping Windows off SO_REUSEADDR buys exclusion and risks the thing
+    // SO_REUSEADDR is usually reached for: a restart refused because accepted
+    // connections on the old listening port are still in TIME_WAIT. Requests are
+    // served first precisely so that those sockets exist -- a stop with no
+    // traffic through it would leave nothing to be blocked by and the test would
+    // pass without exercising anything.
+    std::uint16_t port = 0;
+    {
+        RunningServer first(fixture());
+        REQUIRE(first.error == CompanionError::kOk);
+        port = first.server.bound_port();
+        REQUIRE(port != 0);
+
+        auto client = first.client();
+        for (int i = 0; i < 4; ++i) {
+            auto res = client.Get("/resources");
+            REQUIRE(res);
+        }
+        first.server.stop();
+    }
+
+    PlexDevice device = fixture();
+    device.port       = port;
+    RunningServer again(device);
+
+    REQUIRE(again.error == CompanionError::kOk);
+    CHECK(again.server.bound_port() == port);
+
+    // Nothing to report: it got the port it asked for.
+    CHECK(again.detail.empty());
+}
+
+TEST_CASE("a port Holocron is listening on cannot be taken by a program that asks to share it",
+          "[plex][companion][port]")
+{
+    // THE TEST THAT ISOLATES THE SOCKET OPTIONS, and the only one here that goes
+    // red when they are removed.
+    //
+    // The three above pass either way, because start() probes before it binds
+    // and moves out of the way on its own. What the options buy is the case a
+    // probe cannot cover: two programs racing, both seeing the port free, both
+    // binding. Under cpp-httplib's defaults the second bind SUCCEEDS -- measured
+    // on the rack, two holocron.exe both LISTENING on 0.0.0.0:32500 with every
+    // request going to the first -- and the loser is deaf while reporting
+    // success.
+    //
+    // So the question is asked directly of a running server: impersonate that
+    // second program, with exactly the options httplib would have set, and
+    // require the kernel to refuse.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    REQUIRE(s.server.bound_port() != 0);
+
+    const net::BindProbe intruder =
+        net::probe_tcp_bind(s.server.bound_port(), net::BindStyle::kPermissive);
+
+    // REFUSED IS THE CLAIM, not any particular errno, and the two platforms
+    // genuinely differ:
+    //
+    //   Linux, Android   EADDRINUSE. A socket asking for SO_REUSEPORT cannot
+    //                    join a port whose existing listener did not ask for it.
+    //   Windows          WSAEACCES, not WSAEADDRINUSE. That is Windows saying
+    //                    the port is held EXCLUSIVELY rather than merely held,
+    //                    and it is only reachable when the holder really did set
+    //                    SO_EXCLUSIVEADDRUSE -- so the surprising code is itself
+    //                    the confirmation the option took.
+    //
+    // Asserting one of them would have made this test a Windows test that
+    // happened to compile on Linux. It went red on exactly that, first run.
+    CHECK(intruder.fault != net::BindFault::kFree);
+
+    // And the same probe on a port nothing holds must say so, or the check above
+    // would pass for a probe that simply never succeeds at anything.
+    const net::BindProbe free_port = net::probe_tcp_bind(0, net::BindStyle::kPermissive);
+    CHECK(free_port.fault == net::BindFault::kFree);
 }
