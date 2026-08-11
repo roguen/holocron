@@ -273,3 +273,167 @@ TEST_CASE("an absent receiver costs a bounded wait and never blocks", "[herald]"
     // shared, but far below the ~21 s an unbounded connect would cost.
     CHECK(joining < 5000);
 }
+
+// ---------------------------------------------------------------------------
+// A parameterised errand, which is what a volume slider needs. Issue 126.
+//
+// Every other errand is a CONSTANT -- complete the moment it is read out of
+// gatekeeper.toml, which is what makes "an errand is a URI" work. A volume
+// command carries a number that only exists when the slider moves, so the owner
+// settled on a template. These are the cases that keep it a template rather than
+// a format language, and the ones that keep it from shouting at an amplifier.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a volume template substitutes decimal and hex", "[herald][volume]")
+{
+    std::string out;
+    std::string why;
+
+    // eISCP's MVL wants two hex digits. This is the whole reason hex exists here.
+    REQUIRE(render_errand("eiscp://192.0.2.50/MVL{:02X}", 50, out, why));
+    CHECK(out == "eiscp://192.0.2.50/MVL32");
+
+    // Zero-padded, because MVL5 is not a command.
+    REQUIRE(render_errand("eiscp://192.0.2.50/MVL{:02X}", 5, out, why));
+    CHECK(out == "eiscp://192.0.2.50/MVL05");
+
+    REQUIRE(render_errand("eiscp://192.0.2.50/MVL{:02x}", 250, out, why));
+    CHECK(out == "eiscp://192.0.2.50/MVLfa");
+
+    // And a webhook wants the number as a human wrote it. Both shapes have to
+    // work or the "replace eISCP by editing a value" property is a claim rather
+    // than a fact.
+    REQUIRE(render_errand("http://host/api/webhook/vol?level={}", 42, out, why));
+    CHECK(out == "http://host/api/webhook/vol?level=42");
+}
+
+TEST_CASE("a volume template needs exactly one placeholder", "[herald][volume]")
+{
+    std::string out;
+    std::string why;
+
+    // None: a volume errand that would send the same level forever. Worth
+    // catching at startup rather than in a dark room.
+    CHECK_FALSE(render_errand("eiscp://192.0.2.50/MVL32", 50, out, why));
+    CHECK(why.find("no placeholder") != std::string::npos);
+
+    // Two: ambiguous at best, and far more likely a copy-paste.
+    CHECK_FALSE(render_errand("eiscp://192.0.2.50/MVL{:02X}{:02X}", 50, out, why));
+    CHECK(why.find("2 placeholders") != std::string::npos);
+}
+
+TEST_CASE("a placeholder the template language does not have is refused",
+          "[herald][volume]")
+{
+    // NAMED RATHER THAN PASSED THROUGH. A brace this does not understand is far
+    // more likely a typo than a literal brace somebody wanted inside an eISCP
+    // command -- and passing it through would send `MVL{:2X}` to an amplifier.
+    std::string out;
+    std::string why;
+
+    CHECK_FALSE(render_errand("eiscp://192.0.2.50/MVL{:2X}", 50, out, why));
+    CHECK(why.find("placeholder") != std::string::npos);
+
+    CHECK_FALSE(render_errand("eiscp://192.0.2.50/MVL{level}", 50, out, why));
+    CHECK_FALSE(render_errand("eiscp://192.0.2.50/MVL{", 50, out, why));
+}
+
+TEST_CASE("a rendered volume errand parses as an errand", "[herald][volume]")
+{
+    // The template and the parser have to agree, and nothing else checks that
+    // they do: a template that renders to something parse_errand rejects would
+    // be a slider that silently does nothing.
+    std::string out;
+    std::string why;
+    REQUIRE(render_errand("eiscp://192.168.68.128:60128/MVL{:02X}", 36, out, why));
+
+    Errand e;
+    REQUIRE(parse_errand(out, e, why));
+    CHECK(e.kind == ErrandKind::kEiscp);
+    CHECK(e.host == "192.168.68.128");
+    CHECK(e.port == 60128);
+    CHECK(e.command == "MVL24");
+}
+
+TEST_CASE("a volume template with no ceiling forwards nothing", "[herald][volume]")
+{
+    // THE SAFETY CASE, and the reason volume_max has no default.
+    //
+    // Plex's slider is 0..100 and MVL is hex, so a pass-through sends MVL64 at
+    // the top -- full output on a theater amplifier, into a room, from a phone in
+    // somebody's pocket. No ceiling is safe on every rack, so the choice was
+    // between demanding one and guessing one, and the obvious guess is the
+    // amplifier's own maximum.
+    HeraldConfig cfg;
+    cfg.on_volume = "eiscp://192.0.2.50/MVL{:02X}";
+    // volume_max deliberately left at its -1 default.
+
+    Herald      h;
+    std::string detail;
+    // False here means "nothing ended up armed, and here is why" -- the same
+    // answer a bad errand with no good ones beside it gives. It is never fatal:
+    // main.cpp ignores the result and prints the detail.
+    CHECK_FALSE(h.start(cfg, detail));
+    CHECK_FALSE(h.forwards_volume());
+    CHECK(detail.find("volume_max") != std::string::npos);
+
+    // A slider that arrives anyway is a no-op rather than a crash.
+    h.set_volume(100);
+    CHECK(h.volume_sent() == -1);
+    h.stop();
+}
+
+TEST_CASE("a volume ceiling above the scale is refused", "[herald][volume]")
+{
+    HeraldConfig cfg;
+    cfg.on_volume  = "eiscp://192.0.2.50/MVL{:02X}";
+    cfg.volume_max = 255;
+
+    Herald      h;
+    std::string detail;
+    CHECK_FALSE(h.start(cfg, detail));   // nothing armed; see the case above
+    CHECK_FALSE(h.forwards_volume());
+    CHECK_FALSE(detail.empty());
+    h.stop();
+}
+
+TEST_CASE("volume capability is known before any volume has been sent",
+          "[herald][volume]")
+{
+    // THE DEADLOCK THIS ALMOST SHIPPED WITH. The timeline claims `volume` in
+    // `controllable` from forwards_volume(), and the first version derived that
+    // from "a level has been sent" -- so no slider appeared on the phone, so no
+    // command arrived, so no level was ever sent, so the capability never
+    // appeared. Capability is known at startup; the last value is not.
+    HeraldConfig cfg;
+    cfg.on_volume  = "eiscp://192.0.2.50/MVL{:02X}";
+    cfg.volume_max = 50;
+
+    Herald      h;
+    std::string detail;
+    REQUIRE(h.start(cfg, detail));
+    CHECK(detail.empty());
+
+    CHECK(h.forwards_volume());     // yes, it takes volume
+    CHECK(h.volume_sent() == -1);   // no, it has not sent one
+    h.stop();
+}
+
+TEST_CASE("a bad volume template does not stop the herald doing its errands",
+          "[herald][volume]")
+{
+    // The same rule the whole file is built on: a facility whose premise is that
+    // a failure here never blocks playback cannot refuse over a typo. A broken
+    // volume template must leave the start and stop sequences armed.
+    HeraldConfig cfg;
+    cfg.on_start   = {"eiscp://192.0.2.50/PWR01"};
+    cfg.on_volume  = "eiscp://192.0.2.50/MVL{nonsense}";
+    cfg.volume_max = 50;
+
+    Herald      h;
+    std::string detail;
+    CHECK(h.start(cfg, detail));
+    CHECK_FALSE(h.forwards_volume());
+    CHECK_FALSE(detail.empty());
+    h.stop();
+}

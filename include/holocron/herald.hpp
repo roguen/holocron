@@ -91,6 +91,34 @@ struct Errand {
 // is reported and SKIPPED rather than failing the load -- see HeraldConfig.
 bool parse_errand(std::string_view uri, Errand& out, std::string& out_why);
 
+// -- a PARAMETERISED errand, which is what a volume slider needs -------------
+//
+// Every errand above is a CONSTANT. `eiscp://192.0.2.50/PWR01` is a complete
+// instruction the moment it is read out of gatekeeper.toml, and that is exactly
+// what makes "an errand is a URI" work: replacing eISCP with a webhook is an edit
+// to a value.
+//
+// A volume command is not a constant. It carries a number that only exists at the
+// moment the slider moves. The alternative shape -- `[herald] volume_host`,
+// `volume_port`, `volume_command` -- was rejected by the owner and would have
+// broken the property M7's third criterion is actually about: a second shape
+// means a webhook needs new CODE rather than a new value. A template is still a
+// value, and it still substitutes into a query string:
+//
+//     on_volume = "eiscp://192.168.68.128/MVL{:02X}"
+//     on_volume = "http://192.168.68.7:8123/api/webhook/vol?level={}"
+//
+// THREE PLACEHOLDERS, NOT A FORMAT LANGUAGE. `{}` decimal, `{:02X}` and `{:02x}`
+// two hex digits. eISCP's MVL wants hex and a webhook wants decimal, which is the
+// whole of the requirement; implementing printf here would be answering a
+// question nobody has asked, and every extra spelling is one more thing that can
+// be silently wrong in a config file.
+//
+// Exactly one placeholder is required. A template with none is a volume command
+// that would send the same level forever, which is a mistake worth catching at
+// startup rather than in a dark room.
+bool render_errand(std::string_view templ, int level, std::string& out, std::string& out_why);
+
 // How long the playback predicate must hold before an edge counts.
 //
 // THE LATCH IS THE WHOLE REASON THIS IS A TYPE AND NOT AN `if`. `PlaybackSession`
@@ -132,6 +160,36 @@ struct HeraldConfig {
     std::vector<std::string> on_start;
     std::vector<std::string> on_stop;
 
+    // What to send when the phone's volume slider moves. Issue 126.
+    //
+    // A TEMPLATE, not a URI -- see render_errand. Empty is the off switch, like
+    // the two lists above and for the same reason: a feature whose natural "off"
+    // is an empty value does not need a second key that can disagree with it.
+    std::string on_volume;
+
+    // The largest level this is ever allowed to send, in the RECEIVER'S OWN
+    // UNITS, and it is REQUIRED whenever `on_volume` is set.
+    //
+    // THIS IS A SAFETY CLAMP AND IT HAS NO DEFAULT ON PURPOSE. Plex's slider is
+    // 0..100 and eISCP's MVL is hex, so a naive pass-through sends `MVL64` for a
+    // slider at the top -- which on a theater amplifier is full output, into a
+    // room, possibly at night, from a phone in somebody's pocket. There is no
+    // value that is safe on every rack, so the honest options were to demand one
+    // or to guess one.
+    //
+    // Demanding it. `on_volume` set with no `volume_max` reports the error and
+    // forwards nothing, which is a feature that does not work until it is
+    // configured -- annoying exactly once, against a failure mode that is
+    // physically unpleasant and instantaneous. The rejected alternative was
+    // defaulting to full scale, which is the amplifier's own maximum and the
+    // worst possible guess.
+    //
+    // The unit's real ceiling is a property of the UNIT, not of the protocol, and
+    // must be read off the receiver rather than a published table -- D-048, the
+    // same lesson as the input codes, where `05` is PC and `11` is STRM BOX on
+    // this one and no table would have said so.
+    int volume_max = -1;
+
     // Bounded because a receiver that is off does not refuse, it ignores.
     int connect_timeout_ms = 1500;
 
@@ -169,6 +227,38 @@ public:
     // Called once per render frame with the playback predicate. Takes a lock, sets
     // a flag, returns. Never blocks.
     void observe(bool playing);
+
+    // The phone moved the volume slider. `level` is Plex's 0..100.
+    //
+    // Takes a lock, stores a number, returns -- like observe(), and for the same
+    // reason: this is reached from the render loop and must never touch a socket.
+    //
+    // NEWEST WINS, AND THE WORKER PACES ITSELF. One drag produced 44 commands on
+    // the rack, measured. Sending each would mean 44 TCP connections, because a
+    // herald errand deliberately opens its own -- so the worker sends the newest
+    // value, waits out a short floor, and sends again only if it changed. The
+    // final value therefore always lands, which is the only one the room hears.
+    //
+    // A no-op when `on_volume` is unset or `volume_max` was not configured.
+    void set_volume(int level);
+
+    // Whether a volume template was configured AND accepted at start().
+    //
+    // Separate from volume_sent() because they answer different questions and
+    // conflating them deadlocks: the timeline claims `volume` in `controllable`
+    // from this, and a controller that is not told the player takes volume never
+    // sends one -- so nothing would ever be sent and the capability would never
+    // appear. Known at startup; the last value is not.
+    bool forwards_volume() const;
+
+    // The last level actually SENT, in Plex's 0..100, or -1 if none has been.
+    //
+    // The timeline reports this rather than a constant 100. It is what was sent
+    // and NOT what was applied, and that distinction is the honest one: the
+    // receiver can be turned up by its own remote at any moment and this program
+    // has no way to know, so the last commanded value is the only thing it can
+    // truthfully claim.
+    int volume_sent() const;
 
     // For the run summary, so an absent receiver is visible as a number rather
     // than only as log lines somebody scrolled past.

@@ -293,17 +293,27 @@ std::string timeline_xml(std::string_view command_id, const TimelineState& state
             append_attribute(out, "port", std::to_string(state.port));
             append_attribute(out, "protocol", state.protocol);
 
-            // VOLUME IS REPORTED AND NOT IMPLEMENTED, DELIBERATELY.
+            // VOLUME IS NEVER APPLIED IN SOFTWARE, AND THAT HAS NOT CHANGED.
             //
-            // Plexamp sends `setParameters?volume=0` repeatedly on connect and
-            // expects a volume back. Reporting one keeps its model consistent.
+            // Scaling samples here is exactly the "quietly resampling behind your
+            // back" that D-004 and #32 forbid, and it would end the bit-perfect
+            // output WASAPI exclusive mode exists for.
             //
-            // APPLYING it would end bit-perfect output: scaling samples in
-            // software is exactly the "quietly resampling behind your back"
-            // that D-004 and #32 forbid, and this rack has a receiver whose own
-            // volume control is both better and lossless. So `controllable`
-            // below does NOT claim volume, and this always reads 100.
-            append_attribute(out, "volume", "100");
+            // What changed at issue 126 is that there is now somewhere better to
+            // send it. The herald forwards the level to the receiver, which
+            // attenuates in its own domain, downstream of everything this program
+            // touches -- so the slider works and the signal stays exact.
+            //
+            // REPORTED AS SENT RATHER THAN AS APPLIED. The receiver can be turned
+            // up by its own remote at any moment and nothing here would know, so
+            // the last commanded level is the most this can truthfully claim.
+            //
+            // Still a constant 100 when nothing is being driven: Plexamp sends
+            // `setParameters?volume=0` on connect and expects a volume back, and
+            // 100 is honest for a player passing the signal through unattenuated.
+            append_attribute(out, "volume",
+                             state.volume_sent >= 0 ? std::to_string(state.volume_sent)
+                                                    : std::string("100"));
 
             // WHAT THE CONTROLLER MAY OFFER, and it must not overstate.
             //
@@ -313,11 +323,16 @@ std::string timeline_xml(std::string_view command_id, const TimelineState& state
             // broken player. `seekTo` was deliberately absent until seeking
             // worked, and was verified absent by a test for exactly that reason.
             //
-            // Volume is STILL not claimed and that is not an oversight: applying
-            // it in software would end bit-perfect output, and the receiver's own
-            // volume control is both better and lossless.
+            // VOLUME IS CLAIMED ONLY WHEN IT CAN BE HONOURED, which is when the
+            // herald has a receiver to forward it to. Listing it unconditionally
+            // would put a working-looking slider on the phone for every rack that
+            // has not configured one -- the dead-button failure this list is
+            // careful about, and the exact complaint issue 126 was filed over,
+            // reintroduced from the other direction.
             append_attribute(out, "controllable",
-                             "playPause,play,pause,stop,skipPrevious,skipNext,skipTo,seekTo");
+                             std::string("playPause,play,pause,stop,skipPrevious,skipNext,"
+                                         "skipTo,seekTo") +
+                                 (state.volume_controllable ? ",volume" : ""));
         }
         out += " />\n";
     }

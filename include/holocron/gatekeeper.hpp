@@ -285,6 +285,16 @@ struct Gatekeeper {
     std::vector<std::string> herald_on_start;
     std::vector<std::string> herald_on_stop;
 
+    // What to send when the phone's volume slider moves, and the ceiling it may
+    // never exceed. Issue 126.
+    //
+    // `on_volume` is a TEMPLATE rather than a URI -- one `{}`, `{:02X}` or
+    // `{:02x}` where the level goes. `volume_max` is in the RECEIVER'S own units
+    // and is required whenever the template is set; there is no default, because
+    // the only obvious one is the amplifier's own maximum. See herald.hpp.
+    std::string herald_on_volume;
+    int         herald_volume_max = -1;
+
     int herald_connect_timeout_ms = 1500;
     int herald_cooldown_seconds   = 60;
 
