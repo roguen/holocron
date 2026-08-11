@@ -459,6 +459,15 @@ machine_identifier = ""
 # clients use whatever is advertised rather than assuming a number -- move it
 # freely if something else on this machine holds 32500.
 #
+# YOU DO NOT HAVE TO. If this port cannot be had, Holocron takes a free one
+# instead and announces that, rather than starting without a control page --
+# which on a device with no keyboard would leave nothing to drive it with at all.
+# It says so on the terminal when it happens, along with why the port it wanted
+# was refused. Set this key only to PIN a particular port, for a firewall rule or
+# a port forward.
+#
+# Zero means "any free port", and is what the tests use.
+#
 # LIVE.
 port = 32500
 

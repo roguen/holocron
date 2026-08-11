@@ -51,7 +51,14 @@ inline constexpr std::uint16_t kGdmClientRegisterPort = 32413;
 
 // The default Companion HTTP port. Advertised in the GDM `Port` field, so a
 // client uses whatever is announced rather than assuming this -- it is a default,
-// not part of the protocol.
+// not part of the protocol. Holocron will move off it rather than fail to bind;
+// see CompanionServer::start and issue 247.
+//
+// CHANGING THIS ALONE CHANGES NOTHING OBSERVABLE. There is a second, unrelated
+// literal 32500 in Gatekeeper::plex_port, and device_from() in the player
+// overwrites the PlexDevice default with the config's value unconditionally --
+// so the config's copy always wins and this one only survives where no
+// Gatekeeper is involved, which is the tests. The two are kept in step by hand.
 inline constexpr std::uint16_t kCompanionPort = 32500;
 
 // What Holocron claims it can be asked to do.

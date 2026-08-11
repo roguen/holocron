@@ -3,9 +3,15 @@
 //
 // See gdm_responder.hpp.
 //
-// This is the only translation unit in the project that includes a socket
-// header, the same containment FFmpeg, SDL and GL already get: nothing above
-// this file knows whether it is winsock or BSD sockets underneath.
+// The socket layer is contained in the Plex sources, the same containment
+// FFmpeg, SDL and GL already get: nothing above them knows whether it is winsock
+// or BSD sockets underneath.
+//
+// This comment used to say "the only translation unit in the project that
+// includes a socket header", and had been wrong for some time -- herald.cpp,
+// plex_link.cpp and now server_socket.hpp all do. The containment held; the
+// count did not, and a claim that says "only" is the kind that stops being
+// checked.
 
 #include <holocron/gdm_responder.hpp>
 

@@ -480,6 +480,52 @@ honouring `<remove>`. One enum was missing and it was `GL_BGR`, now fixed.
   crystal cut by following the project's own instructions failed on the Shield.
   Fixed, issue 243.
 
+### The Companion port — measured 2026-08-11, and the filed diagnosis was wrong
+
+Issue 247 reported that the Companion HTTP port would not bind on the Shield,
+every launch, and named the Shield's own Plex Media Server as the obvious
+suspect. **It is not, and neither is anything else on the device.**
+
+What was established before any code was written, which is the order the issue
+itself asked for:
+
+| | |
+|---|---|
+| Is anything listening on 32500? | **No.** `netstat -tlnp` on the device, repeatedly, over a day. |
+| Does Plex Media Server hold it? | **No.** `com.plexapp.mediaserver.smb:service` is running as a foreground service and binds nothing in the 32xxx range. |
+| Does the Plex **player** app hold it? | **No.** `com.plexapp.android` was launched deliberately to check — it is a Plex player and Plex players are what use 32500 — and it makes outbound connections to the server's 32400 and listens on nothing. |
+| Does it bind today? | **Yes.** Clean launch, `0.0.0.0:32500` LISTEN, `/control` answers **HTTP 200 in 2.5 ms** from the rack, `/resources` correct. |
+| Is the fault "in use" or "not permitted"? | **In use.** Holding the port with `nc -l -p 32500` reproduces the reported message byte for byte. The app's uid is in `gid 3003` (`AID_INET`), so `android.permission.INTERNET` was never the problem. |
+
+So the port is available on this Shield and the report was real. The occupant on
+the day cannot be named after the fact, because nothing logged it — which is the
+actual defect, and the reason a session went hunting a media server that was
+never holding anything.
+
+**Two things about the app's lifecycle that make an occupant plausible and are
+worth knowing on their own:** Holocron holds the port for the whole life of its
+process, and **there is no way to exit it from the device**. BACK does nothing
+and HOME backgrounds it with the socket still bound and serving — measured, the
+process survived and `netstat` still showed the listener. It is freed only when
+Android reclaims the process. `scripts/android-apk.sh install` runs `adb install
+-r` with no `force-stop`, so a rapid install-and-launch cycle races the package
+manager's kill against the new process's bind.
+
+**What the fix changes**, all three verified on the device:
+
+- The cause is reported. `port 32500 -- Address already in use (98)` on Android,
+  `WSAEADDRINUSE ... (10048)` on Windows, and `EACCES`/`WSAEACCES` reported
+  separately as *not permitted*. The old string was "in use or not permitted",
+  which is two faults with one wording.
+- **The port moves rather than the control surface disappearing.** With 32500
+  held, the Shield bound **45857**, announced 45857 over GDM, and served
+  `/control` on it — **HTTP 200 in 2.5 ms from the rack**. On a device with no
+  keyboard the Companion port is the only control surface there is (D-045), so
+  refusing to start is the one outcome that cannot be recovered from.
+- The bound port is now what gets announced. It previously was not: `[plex] port
+  = 0` bound an ephemeral port and announced **0** to every controller on the
+  LAN, and published `http://<ip>:0` to the account.
+
 ### Also worth knowing before the first device run
 
 - **The dependency chain is not a risk.** All eleven ports build for
