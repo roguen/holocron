@@ -179,9 +179,10 @@ What exists:
 
 **Seven of the eight milestones are finished.** What is left is M8 — Holocron on
 the NVIDIA Shield — and it now runs there: an ES 3.2 context on Tegra, the float
-compositor layers, a crystal on screen and the licence panel legible. What it
-cannot yet do on that box is **be cast to**, because it has no Plex token there.
-See the milestone table below.
+compositor layers, a crystal on screen and the licence panel legible. **It has
+now been cast to** as well — a FLAC streamed from the NAS over HTTPS, playing in
+real time with the crystal driven by it. What is left on that box is argv, APK
+assets, the multicast lock and lifecycle handling. See the milestone table below.
 
 **The `AudioFrame` contract is signed off** (2026-08-01). Section 9 of
 [`docs/audio-frame.md`](docs/audio-frame.md) records the decisions behind it — the
@@ -389,7 +390,7 @@ pull requests are not.
 | Platform | Role | State today |
 |---|---|---|
 | **Windows x86-64 + discrete GPU** | The build and test target | **Runs everything.** Plays bit-perfect through `WasapiSink` in exclusive mode, is cast to from Plexamp, and draws the whole facet stack. |
-| **Android TV — NVIDIA Shield** | Where it is going | **Runs and draws.** An ES 3.2 context on Tegra, the `RGBA16F` compositor layers, crystals, hot reload and the licence panel. The Companion control page answers on it — **HTTP 200 in 2.5 ms**, measured from the rack. **Cannot be cast to yet:** it has no Plex token, so nothing has ever been cast to it. |
+| **Android TV — NVIDIA Shield** | Where it is going | **Runs and draws.** An ES 3.2 context on Tegra, the `RGBA16F` compositor layers, crystals, hot reload and the licence panel. The Companion control page answers on it — **HTTP 200 in 2.5 ms**. **It has been cast to**, 2026-08-11: a 44.1 kHz FLAC streamed over HTTPS from the NAS, position advancing 39.98 s against 40.02 s of wall clock, the crystal tinted from the track's palette. **Not bit-perfect there**, and that is the device rather than the code — see below. |
 | **Linux** | CI only | Builds and hygiene checks run here. Not a deployment target. |
 | **macOS** | Not supported | Was the development host until 2026-08-01. No longer in the project. |
 
