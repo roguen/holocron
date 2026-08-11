@@ -203,8 +203,8 @@ gap and no overlap.
 **Not from `PcmRing`.** That ring is single-producer, single-consumer and its
 consumer is already the audio callback; a second tap on the decode side would
 also be *uncorrected*. The decoder runs ahead of the speakers (measured at 51 ms)
-and the trim pulls the picture earlier still (−90 ms on the reference rack), so
-projectM would react about 140 ms away from every crystal on screen beside it.
+and the trim pulls the picture earlier still (−30 ms on the reference rack), so
+projectM would react about 80 ms away from every crystal on screen beside it.
 Taking the waveform off the frame `FrameHistory` already selected by position
 puts projectM on the same clock as everything else, for free.
 
