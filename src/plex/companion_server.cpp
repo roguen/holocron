@@ -1089,7 +1089,37 @@ void CompanionServer::Impl::install_routes()
         res.set_content("", "text/plain");
     };
 
-    self->server.Post("/control/trim", [self, redirect_to_tuning](const httplib::Request& req,
+    // WAIT FOR THE RENDER LOOP TO CATCH UP BEFORE REDIRECTING.
+    //
+    // ISSUE 307. Every button on this page was ONE PRESS BEHIND: the POST queues
+    // a change for the render thread and returns immediately, the browser
+    // follows the 303, and the page is rendered from state the render loop has
+    // not republished yet. So the first press appeared to do nothing and every
+    // press after it showed the result of the previous one.
+    //
+    // Reported from the projector as "I had to press twice the first time and
+    // then after when I pressed something it was from the previous."
+    //
+    // Bounded and short. The render loop publishes every frame, so this is
+    // normally one frame -- but `duel` on the Shield runs at 8 fps, which is
+    // 125 ms a frame, and the deadline has to clear that or the fix would work
+    // on cheap crystals and not on the expensive ones. On a timeout the page is
+    // served anyway, exactly as before.
+    const auto wait_for_publish = [self](double previous) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (std::chrono::steady_clock::now() < deadline) {
+            {
+                const std::lock_guard<std::mutex> lock(self->control_mutex);
+                if (self->control.trim_ms != previous) {
+                    return;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        }
+    };
+
+    self->server.Post("/control/trim", [self, redirect_to_tuning, wait_for_publish](
+                                          const httplib::Request& req,
                                                                   httplib::Response&      res) {
         self->decorate(res);
         const auto delta = req.get_param_value("delta");
@@ -1103,7 +1133,13 @@ void CompanionServer::Impl::install_routes()
                 std::printf("control: trim %+lld ms\n", static_cast<long long>(ms));
                 std::fflush(stdout);
                 if (self->trim_handler) {
+                    double before = 0.0;
+                    {
+                        const std::lock_guard<std::mutex> lock(self->control_mutex);
+                        before = self->control.trim_ms;
+                    }
                     self->trim_handler(static_cast<double>(ms));
+                    wait_for_publish(before);
                 }
             } else if (ms != 0) {
                 std::fprintf(stderr, "control: refusing a trim step of %lld ms\n",
@@ -1118,11 +1154,17 @@ void CompanionServer::Impl::install_routes()
     // The other half of Save. A sweep that went somewhere wrong otherwise has no
     // way back except sweeping out again by eye, which is exactly the judgement
     // this page exists to avoid asking anyone to make twice.
-    self->server.Post("/control/tuning/reset", [self, redirect_to_tuning](
+    self->server.Post("/control/tuning/reset", [self, redirect_to_tuning, wait_for_publish](
                                                    const httplib::Request&, httplib::Response& res) {
         self->decorate(res);
         if (self->reset_tuning_handler) {
+            double before = 0.0;
+            {
+                const std::lock_guard<std::mutex> lock(self->control_mutex);
+                before = self->control.trim_ms;
+            }
             self->reset_tuning_handler();
+            wait_for_publish(before);
         }
         std::printf("control: reset tuning to the saved value\n");
         std::fflush(stdout);
