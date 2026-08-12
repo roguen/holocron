@@ -201,6 +201,7 @@ Cache** holds a 66 MB layer comfortably, which is the only thing that fits the
 number. **Do not carry this figure to another GPU**, and specifically not to the
 Shield at M8, where there is no such cache.
 
+<!-- measured: trim_ms.rack -->
 **`--trim-ms` does NOT need re-measuring for this.** The M3 issue flagged the
 compositor as a risk to the calibration, and the measurement answers it: the pass
 is an extra draw call inside the same frame before the same swap, so it adds no
@@ -353,14 +354,24 @@ hot reload and the vault all exist and are tested. The undecided part is the
 should inherit from the debug facet, which is an instrument panel. That call is
 the owner's and should not be made from a screenshot.
 
+<!-- measured: trim_ms.rack -->
 **`--trim-ms` is measured: `-30` on this rack.** Re-measured **2026-08-10 at 4K
 60 Hz, RGB 8-bit** against the generated click track — bracketed late at `0` and
 early at `-50`, midpoint `-25`, taken as **`-30`** on the 5 ms grid the tool steps
 in, so the resolution is about **±25 ms**. It lives in `gatekeeper.toml`;
 re-measure with `holocron <track> --calibrate`.
 
-**It was `-90` until then, and that figure is still all over the older
-documents.** −90 was measured 2026-08-04 at 4K **29 Hz**, RGB 10-bit. The
+**Every document that quotes it is checked against `docs/measurements.toml`**
+(issue 265). That file is the committed record — value, date, bracket,
+resolution — and `scripts/check-measurements.sh` requires each block quoting a
+recorded figure to declare which one it means, and each declaration to match.
+Re-measuring means editing the record; everything stale then fails by name.
+`gatekeeper.toml` is still gitignored and still the source of truth for the
+*program*, which is why that one step cannot be automated.
+
+<!-- measured: trim_ms.rack@2026-08-04 -->
+**It was `-90` until then, and that figure is still quoted in the documents that
+explain the move.** −90 was measured 2026-08-04 at 4K **29 Hz**, RGB 10-bit. The
 projector evening changed the link to 4K 60 Hz 8-bit (D-049), and two refreshes of
 vsync'd present pipeline went from 69 ms to 33 ms — which accounts for about 36 of
 the 60 ms move. The rest is plausibly the projector processing 4K60 8-bit faster

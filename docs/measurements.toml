@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# THE MEASURED VALUES THIS PROJECT QUOTES IN PROSE.
+#
+# This file exists because of issue 265. `trim_ms` was re-measured on 2026-08-10
+# and correctly recorded in `gatekeeper.toml`, which is gitignored -- and eight
+# published documents went on quoting the superseded figure. It was found by an
+# audit, because nothing could fail.
+#
+# WHAT THIS FILE IS, AND WHAT IT IS NOT.
+#
+# It is the source of truth for every DOCUMENT that quotes a measured value. It
+# is NOT the source of truth for the PROGRAM: `gatekeeper.toml` still is, it is
+# still gitignored, and nothing here is read at runtime. The two are joined by a
+# human, and that join is the one step the check below cannot make for you --
+# when you re-measure, update this file, and everything that quotes it then goes
+# red until it agrees.
+#
+# `scripts/check-measurements.sh` enforces two rules over every tracked `.md`
+# and `.toml`, in both directions:
+#
+#   1. A block that quotes a value recorded here must DECLARE which measurement
+#      it is quoting, with a marker. An undeclared quotation is an error, which
+#      is what stops a new document from silently starting to drift.
+#
+#   2. A block that declares a measurement must actually quote its CURRENT
+#      value. This is the half that catches the 265 failure: change `value`
+#      below and every stale document fails by name.
+#
+# The marker is invisible when rendered, and takes one form per file type:
+#
+#   Markdown   <!-- measured: trim_ms.rack -->
+#   TOML       # measured: trim_ms.rack
+#
+# A marker alone on its line covers the block that follows it -- everything down
+# to the next blank line. Several markers may stack above one block when it
+# quotes more than one measurement.
+#
+# TO QUOTE A SUPERSEDED VALUE ON PURPOSE, declare the dated key instead:
+# `trim_ms.rack@2026-08-04`. Saying which of the two you mean is the entire
+# point; a document that says -90 without saying "until 2026-08-10" is the bug.
+#
+# `value` IS A STRING, NOT A NUMBER, and deliberately. The check matches the
+# token as it is written in prose. TOML would read `-30` and `-30.0` as the same
+# float while they are different characters on a page, and it is the characters
+# that go stale.
+
+# --------------------------------------------------------------------------
+# The audio/video trim. See docs/calibrating-sync.md for the procedure, why it
+# is hard to measure well, and the five instruments that failed before this one.
+# --------------------------------------------------------------------------
+
+[[measurement]]
+key        = "trim_ms.rack"
+value      = "-30"
+unit       = "ms"
+measured   = "2026-08-10"
+subject    = "the rack"
+conditions = "RX 6800 -> Onkyo TX-RZ720 in Direct -> BenQ TK800 at 4K 60 Hz RGB 8-bit; WASAPI exclusive, 160-frame period"
+bracket    = "late at 0, early at -50, midpoint -25, taken as -30 on the 5 ms grid --calibrate steps in"
+resolution = "about +/-25 ms"
+config     = "gatekeeper.toml [audio] trim_ms"
+issue      = 265
+note       = """
+A trim is a property of the whole rack, and THE REFRESH RATE IS PART OF THE \
+RACK. This reading replaced -90 after the projector evening changed the link \
+from 4K 29 Hz RGB 10-bit to 4K 60 Hz 8-bit; two refreshes of vsync'd present \
+pipeline went from 69 ms to 33 ms, which accounts for about 36 of the 60 ms \
+move. Negative because the projector is slower than the audio path.\
+"""
+
+[[measurement]]
+key        = "trim_ms.rack@2026-08-04"
+value      = "-90"
+unit       = "ms"
+measured   = "2026-08-04"
+superseded = true
+subject    = "the rack, at 4K 29 Hz RGB 10-bit"
+conditions = "RX 6800 -> Onkyo TX-RZ720 in Direct -> BenQ TK800 at 4K 29 Hz RGB 10-bit; WASAPI exclusive, 160-frame period"
+bracket    = "early at -135, late at -50, midpoint -92.5, taken as -90"
+resolution = "about +/-42 ms"
+issue      = 265
+note       = """
+KEPT BECAUSE IT IS QUOTED ON PURPOSE, in the documents that explain why the \
+figure moved. Three independent estimates agreed on it at the time -- this \
+bracket gave -92.5, an earlier sweep against real music gave -85, and the \
+arithmetic predicted about -88 -- which is what made it a property of the rack \
+rather than of whatever was playing. It was still correct. It is simply no \
+longer current, and every document that names it has to say so.\
+"""
+
+# The Shield's own trim is issue 278 and is the owner's to measure -- it is the
+# last thing M8 needs. When it exists it belongs here as `trim_ms.shield`, with
+# its bracket and resolution, and docs/shield.md's paragraph on porting the trim
+# gets a marker for it. The rack's -30 does NOT carry over: different GPU,
+# different compositor, different audio stack.

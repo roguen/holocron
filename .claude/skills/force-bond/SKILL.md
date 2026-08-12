@@ -88,7 +88,8 @@ against the *unfixed* code, measure before choosing a constant.
 
 ## Register
 
-Plain and specific. Prefer "the trim is −90 because the projector is slower than
+<!-- measured: trim_ms.rack -->
+Plain and specific. Prefer "the trim is −30 because the projector is slower than
 the audio path" over anything that sounds like a maxim. If a sentence would look
 odd in the owner's mouth, rewrite it.
 

@@ -117,20 +117,30 @@ device = ""
 # receiver. Changing the display, or taking the receiver out of a direct mode
 # into one that does real processing, invalidates it. Re-measure after either.
 #
-# MEASURED ON ONE RACK, 2026-08-04: -90 ms. RX 6800 into an Onkyo TX-RZ720 in
-# DIRECT, out to a BenQ TK800 projector at 4K; WASAPI exclusive, 160-frame
-# period. NEGATIVE, because the projector is slower than the audio path.
-#
-# Bracketed rather than hunted for: clearly EARLY at -135, clearly LATE at -50,
-# so the estimate is the midpoint -92.5 with a resolution of about +/-42 ms.
 # Asking "early or late" is a direction judgement, which the eye is good at;
 # asking "is it aligned" is a coincidence judgement, which it is not, and which
-# has no moment where the answer announces itself.
+# has no moment where the answer announces itself. So the value is bracketed
+# from both sides rather than hunted for, and the midpoint is the answer.
+
+# measured: trim_ms.rack
+# MEASURED ON ONE RACK, 2026-08-10: -30 ms. RX 6800 into an Onkyo TX-RZ720 in
+# DIRECT, out to a BenQ TK800 projector at 4K 60 Hz RGB 8-bit; WASAPI exclusive,
+# 160-frame period. NEGATIVE, because the projector is slower than the audio
+# path. Clearly LATE at 0, clearly EARLY at -50, midpoint -25, taken as -30 on
+# the 5 ms grid --calibrate steps in, so the resolution is about +/-25 ms.
+
+# measured: trim_ms.rack@2026-08-04
+# IT READ -90 UNTIL THEN, measured on 2026-08-04 on the same boxes at 4K 29 Hz
+# RGB 10-bit: early at -135, late at -50, midpoint -92.5, resolution +/-42 ms.
+# Three independent estimates agreed on it, which is what made it a property of
+# the rack rather than of whatever was playing. Changing the refresh rate changed
+# the trim by 60 ms. THE REFRESH RATE IS PART OF THE RACK.
 #
-# Three independent estimates agree, which is what makes it a property of the
-# rack rather than of whatever was playing: this bracket gave -92.5, an earlier
-# sweep against real music gave -85, and the arithmetic below predicts about -88.
-#
+# Both figures, with their brackets and dates, are recorded in
+# docs/measurements.toml, and scripts/check-measurements.sh fails CI if this
+# comment and that record ever disagree. Issue 265: this paragraph is the one
+# that quietly kept saying -90 for a day after the re-measurement.
+
 # The projector's RATED input lag is 44 ms, and the real figure is about double
 # that. A rated number is measured at 1080p, usually to mid-frame, and does not
 # include 4K/HDR processing or the one-to-two refreshes of vsync'd present

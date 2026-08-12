@@ -139,6 +139,8 @@ render frames at 60 Hz, impossible to miss, still short enough to read as a flas
 
 Kept because each looks reasonable until it is used, and none announced itself.
 
+<!-- measured: trim_ms.rack@2026-08-04 -->
+
 **1. A curve on the envelope — reported `0`.**
 The first instrument drew `pow(onset_strength, 3.0)`. Brightness *followed* the
 envelope, so the screen ramped up and back down with no edge anywhere. Timing a
@@ -185,8 +187,36 @@ The general lesson, and it generalises well past this one number:
 
 ## This rack, for reference
 
-Measured 2026-08-04. RX 6800 → Onkyo TX-RZ720 in **Direct** → BenQ TK800 at 4K.
+The numbers below are quoted from [`measurements.toml`](measurements.toml),
+which is the committed record every document in this project checks its
+quotations against. If you re-measure, **change the record first**: every
+paragraph that quotes the old figure then fails CI by name, which is the whole
+mechanism (issue 265). `scripts/check-measurements.sh` runs it.
+
+`gatekeeper.toml` remains the source of truth for the *program*, and it is
+gitignored, so nothing automatic can read it. Updating the record after a
+re-measurement is the one step that is still yours. `--calibrate` prints the
+reminder when it prints the value.
+
+### Current — measured 2026-08-10
+
+RX 6800 → Onkyo TX-RZ720 in **Direct** → BenQ TK800 at **4K 60 Hz, RGB 8-bit**.
 WASAPI exclusive, 160-frame period.
+
+<!-- measured: trim_ms.rack -->
+
+| | |
+|---|---|
+| Clearly late | 0 |
+| Clearly early | −50 |
+| **Midpoint** | −25, recorded as **−30** on the 5 ms grid `--calibrate` steps in |
+| Resolution | about ±25 ms |
+
+### Superseded — measured 2026-08-04
+
+Same boxes, but at **4K 29 Hz, RGB 10-bit**.
+
+<!-- measured: trim_ms.rack@2026-08-04 -->
 
 | | |
 |---|---|
@@ -195,22 +225,18 @@ WASAPI exclusive, 160-frame period.
 | **Midpoint** | **−92.5**, recorded as **−90** |
 | Resolution | ±42 ms |
 
-> **SUPERSEDED AS A CURRENT VALUE, KEPT AS A RECORD.** This whole run was made on
-> 2026-08-04 at **4K 29 Hz, RGB 10-bit**. The projector evening changed the link
-> to 4K 60 Hz 8-bit, and the trim was re-measured on 2026-08-10: late at 0, early
-> at −50, midpoint −25, **taken as −30** with a resolution of about ±25 ms. Two
-> refreshes of vsync'd present pipeline went from 69 ms to 33 ms, which accounts
-> for about 36 of the 60 ms move.
->
-> The procedure below is unchanged and is what produced both numbers. **The
-> refresh rate is part of the rack**, which is the rule this page already states,
-> demonstrated the expensive way.
-
-Three independent estimates agree, which is what makes it a property of the rack
-rather than of whatever was playing:
+Three independent estimates agreed on it, which is what made it a property of the
+rack rather than of whatever was playing:
 
 | Method | Result |
 |---|---|
 | This bracket, synthetic click track | −92.5 |
 | Earlier sweep against real music | −85 |
 | Arithmetic: rated 44 ms lag, roughly doubled | ≈ −88 |
+
+It was not wrong. It stopped being current when the projector evening changed the
+link to 4K 60 Hz 8-bit: two refreshes of vsync'd present pipeline went from 69 ms
+to 33 ms, which accounts for about 36 of the 60 ms move. The procedure is
+unchanged and is what produced both numbers. **The refresh rate is part of the
+rack**, which is the rule this page already states, demonstrated the expensive
+way.

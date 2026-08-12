@@ -6013,11 +6013,21 @@ int main(int argc, char** argv)
         // which section, which key" -- as something to look up, and a measurement
         // that is awkward to record is a measurement that stays in a terminal
         // scrollback.
+        //
+        // The second paragraph is issue 265. The config this prints into is
+        // gitignored, so a re-measurement recorded there is invisible to every
+        // document that quotes it AND to CI. Eight of them once went on quoting
+        // the superseded figure for a day. This is the moment the record has to
+        // be updated -- any later and the reader has already closed the terminal.
         std::printf("\nholocron: calibration result -- put this in %s\n\n"
                     "  [audio]\n"
                     "  trim_ms = %.1f\n\n"
                     "Remember it belongs to the whole rack, not the receiver: changing the\n"
-                    "display, or leaving a direct listening mode, invalidates it.\n",
+                    "display, or leaving a direct listening mode, invalidates it.\n\n"
+                    "Then update docs/measurements.toml, with the bracket and the resolution.\n"
+                    "The config above is gitignored, so it is the only copy CI cannot read.\n"
+                    "The record is committed, and every document quoting this number is\n"
+                    "checked against it -- change the record and the stale ones fail by name.\n",
                     opt.config, trim_ms);
     }
 
