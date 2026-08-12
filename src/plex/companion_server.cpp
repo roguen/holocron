@@ -566,6 +566,10 @@ struct CompanionServer::Impl {
     CompanionServer::StopHandler  stop_handler;
     CompanionServer::PauseHandler pause_handler;
     CompanionServer::QueueHandler queue_handler;
+
+    // Issue 280. The handoff path -- see QueueHandoffHandler for why it is not
+    // the same handler as the one above.
+    CompanionServer::QueueHandoffHandler queue_handoff_handler;
     CompanionServer::SkipHandler          skip_handler;
     CompanionServer::SeekHandler          seek_handler;
     CompanionServer::RefreshQueueHandler  refresh_queue_handler;
@@ -859,6 +863,48 @@ void CompanionServer::Impl::install_routes()
                     track.codec.c_str(), track.container.c_str(),
                     static_cast<long long>(request.offset_ms), request.paused ? ", paused" : "");
         std::fflush(stdout);
+
+        // ISSUE 280. A `playMedia` whose containerKey names a play queue is a
+        // HANDOFF of a queue the controller already owns, not a request for one
+        // song -- and no `createPlayQueue` will follow to supply the rest.
+        //
+        // Read it back and start on the queue. Everything downstream of that --
+        // advancing at the end of a track, skipping, and the four queue
+        // identifiers the timeline has to carry before Plexamp will draw its
+        // controls -- is already built and already correct; it simply had no way
+        // to be reached from this command.
+        const std::string queue_id = play_queue_id_from_container_key(request.container_key);
+        if (!queue_id.empty() && self->queue_handoff_handler) {
+            PlexQueue       queue;
+            std::string     queue_detail;
+            const HttpError qerr =
+                fetch_play_queue(request, queue_id, self->device.machine_identifier, queue,
+                                 queue_detail);
+            if (qerr == HttpError::kOk) {
+                std::printf("companion: queue %s handed over -- %zu track(s), on %zu (\"%s\")\n",
+                            queue.id.c_str(), queue.tracks.size(), queue.selected,
+                            queue.tracks[queue_start_index(queue, {})].title.c_str());
+                std::fflush(stdout);
+
+                // The queue handler ONLY. Calling the play handler as well would
+                // set the "what was tapped" key from this command, and in a
+                // handoff that key is the queue's first item -- which is exactly
+                // the wrong song. See QueueHandoffHandler.
+                self->queue_handoff_handler(request, queue);
+                res.set_content(response_xml(200, "OK"), "text/xml");
+                return;
+            }
+
+            // NOT AN ERROR TO THE CONTROLLER. One track that plays is better
+            // than a cast that does nothing, so this falls through to the
+            // single-track path below. Said out loud because the difference is
+            // otherwise invisible: playback starts either way, and only the
+            // advance at the end of the track goes missing.
+            std::fprintf(stderr,
+                         "holocron: could not read play queue %s -- %s\n  %s\n"
+                         "  playing the one track instead; it will not advance\n",
+                         queue_id.c_str(), to_string(qerr), queue_detail.c_str());
+        }
 
         if (self->play_handler) {
             self->play_handler(request, track, stream_url(request, track.part_key));
@@ -1577,6 +1623,11 @@ void CompanionServer::set_pause_handler(PauseHandler handler)
 void CompanionServer::set_queue_handler(QueueHandler handler)
 {
     impl_->queue_handler = std::move(handler);
+}
+
+void CompanionServer::set_queue_handoff_handler(QueueHandoffHandler handler)
+{
+    impl_->queue_handoff_handler = std::move(handler);
 }
 
 void CompanionServer::set_skip_handler(SkipHandler handler)

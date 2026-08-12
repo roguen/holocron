@@ -123,6 +123,23 @@ public:
     // receives every track in order with its audio path resolved.
     using QueueHandler = std::function<void(const PlayRequest&, const PlexQueue&)>;
 
+    // Called when a controller hands over a play queue it ALREADY OWNS.
+    //
+    // ISSUE 280, and it is a different command from the one above even though it
+    // ends in the same place. Casting from a phone that is already playing sends
+    // a `playMedia` carrying `containerKey=/playQueues/N`, and NOTHING ELSE --
+    // no `createPlayQueue` follows, because the queue already exists. The server
+    // reads it back and hands it over here.
+    //
+    // SEPARATE FROM QueueHandler BECAUSE OF WHERE PLAYBACK STARTS. After a
+    // `createPlayQueue` the queue is selected at track one whatever was tapped,
+    // so the key from the preceding `playMedia` is the only record of the
+    // choice. Here there is no preceding command and the `playMedia`'s own key
+    // is the queue's FIRST item rather than the tapped one -- so that key must
+    // be ignored and `playQueueSelectedItemID` followed instead. Routing both
+    // through one handler would make one of the two play the wrong song.
+    using QueueHandoffHandler = std::function<void(const PlayRequest&, const PlexQueue&)>;
+
     // Called when a controller asks to move within the queue.
     //
     // `direction` is -1 for previous, +1 for next, and 0 when the controller
@@ -500,6 +517,7 @@ public:
     void set_stop_handler(StopHandler handler);
     void set_pause_handler(PauseHandler handler);
     void set_queue_handler(QueueHandler handler);
+    void set_queue_handoff_handler(QueueHandoffHandler handler);
     void set_skip_handler(SkipHandler handler);
     void set_seek_handler(SeekHandler handler);
     void set_volume_handler(VolumeHandler handler);
