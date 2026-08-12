@@ -456,7 +456,22 @@ std::string tuning_page(const CompanionServer::ControlState& state)
     // 5 ms is the step --calibrate uses, because the judgement itself resolves to
     // roughly 20 ms and a finer step would imply a precision the eye cannot
     // supply. 25 is there so a bracket can be swept without forty taps.
-    static const char* const kSteps[] = {"-25", "-5", "+5", "+25"};
+    // COARSE AND FINE, BECAUSE THE RANGE TURNED OUT TO BE MUCH WIDER THAN THE
+    // RACK'S. Issue 304.
+    //
+    // The owner swept the Shield from -60 to +80 in 25 ms steps, saw no change
+    // he could judge, and reported the tool as having no effect. Measured
+    // afterwards: the trim was working perfectly -- `target = played - trim` to
+    // the millisecond, and the selected analysis frame tracking it exactly. What
+    // was wrong is that 140 ms of sweep was nowhere near far enough on that
+    // device, and at 25 ms a press the distance is unreachable by hand.
+    //
+    // The Shield's clock is SDL's frame counter, which sits above AudioFlinger's
+    // own buffering -- so there is output latency below it that the clock cannot
+    // see, the sound arrives later than `played_us` says, and the picture reads
+    // as early. That wants a large POSITIVE trim, not the small negative one the
+    // rack needs.
+    static const char* const kSteps[] = {"-100", "-25", "-5", "+5", "+25", "+100"};
     out += "<div class=\"row\">";
     for (const char* step : kSteps) {
         out += "<form method=\"post\" action=\"/control/trim\">"
@@ -1099,6 +1114,10 @@ void CompanionServer::Impl::install_routes()
             // a picture that has stopped following the music at all -- and the
             // page only ever offers 25.
             const std::int64_t ms = parse_int64(delta, 0);
+            // +/-200 covers the widest single step the page offers with room
+            // to spare. It is a guard against a hand-written request from
+            // anyone on the LAN, not a limit on the trim itself -- the trim
+            // clamps at +/-2000 in the render loop.
             if (ms != 0 && ms >= -200 && ms <= 200) {
                 std::printf("control: trim %+lld ms\n", static_cast<long long>(ms));
                 std::fflush(stdout);
