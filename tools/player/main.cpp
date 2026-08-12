@@ -3434,6 +3434,12 @@ int main(int argc, char** argv)
     double       trim_ms = opt.trim_ms;
     std::int64_t trim_us = static_cast<std::int64_t>(trim_ms * 1000.0);
 
+    // What the last frame selection actually resolved to, so a trim change can
+    // say whether it MOVED the picture rather than only the number. See the note
+    // at the selection.
+    std::uint64_t last_selected_index = 0;
+    std::int64_t  last_target_us      = 0;
+
     // How far ahead of the speakers the newest analysis frame currently is.
     // Updated every frame while a device clock exists; see where it is assigned.
     double headroom_ms = 0.0;
@@ -4791,13 +4797,23 @@ int main(int argc, char** argv)
                 // beside the value is what turns "nudging stopped helping" into
                 // "you have run out of lead", which are indistinguishable
                 // otherwise.
-                if (trim_ms < 0.0 && -trim_ms >= headroom_ms && headroom_ms > 0.0) {
+                // `headroom_ms > 0.0` USED TO BE PART OF THIS, and it suppressed the
+                // warning in the one case that needed it most: headroom of
+                // EXACTLY zero is a trim that is completely clamped, and the
+                // player reported it as `(lead available: 0 ms)` as though
+                // nothing were wrong. Observed on the Shield 2026-08-12 at
+                // trim_ms = -85, while the owner was trying to calibrate and
+                // could not work out why the picture would not move.
+                if (trim_ms < 0.0 && -trim_ms >= headroom_ms) {
                     std::printf("holocron: trim_ms = %.0f  -- AT THE FLOOR, only %.0f ms of lead "
                                 "exists; the picture cannot be advanced further\n",
                                 trim_ms, headroom_ms);
                 } else {
-                    std::printf("holocron: trim_ms = %.0f  (lead available: %.0f ms)\n", trim_ms,
-                                headroom_ms);
+                    std::printf("holocron: trim_ms = %.0f  (lead available: %.0f ms, showing "
+                            "analysis frame %llu at target %lld ms)\n", trim_ms,
+                                headroom_ms,
+                            static_cast<unsigned long long>(last_selected_index),
+                            static_cast<long long>(last_target_us / 1000));
                 }
                 std::fflush(stdout);
             }
@@ -4825,6 +4841,18 @@ int main(int argc, char** argv)
             const std::int64_t target    = played_us - trim_us;
             have_frame = session.select_frame(target > 0 ? static_cast<std::uint64_t>(target) : 0,
                                               tap.scratch());
+
+            // WHICH FRAME THE TRIM ACTUALLY LANDED ON. Kept so the next trim
+            // change can report it.
+            //
+            // The owner moved the trim across 140 ms on the Shield and the
+            // picture did not visibly follow. "The trim has no effect" and "the
+            // trim moved the selection and the eye could not see it" are
+            // completely different faults with identical symptoms, and nothing
+            // printed could tell them apart -- the trim line reported the value
+            // it had been SET to, which was never in doubt.
+            last_selected_index = tap.scratch().frame_index;
+            last_target_us      = target;
 
             // Measure what the OLD behaviour would have shown, so the fix is
             // quantified rather than asserted. The newest frame's position
@@ -5092,13 +5120,23 @@ int main(int argc, char** argv)
         if (double delta = 0.0; cast.take_trim(delta)) {
             trim_ms = std::clamp(trim_ms + delta, -2000.0, 2000.0);
             trim_us = static_cast<std::int64_t>(trim_ms * 1000.0);
-            if (trim_ms < 0.0 && -trim_ms >= headroom_ms && headroom_ms > 0.0) {
+            // `headroom_ms > 0.0` USED TO BE PART OF THIS, and it suppressed the
+                // warning in the one case that needed it most: headroom of
+                // EXACTLY zero is a trim that is completely clamped, and the
+                // player reported it as `(lead available: 0 ms)` as though
+                // nothing were wrong. Observed on the Shield 2026-08-12 at
+                // trim_ms = -85, while the owner was trying to calibrate and
+                // could not work out why the picture would not move.
+                if (trim_ms < 0.0 && -trim_ms >= headroom_ms) {
                 std::printf("holocron: trim_ms = %.0f  -- AT THE FLOOR, only %.0f ms of lead "
                             "exists; the picture cannot be advanced further\n",
                             trim_ms, headroom_ms);
             } else {
-                std::printf("holocron: trim_ms = %.0f  (lead available: %.0f ms)\n", trim_ms,
-                            headroom_ms);
+                std::printf("holocron: trim_ms = %.0f  (lead available: %.0f ms, showing "
+                            "analysis frame %llu at target %lld ms)\n", trim_ms,
+                            headroom_ms,
+                            static_cast<unsigned long long>(last_selected_index),
+                            static_cast<long long>(last_target_us / 1000));
             }
             std::fflush(stdout);
         }
