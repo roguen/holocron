@@ -175,7 +175,7 @@ What exists:
 | **Plex** | GDM discovery, `--link` sign-in through the plex.tv PIN flow, automatic device registration and connection publishing, play queues built on the server, timeline reporting to both the controller and the media server, and every transport command a phone sends. |
 | **Playback** | `PlaybackSession` — decoder, analysis, ring, device and decode thread behind one object that can be started, **replaced** and **seeked**, which is what casting requires. |
 | **Track context** | `TrackContext` — what is playing, the album art as a texture, and a **palette** extracted from it: five swatches, a primary and a contrast accent, supplied to every crystal in linear RGB. |
-| **Tests** | **550 cases on Windows, 551 on Linux, green on both.** |
+| **Tests** | **553 cases on Windows, 554 on Linux, green on both.** |
 
 **Seven of the eight milestones are finished.** What is left is M8 — Holocron on
 the NVIDIA Shield — and it now runs there: an ES 3.2 context on Tegra, the float
@@ -399,8 +399,20 @@ pull requests are not.
 **The Shield will not be bit-perfect, and that is the device rather than the
 code.** Every mixer output on it is 48 kHz 16-bit, and every output that carries
 44.1 kHz is `AUDIO_OUTPUT_FLAG_DIRECT`, which the NDK does not expose — so a
-44.1 kHz file is resampled whichever audio API is underneath. `is_bit_perfect()`
-reports that truthfully rather than claiming otherwise.
+44.1 kHz file is resampled whichever audio API is underneath.
+
+**The player says so, out loud, with the reason.** On the Shield, mid-cast:
+
+```
+holocron:   device 44100 Hz, platform default 44100 Hz
+holocron:   audio sdl3, 882 frames per period, not bit-perfect
+holocron:   every Android mixer output is 48 kHz 16-bit and the NDK exposes no direct path
+```
+
+Those first two numbers are the interesting ones: they agree, while the mixer
+underneath is running at 48000. **Holocron cannot see what Android does below the
+handle it holds**, so it reports what it can and names what it cannot — which is
+the whole of the honesty this project asks of the audio path. D-063.
 
 The target is a dedicated Windows box in a home-theater rack, HDMI to an Onkyo
 receiver. Verified on that machine: GL **4.6 core** on a Radeon RX 6800 — the
