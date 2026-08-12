@@ -43,6 +43,7 @@ add_executable(holocron_tests
     test_image_decode.cpp
     test_projectm_api.cpp
     test_artwork_cache.cpp
+    test_run_log.cpp
     test_notices.cpp
     test_notices_view.cpp
 )
@@ -73,6 +74,7 @@ target_link_libraries(holocron_tests
         holocron::plex
         holocron::visual
         holocron::projectm
+        holocron::platform
         holocron::notices
         holocron::warnings
         Catch2::Catch2WithMain

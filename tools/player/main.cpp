@@ -57,6 +57,7 @@
 #include <holocron/overlay_facet.hpp>
 #include <holocron/palette.hpp>
 #include <holocron/platform_paths.hpp>
+#include <holocron/run_log.hpp>
 #include <holocron/shader_cache.hpp>
 #include <holocron/text_render.hpp>
 #include <holocron/track_context.hpp>
@@ -2287,7 +2288,7 @@ bool start_discovery(PlexDevice& device, GdmResponder& gdm, CompanionServer& com
 
     // start() reports a port it had to move away from this way, without failing.
     if (!detail.empty()) {
-        std::fprintf(stderr, "holocron: the Companion HTTP port had to move\n  %s\n",
+        say("holocron: the Companion HTTP port had to move\n  %s\n",
                      detail.c_str());
     }
 
@@ -2320,7 +2321,7 @@ bool start_discovery(PlexDevice& device, GdmResponder& gdm, CompanionServer& com
 
     std::printf("holocron: announcing as \"%s\" (%s)\n", device.name.c_str(),
                 device.machine_identifier.c_str());
-    std::printf("holocron: GDM on UDP %u, Companion on TCP %u\n",
+    say("holocron: GDM on UDP %u, Companion on TCP %u\n",
                 static_cast<unsigned>(kGdmClientUpdatePort), static_cast<unsigned>(device.port));
     // Printed on its own line and in full, because these two are what get
     // varied while working out why a client does or does not offer the device.
@@ -2371,7 +2372,7 @@ void register_with_account(const Gatekeeper& cfg, const PlexDevice& device)
                      to_string(err), detail.c_str());
         return;
     }
-    std::printf("holocron: registered with your Plex account at %s\n", uri.c_str());
+    say("holocron: registered with your Plex account at %s\n", uri.c_str());
 }
 
 // --link: sign this Holocron in to a Plex account.
@@ -2631,7 +2632,7 @@ int main(int argc, char** argv)
         if (gerr == GatekeeperError::kNotFound) {
             std::printf("holocron: %s\n", cfg_detail.c_str());
         } else {
-            std::printf("holocron: config %s\n", config_path.c_str());
+            say("holocron: config %s\n", config_path.c_str());
 
             if (!opt.given.trim_ms) {
                 opt.trim_ms = cfg.trim_ms;
@@ -2827,7 +2828,7 @@ int main(int argc, char** argv)
                          detail.c_str());
         } else {
             if (!detail.empty()) {
-                std::fprintf(stderr, "holocron: the Companion HTTP port had to move\n  %s\n",
+                say("holocron: the Companion HTTP port had to move\n  %s\n",
                              detail.c_str());
             }
             device.port = companion.bound_port();
@@ -2842,7 +2843,7 @@ int main(int argc, char** argv)
         // the routing table will not say -- still correct, just only useful from
         // this machine.
         const std::string host = local_address_towards("192.168.1.1");
-        std::printf("holocron: control page at http://%s:%u/control\n",
+        say("holocron: control page at http://%s:%u/control\n",
                     host.empty() ? "127.0.0.1" : host.c_str(),
                     static_cast<unsigned>(companion.bound_port()));
         std::fflush(stdout);
@@ -2934,7 +2935,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::printf("holocron: GL %d.%d core on %s\n", window.gl_major(), window.gl_minor(),
+    say("holocron: GL %d.%d core on %s\n", window.gl_major(), window.gl_minor(),
                 window.gl_renderer());
     std::printf("holocron: %s\n", window.gl_version());
 

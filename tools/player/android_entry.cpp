@@ -48,6 +48,7 @@
 #include <holocron/android_jni.hpp>
 #include <holocron/asset_seed.hpp>
 #include <holocron/platform_paths.hpp>
+#include <holocron/run_log.hpp>
 
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_hints.h>
@@ -230,9 +231,19 @@ int main(int argc, char** argv)
     // Said out loud because it is the first thing to check when the player comes
     // up on defaults: the answer is a path nobody can guess and every relative
     // path in the process now hangs off it.
-    std::printf("holocron: data directory %s\n",
-                holocron::data_directory().empty() ? "(none -- using the working directory)"
-                                                   : holocron::data_directory().c_str());
+    // ISSUE 281. The run log is opened HERE, first, before anything that can
+    // fail -- because the failure it exists to catch is a startup that stopped
+    // part way, and a log opened after the interesting part is a log of nothing.
+    // The data directory is known by this line and is the only writable place
+    // this process reliably owns.
+    holocron::open_run_log(holocron::data_directory());
+    if (!holocron::run_log_path().empty()) {
+        holocron::say("holocron: run log %s\n", holocron::run_log_path().c_str());
+    }
+
+    holocron::say("holocron: data directory %s\n",
+                  holocron::data_directory().empty() ? "(none -- using the working directory)"
+                                                     : holocron::data_directory().c_str());
 
     // THE SHIPPED VAULT, OUT OF THE APK AND ONTO THE FILESYSTEM.
     //
