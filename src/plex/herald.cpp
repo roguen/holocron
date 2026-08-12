@@ -481,6 +481,10 @@ struct Herald::Impl {
     void run_one(const Errand& errand, std::unique_lock<std::mutex>& lock)
     {
         if (errand.kind == ErrandKind::kWait) {
+            // Said out loud like the commands are. A four-second gap between two
+            // log lines with nothing between them reads as a stall.
+            std::printf("holocron: herald -- waiting %d ms\n", errand.wait_ms);
+            std::fflush(stdout);
             nap(lock, errand.wait_ms);
             return;
         }
@@ -516,6 +520,26 @@ struct Herald::Impl {
 
         if (ok) {
             ran.fetch_add(1, std::memory_order_relaxed);
+            // ISSUE 285. SUCCESS WAS SILENT, AND ON A TELEVISION THAT MEANT
+            // UNKNOWABLE.
+            //
+            // Only failures were reported here, with the count of successes
+            // printed at EXIT -- and the Android app never exits. BACK does
+            // nothing, HOME backgrounds it and it keeps playing (D-062), and it
+            // ends when the system reclaims it or `am force-stop` is used.
+            // Neither runs the exit path.
+            //
+            // So after the first cast to the Shield the log held exactly one
+            // herald line, `herald armed -- 3 errand(s)`, and "ran and succeeded"
+            // was indistinguishable from "never fired". This is a subsystem that
+            // reaches out and switches on a physical amplifier; it is the last
+            // place in the project that should be quiet about having worked.
+            //
+            // The command, not just a count: PWR01 and SLI11 do different things
+            // and a receiver on the wrong input looks identical to one that was
+            // never told.
+            std::printf("holocron: herald -- %s sent to %s\n", command.c_str(), host.c_str());
+            std::fflush(stdout);
         } else {
             failed.fetch_add(1, std::memory_order_relaxed);
             std::fprintf(stderr, "holocron: herald -- %s\n", why.c_str());

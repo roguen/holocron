@@ -6202,6 +6202,12 @@ int main(int argc, char** argv)
         // COMMANDS, not errands -- a `wait://` is not counted, so that this
         // number keeps meaning "reached the amplifier". The arming line above
         // breaks its total down the same way so the two agree.
+        //
+        // KEPT, BUT NO LONGER THE ONLY REPORT. This runs at exit, and the
+        // Android app never exits -- so on the platform where the herald is
+        // hardest to observe, this line has never once been printed. Issue 285:
+        // each errand now says so as it happens, and this stays because it is
+        // still the right summary on a machine that can be quit.
         std::printf("holocron: herald sent %llu command(s), %llu failed\n",
                     static_cast<unsigned long long>(ran),
                     static_cast<unsigned long long>(lost));
