@@ -91,9 +91,18 @@ echo
 # `git ls-files` rather than a directory walk or a list in this script: the set
 # that matters is the set that is TRACKED, a list would rot, and a walk would
 # pick up build output and whatever is parked in the tree unstaged.
-git ls-files '*.md' '*.toml' | grep -v -x "$record" > "$tmp/files"
+#
+# -F as well as -x on the exclusion: the record's own path contains a dot, and as
+# a regex that matches any character. A check that quietly stops scanning a file
+# because its name resembles another one is the failure mode this whole script
+# exists to prevent.
+git ls-files '*.md' '*.toml' | grep -v -F -x "$record" > "$tmp/files" || true
 
 count=$(wc -l < "$tmp/files" | tr -d ' ')
+if [ "$count" -eq 0 ]; then
+    echo "::error::no tracked documents to scan -- the check would pass on anything"
+    exit 1
+fi
 echo "scanning $count tracked document(s) against $record"
 
 status=0
