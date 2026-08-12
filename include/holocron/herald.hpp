@@ -119,6 +119,28 @@ bool parse_errand(std::string_view uri, Errand& out, std::string& out_why);
 // startup rather than in a dark room.
 bool render_errand(std::string_view templ, int level, std::string& out, std::string& out_why);
 
+// The other direction: a level read back OFF the receiver, in Plex's 0..100.
+//
+// ISSUE 319. The herald had only ever written, so the timeline could only report
+// what this program had commanded -- and before it had commanded anything it
+// reported a constant 100. A controller reads that as a position, puts its slider
+// at the top and echoes it back, so the act of casting drove the receiver to
+// `volume_max`. Asking first is the fix, and this is the arithmetic that makes
+// the answer comparable with what the slider sends.
+//
+// Scaled against the SAME ceiling the outgoing direction uses, so a level read
+// back and immediately echoed maps to itself and sends nothing.
+//
+// CLAMPED AT 100, because the receiver is under no obligation to respect
+// `volume_max` -- its own remote does not know about it. The rack was found at a
+// raw 91 against a ceiling of 40, which is 227 unclamped: a nonsense a controller
+// would reject or wrap.
+//
+// Returns -1 when there is no sensible answer, which the caller must report as
+// "unknown" rather than substituting a default. Substituting a default is the
+// entire bug.
+int level_from_receiver(int raw, int ceiling);
+
 // How long the playback predicate must hold before an edge counts.
 //
 // THE LATCH IS THE WHOLE REASON THIS IS A TYPE AND NOT AN `if`. `PlaybackSession`
