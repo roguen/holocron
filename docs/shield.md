@@ -449,6 +449,86 @@ below. It has not been run.
 
 ---
 
+## 5a. Building it, end to end, from a machine with nothing installed
+
+**Written down 2026-08-12 because it existed nowhere.** There is no Android
+CMake preset, `scripts/android-apk.sh` packages but deliberately does not build,
+and the configure line had to be reconstructed from `CMakeLists.txt` and the
+packaging script by trial. Issue 293 is the CI half of this; until that closes,
+this is the manual procedure and it has been run once, successfully, on the rack.
+
+**Prerequisites, and what was actually missing.** The Android SDK was already
+present — build-tools 34.0.0, platforms android-30 and android-34,
+cmdline-tools/latest, licences accepted. **The NDK was not, and neither was any
+`arm64-android` vcpkg tree.**
+
+```bash
+# 1. The NDK. Nothing else here needs a browser.
+"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;28.2.13676358"
+export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
+```
+
+> **`scripts/android-check.sh` will not find an `sdkmanager`-installed NDK by
+> itself.** It searches `ANDROID_NDK_HOME`, `ANDROID_NDK_ROOT`,
+> `ANDROID_NDK_LATEST_HOME`, then `%LOCALAPPDATA%/Android/android-ndk-*` — and
+> that last path is the *standalone* layout, where `sdkmanager` installs to
+> `Sdk/ndk/<version>`. Export the variable.
+
+```bash
+# 2. SDL3 in CLASSIC mode as well as through the manifest. android-apk.sh takes
+#    SDL's Java sources out of the vcpkg BUILDTREE rather than vendoring them,
+#    so the buildtree has to exist. 1.7 min.
+cd "$VCPKG_ROOT" && ./vcpkg install sdl3:arm64-android
+
+# 3. Configure. There is no preset for this.
+cmake -B build/android -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+  -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+  -DVCPKG_TARGET_TRIPLET=arm64-android \
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-30 \
+  -DCMAKE_BUILD_TYPE=Release -DHOLOCRON_BUILD_TESTS=OFF
+
+cmake --build build/android          # 61 targets
+scripts/android-apk.sh               # or `install` to adb install -r
+```
+
+**Measured, 2026-08-12, cold:** the eleven ports took **26 minutes**, not the 17
+recorded in section 6 — that figure predates issue 239 adding OpenSSL for every
+non-Windows platform. The build is 61 targets, `libholocron.so` comes out at
+147 MB unstripped, and the signed APK is **45 MB**.
+
+**On Android `holocron` is a SHARED LIBRARY.** `libholocron.so`, because
+`HolocronActivity.getLibraries()` names `"holocron"`, and `android-apk.sh` wants
+it at exactly `build/android/lib/arm64-v8a/libholocron.so`.
+
+### The keystore decides whether an install costs you the device's identity
+
+`android-apk.sh` generates `build/android/debug.keystore` if none is there. **If
+that file has been lost since the installed APK was signed, the signatures will
+not match and `adb install -r` fails** — and the only way forward is an
+uninstall, which takes the app's data with it: `gatekeeper.toml`,
+`machine-identifier`, the unpacked vault and both run logs.
+
+Losing `machine-identifier` is the expensive part. A Plex token is bound to the
+identifier it was linked with (D-059), so a fresh one leaves a second Holocron on
+the account that nothing can reach and that does not remove itself.
+
+**Check for the keystore before packaging, not after.** `build/` is gitignored,
+so it is exactly the kind of file a clean checkout does not have.
+
+### `ANDROID_STL` is unset, and that is a latent problem rather than a current one
+
+Nothing in the tree sets it, so the build takes the NDK default, `c++_static`.
+Android's own C++ guide says an application shipping **multiple** shared
+libraries should use `libc++_shared.so` instead, because two static copies of the
+runtime in one process is undefined behaviour around exceptions and RTTI.
+
+Today the APK ships one `.so` of ours, so nothing is wrong. It becomes real the
+moment a second one is added — which is precisely what bringing libprojectM to
+this device would do.
+
+---
+
 ## 6. What is left, measured rather than estimated
 
 An adversarial audit on 2026-08-11 — six dimensions, every finding handed to a
