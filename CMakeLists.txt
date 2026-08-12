@@ -145,6 +145,7 @@ add_library(holocron_platform STATIC
     src/platform/asset_seed.cpp
     src/platform/multicast_lock.cpp
     src/platform/platform_paths.cpp
+    src/platform/run_log.cpp
 )
 add_library(holocron::platform ALIAS holocron_platform)
 
