@@ -41,7 +41,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <string>
+#include <thread>
 
 using namespace holocron;
 
@@ -280,6 +282,72 @@ TEST_CASE("a playback token is never written to the request log", "[plex][compan
     // problem for another.
     REQUIRE(logged.find("commandID=1") != std::string::npos);
     REQUIRE(logged.find("/player/playback/stop") != std::string::npos);
+}
+
+TEST_CASE("a volume drag reports the highest value it reached", "[plex][companion]")
+{
+    // ISSUE 312, AND THE POINT OF THE WHOLE CHANGE. The drag ends at 41 and the
+    // phone reached 50 on the way; the closing line has to carry the 50, because
+    // that -- not where the finger stopped -- is what the issue asks for.
+    //
+    // Driven over a real socket rather than against DragRun directly, because the
+    // half that was broken was the wiring: the run was closed with a count and
+    // the values never reached the summary at all.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto client = s.client();
+    for (const int level : {12, 30, 50, 44, 41}) {
+        REQUIRE(client.Get("/player/playback/setParameters?volume=" + std::to_string(level)));
+    }
+
+    // Nothing has closed the run yet, so there is nothing to report.
+    REQUIRE(s.server.last_drag().empty());
+
+    // Any request that is not a setParameters ends the gesture.
+    REQUIRE(client.Get("/player/playback/pause?commandID=1"));
+
+    const std::string line = s.server.last_drag();
+    REQUIRE(line.find("high 50") != std::string::npos);
+    REQUIRE(line.find("volume 12 to 41") != std::string::npos);
+    REQUIRE(line.find("low 12") != std::string::npos);
+    REQUIRE(line.find("4 more setParameters") != std::string::npos);
+}
+
+TEST_CASE("a timeline poll closes a drag that has gone quiet, and not one in progress",
+          "[plex][companion]")
+{
+    // WITHOUT THIS THE LINE MIGHT NEVER PRINT. After a volume drag the phone
+    // goes back to polling and may send nothing else for minutes, so a run
+    // closed only by some other request is a measurement that arrives when the
+    // owner next presses something -- or not at all.
+    //
+    // The quiet gate is the other half: polls arrive DURING a gesture too, and
+    // closing on those would cut one drag into several lines with several
+    // different maxima, which is a subtler version of the fault being fixed.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+
+    auto client = s.client();
+    REQUIRE(client.Get("/player/playback/setParameters?volume=20"));
+    REQUIRE(client.Get("/player/playback/setParameters?volume=90"));
+
+    // No `wait=1`, so this answers at once. It arrives while the gesture is
+    // still warm and must leave the run alone.
+    REQUIRE(client.Get("/player/timeline/poll?commandID=2"));
+    REQUIRE(s.server.last_drag().empty());
+
+    // The drag continues, and the peak set before the poll has to survive it.
+    REQUIRE(client.Get("/player/playback/setParameters?volume=75"));
+
+    // Now the finger leaves the glass. kDragQuietMs is 1000; wait past it.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    REQUIRE(client.Get("/player/timeline/poll?commandID=3"));
+
+    const std::string line = s.server.last_drag();
+    REQUIRE(line.find("high 90") != std::string::npos);
+    REQUIRE(line.find("volume 20 to 75") != std::string::npos);
+    REQUIRE(line.find("2 more setParameters") != std::string::npos);
 }
 
 TEST_CASE("a CORS preflight is answered", "[plex][companion]")

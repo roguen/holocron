@@ -35,6 +35,7 @@ add_executable(holocron_tests
     test_eiscp.cpp
     test_herald.cpp
     test_companion_server.cpp
+    test_drag_log.cpp
     test_plex_link.cpp
     test_plex_playback.cpp
     test_lyrics.cpp

@@ -11,6 +11,8 @@
 
 #include <holocron/companion_server.hpp>
 
+#include <holocron/drag_log.hpp>
+
 #include <httplib.h>
 
 // AFTER httplib.h, and that order is load-bearing on Windows: httplib pulls in
@@ -704,9 +706,13 @@ struct CompanionServer::Impl {
     //
     // COLLAPSED, NOT DROPPED. The project has already learned that a log line
     // removed for readability is an instrument removed, so a run of these prints
-    // once on arrival and once more with a count when something else happens.
-    // What is lost is the intermediate values, which nothing acts on; what is
-    // kept is that a drag occurred and how far it went.
+    // once on arrival and once more when the run ends.
+    //
+    // ISSUE 312: "and how far it went" USED TO BE A COUNT, AND A COUNT IS NOT
+    // THE MEASUREMENT. The run's extremes are carried in a DragRun now, so the
+    // closing line reports where the drag started, where it ended and how far it
+    // reached each way. See drag_log.hpp for why the first value was the one
+    // datum the question does not need.
     static bool is_set_parameters(const httplib::Request& req)
     {
         return req.path == "/player/playback/setParameters";
@@ -732,8 +738,21 @@ struct CompanionServer::Impl {
     {
         requests.fetch_add(1, std::memory_order_relaxed);
 
+        const auto now = std::chrono::steady_clock::now();
+
         if (is_timeline_poll(req)) {
             polls.fetch_add(1, std::memory_order_relaxed);
+
+            // A POLL CAN END A RUN, AND WITHOUT THIS THE LINE MIGHT NEVER PRINT.
+            //
+            // The run used to be closed only by some OTHER request arriving, and
+            // after a volume drag there may not be one: the phone goes back to
+            // polling and nothing else happens until somebody touches it again.
+            // For a measurement whose whole content is the closing line, "prints
+            // eventually, if you press something" is not an instrument.
+            //
+            // Quiet-gated rather than unconditional -- see flush_drag.
+            flush_drag(now, /*quiet_only=*/true);
             return;
         }
 
@@ -766,21 +785,39 @@ struct CompanionServer::Impl {
             last_path = path;
         }
 
-        // A run of slider commands prints once, then reports its length when the
-        // run ends. See is_set_parameters.
+        // A run of slider commands prints once, then reports where it went when
+        // the run ends. See is_set_parameters and drag_log.hpp.
         if (is_set_parameters(req)) {
-            if (set_parameters_run == 0) {
+            bool first = false;
+            {
+                const std::lock_guard<std::mutex> lock(drag_mutex);
+                first = drag.empty();
+
+                // RECORDED AS SENT, NOT AS ACCEPTED. The handler refuses
+                // anything outside 0..100 and this does not, deliberately: a
+                // phone sending 200 is a finding, and a log that quietly drops
+                // the value it cannot use is the same mistake drag_log.hpp
+                // exists to correct.
+                const auto volume = req.params.find("volume");
+                if (volume == req.params.end()) {
+                    drag.saw_command();
+                } else {
+                    const std::int64_t level = parse_int64(volume->second, kNoLevel);
+                    if (level == kNoLevel) {
+                        drag.saw_command();
+                    } else {
+                        drag.saw_volume(static_cast<int>(level));
+                    }
+                }
+                drag_at = now;
+            }
+            if (first) {
                 std::printf("companion: %s %s\n", req.method.c_str(), path.c_str());
                 std::fflush(stdout);
             }
-            ++set_parameters_run;
             return;
         }
-        if (set_parameters_run > 1) {
-            std::printf("companion: ... and %llu more setParameters (a slider being dragged)\n",
-                        static_cast<unsigned long long>(set_parameters_run - 1));
-        }
-        set_parameters_run = 0;
+        flush_drag(now, /*quiet_only=*/false);
 
         // Deliberately unconditional rather than behind a verbosity flag. This
         // transcript is the deliverable's real output: the protocol is
@@ -790,11 +827,62 @@ struct CompanionServer::Impl {
         std::fflush(stdout);
     }
 
-    // How many setParameters have arrived back to back. Only ever touched from
-    // note(), which cpp-httplib may call on any of its worker threads -- so it is
-    // atomic rather than a plain counter. Exactness does not matter here; it is a
-    // log line, and a race would misreport a count rather than lose a command.
-    std::atomic<std::uint64_t> set_parameters_run{0};
+    // A value that cannot be a slider level, used to tell "no volume here" from
+    // "volume=0" -- which is a real position and the one a muted phone sends.
+    static constexpr std::int64_t kNoLevel = -1;
+
+    // How long the slider must be still before a run is considered over.
+    //
+    // A drag delivers one command per pixel, far faster than this; a finger that
+    // has left the glass delivers none. Anything in between is the same gesture.
+    static constexpr int kDragQuietMs = 1000;
+
+    // Print a finished run of slider commands, if there is one.
+    //
+    // `quiet_only` is what the timeline poll passes. Polls arrive constantly,
+    // including in the middle of a gesture, and closing the run on any of them
+    // would cut one drag into several lines with several different maxima --
+    // destroying the single number the line exists to report, in a subtler way
+    // than the count it replaced. A gap says the finger has left the glass.
+    //
+    // Everything else closes the run outright: a play, a stop or a skip is the
+    // end of the gesture whenever it arrives.
+    void flush_drag(std::chrono::steady_clock::time_point now, bool quiet_only)
+    {
+        std::string line;
+        {
+            const std::lock_guard<std::mutex> lock(drag_mutex);
+            if (drag.empty()) {
+                return;
+            }
+            if (quiet_only && now - drag_at < std::chrono::milliseconds(kDragQuietMs)) {
+                return;
+            }
+            line = drag.summary();
+            drag.reset();
+            if (!line.empty()) {
+                last_drag = line;
+            }
+        }
+        if (!line.empty()) {
+            std::printf("companion: %s\n", line.c_str());
+            std::fflush(stdout);
+        }
+    }
+
+    // The run in progress. Touched only from note() and flush_drag(), which
+    // cpp-httplib may call on any of its worker threads.
+    //
+    // A mutex rather than atomics: "is this the first command of a run" and
+    // "record it" have to be one decision, or two threads both print the opening
+    // line. The old counter could be atomic because it answered one question.
+    std::mutex                            drag_mutex;
+    DragRun                               drag;
+    std::chrono::steady_clock::time_point drag_at{};
+
+    // The last closing line, kept under the same lock. See last_drag() in the
+    // header for why this is public API rather than test-only scaffolding.
+    std::string                           last_drag;
 
     // Applied to every response.
     //
@@ -1736,6 +1824,11 @@ void CompanionServer::stop()
     if (impl_->thread.joinable()) {
         impl_->thread.join();
     }
+
+    // A drag that was the last thing to happen still gets its line. After the
+    // join, so there is no worker left to race the reset against.
+    impl_->flush_drag(std::chrono::steady_clock::now(), /*quiet_only=*/false);
+
     impl_->bound_port.store(0, std::memory_order_relaxed);
     impl_->running.store(false, std::memory_order_release);
 }
@@ -1995,6 +2088,15 @@ std::string CompanionServer::last_path() const
     }
     const std::lock_guard<std::mutex> lock(impl_->path_mutex);
     return impl_->last_path;
+}
+
+std::string CompanionServer::last_drag() const
+{
+    if (!impl_) {
+        return {};
+    }
+    const std::lock_guard<std::mutex> lock(impl_->drag_mutex);
+    return impl_->last_drag;
 }
 
 }  // namespace holocron
