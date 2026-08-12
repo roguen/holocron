@@ -494,7 +494,8 @@ TEST_CASE("the control page marks nothing current while the beat instrument is u
     REQUIRE(s.error == CompanionError::kOk);
     s.server.set_control_vault({"drift", "pulse"}, kGen);
     s.server.set_current_crystal(1);
-    s.server.set_control_tuning(-90.0, 250.0, /*sync_showing=*/true, "gatekeeper.toml");
+    s.server.set_control_tuning(-90.0, 250.0, /*sync_showing=*/true, "gatekeeper.toml",
+                                /*saved_trim_ms=*/-90.0);
 
     auto res = s.client().Get("/control");
     REQUIRE(res);
@@ -1297,4 +1298,90 @@ TEST_CASE("a port Holocron is listening on cannot be taken by a program that ask
     // would pass for a probe that simply never succeeds at anything.
     const net::BindProbe free_port = net::probe_tcp_bind(0, net::BindStyle::kPermissive);
     CHECK(free_port.fault == net::BindFault::kFree);
+}
+
+// ---------------------------------------------------------------------------
+// ISSUE 302. Save and Reset on the tuning page.
+//
+// The owner, having tuned the trim on the projector and lost it at the next
+// restart: "It should have a save and reset button. The reset would reset to
+// the last saved config."
+//
+// The two are a pair. Save makes the live value the saved one; Reset makes the
+// saved value live again. Without the second, a sweep that went somewhere wrong
+// has no way back except sweeping out again by eye -- which is the judgement
+// this page exists to avoid asking anyone to make twice.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("the tuning page offers save and reset", "[companion][control][tuning]")
+{
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_tuning(-60.0, 250.0, /*sync_showing=*/false, "gatekeeper.toml",
+                                /*saved_trim_ms=*/-60.0);
+
+    auto res = s.client().Get("/control/tuning");
+    REQUIRE(res);
+    REQUIRE(res->status == 200);
+
+    REQUIRE(res->body.find("/control/tuning/save") != std::string::npos);
+    REQUIRE(res->body.find("/control/tuning/reset") != std::string::npos);
+}
+
+TEST_CASE("the page says whether there is anything to save", "[companion][control][tuning]")
+{
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+
+    // Live and saved agree: nothing pending, and Reset would do nothing.
+    s.server.set_control_tuning(-60.0, 250.0, false, "gatekeeper.toml", -60.0);
+    auto clean = s.client().Get("/control/tuning");
+    REQUIRE(clean);
+    CHECK(clean->body.find("Saved.") != std::string::npos);
+    CHECK(clean->body.find("Unsaved.") == std::string::npos);
+
+    // Live has moved away from the file. THE PAGE MUST SAY SO -- otherwise the
+    // only way to find out a measurement was never written is the next restart.
+    s.server.set_control_tuning(-75.0, 250.0, false, "gatekeeper.toml", -60.0);
+    auto dirty = s.client().Get("/control/tuning");
+    REQUIRE(dirty);
+    CHECK(dirty->body.find("Unsaved.") != std::string::npos);
+
+    // And it names the value Reset would go back to, so the button's effect is
+    // knowable before pressing it.
+    CHECK(dirty->body.find("-60 ms") != std::string::npos);
+}
+
+TEST_CASE("reset reaches its handler", "[companion][control][tuning]")
+{
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+
+    bool called = false;
+    s.server.set_reset_tuning_handler([&called] { called = true; });
+
+    auto res = s.client().Post("/control/tuning/reset", "", "application/x-www-form-urlencoded");
+    REQUIRE(res);
+    CHECK(res->status == 303);   // back to the page, so a reload shows the truth
+    CHECK(called);
+}
+
+TEST_CASE("a save that fails says so rather than claiming success",
+          "[companion][control][tuning]")
+{
+    // A save that silently did nothing would leave somebody believing a
+    // measurement is kept when it is not, and they would find out only after the
+    // next restart lost it.
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+    s.server.set_control_tuning(-60.0, 250.0, false, "gatekeeper.toml", -60.0);
+    s.server.set_save_tuning_handler([] { return false; });
+
+    auto post = s.client().Post("/control/tuning/save", "", "application/x-www-form-urlencoded");
+    REQUIRE(post);
+    REQUIRE(post->status == 303);
+
+    auto page = s.client().Get("/control/tuning");
+    REQUIRE(page);
+    CHECK(page->body.find("Could not write") != std::string::npos);
 }
