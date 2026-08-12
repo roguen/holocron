@@ -24,9 +24,15 @@ namespace {
 // collision would have to agree on every one of those.
 std::uint64_t fnv1a(const std::string& text)
 {
+    // The cast is explicit because `char` is signed on both of this project's
+    // compilers and -Wsign-conversion is an error on the Linux job. It also has
+    // to happen before the widening: a byte above 0x7F would otherwise
+    // sign-extend to a 64-bit value with the top 56 bits set, and the hash of a
+    // shader containing any non-ASCII byte would differ between a signed-char and
+    // an unsigned-char platform. Both would be stable, and they would disagree.
     std::uint64_t h = 1469598103934665603ull;
-    for (const unsigned char c : text) {
-        h ^= static_cast<std::uint64_t>(c);
+    for (const char c : text) {
+        h ^= static_cast<std::uint64_t>(static_cast<unsigned char>(c));
         h *= 1099511628211ull;
     }
     return h;
