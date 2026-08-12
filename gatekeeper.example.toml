@@ -780,6 +780,17 @@ on_volume = ""
 # would have said so. Start low and raise it.
 #
 #   volume_max = 40
+#
+# MEASURED ON THE REFERENCE RACK, 2026-08-12, against an Onkyo TX-RZ720. With
+# `volume_max = 40` the mapping is exact and was read back off the unit with
+# `MVLQSTN` at every step: 10% -> MVL 4, 25% -> 10, 50% -> 20, 100% -> 40. A
+# deliberately fast burst of six values ending at 100 also landed on 40, so the
+# coalescing keeps the last value rather than dropping it.
+#
+# TEST IT WITH NOTHING PLAYING. That is what makes it safe: the endpoint needs no
+# session, so the whole path can be exercised in silence. The unit was sitting at
+# MVL 91 when this was first run, and casting something to test the slider would
+# have been very loud before the first slider move could bring it down.
 volume_max = -1
 
 # REPLACING eISCP ENTIRELY is an edit to a value, not a change of shape -- which
