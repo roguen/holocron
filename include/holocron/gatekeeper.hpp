@@ -35,6 +35,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace holocron {
@@ -142,6 +143,24 @@ struct Gatekeeper {
     // M8 has nothing like the rack's headroom -- rather than something to reach
     // for on hardware that is already comfortable.
     double render_scale = 1.0;
+
+    // Per-entry overrides of the scale above, by VAULT ENTRY NAME.
+    //
+    // ISSUE 288. On the Shield `duel` costs 121 ms a frame and `storm` 136 ms,
+    // against a 16.7 ms budget -- 8.3 and 7.4 fps -- while `pulse` and `drift`
+    // are comfortable at full size. One global number cannot express that: set
+    // it low enough for `duel` and everything else is needlessly soft, leave it
+    // at 1.0 and two of the four entries in the shipped vault are unwatchable.
+    //
+    // IN THE CONFIG RATHER THAN IN THE MANIFEST, and that is the whole design
+    // decision. A crystal's cost is not a property OF the crystal, it is a
+    // property of the crystal ON A MACHINE: `duel` is 2.50 ms on the rack and
+    // 121 ms on Tegra, a factor of 48. Putting the number in `duel.toml` would
+    // soften it on the rack, where it does not need softening, and would ship a
+    // machine-specific tuning value inside a first-party authored asset.
+    //
+    // Empty by default, which is the behaviour before this existed.
+    std::vector<std::pair<std::string, double>> render_scale_overrides;
 
     // How often to print what a frame costs, in seconds. 0 is off, and off is
     // the default.
@@ -348,5 +367,18 @@ struct Gatekeeper {
 // including the line, and `out` is left at defaults.
 GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out,
                                 std::string& out_detail);
+
+// The render scale to use for a given vault entry: its override, or the default.
+//
+// A FUNCTION RATHER THAN A LOOKUP AT THE CALL SITE, because the render loop asks
+// this every frame and the answer decides how big the layers are. Getting it
+// wrong in one of the two places that resize would allocate one size and draw
+// another; getting it wrong by matching loosely would silently soften a crystal
+// somebody never asked to soften.
+//
+// Matched on the vault entry name exactly -- "duel", "storm" -- which is what the
+// arrow keys and the control page both show, so the name in the config is the
+// name on the screen.
+double render_scale_for(const Gatekeeper& cfg, const std::string& entry_name);
 
 }  // namespace holocron

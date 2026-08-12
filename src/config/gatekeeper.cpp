@@ -189,6 +189,36 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     read_bool(tbl, "render", "compositor", out.compositor, bad);
     read_double(tbl, "render", "scale", out.render_scale, bad);
     read_double(tbl, "render", "frame_report_seconds", out.frame_report_seconds, bad);
+
+    // [render.scale_overrides] -- one key per vault entry name. Issue 288.
+    //
+    // Read as a sub-table rather than by changing the type of `scale`, so a
+    // config that never heard of this is unaffected and the existing key keeps
+    // meaning exactly what it meant.
+    if (bad.empty()) {
+        if (const auto* render = tbl["render"].as_table(); render != nullptr) {
+            if (const auto* overrides = (*render)["scale_overrides"].as_table();
+                overrides != nullptr) {
+                for (const auto& [key, value] : *overrides) {
+                    const auto number = value.value<double>();
+                    if (!number) {
+                        bad = "[render.scale_overrides] " + std::string(key.str()) +
+                              " must be a number";
+                        break;
+                    }
+                    // THE SAME RANGE THE GLOBAL KEY IS HELD TO. An override that
+                    // could go somewhere the default cannot would be a second,
+                    // quieter setting with different rules.
+                    if (*number < 0.25 || *number > 2.0) {
+                        bad = "[render.scale_overrides] " + std::string(key.str()) +
+                              " must be between 0.25 and 2.0";
+                        break;
+                    }
+                    out.render_scale_overrides.emplace_back(std::string(key.str()), *number);
+                }
+            }
+        }
+    }
     read_double(tbl, "render", "bloom", out.bloom, bad);
     read_double(tbl, "render", "bloom_threshold", out.bloom_threshold, bad);
     read_double(tbl, "render", "grain", out.grain, bad);
@@ -358,6 +388,19 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     }
 
     return GatekeeperError::kOk;
+}
+
+double render_scale_for(const Gatekeeper& cfg, const std::string& entry_name)
+{
+    // Linear, and that is not laziness: the vault is four entries today and the
+    // override list is expected to hold one or two. A map would cost a
+    // construction per config load to save nothing measurable per frame.
+    for (const auto& [name, scale] : cfg.render_scale_overrides) {
+        if (name == entry_name) {
+            return scale;
+        }
+    }
+    return cfg.render_scale;
 }
 
 }  // namespace holocron

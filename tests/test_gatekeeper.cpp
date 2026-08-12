@@ -505,3 +505,79 @@ TEST_CASE("render scale reaches 2.0, because measuring 4K needs it", "[gatekeepe
     CHECK(load_gatekeeper(s.write("[render]\nscale = 2.5\n"), above, detail) !=
           GatekeeperError::kOk);
 }
+
+// ---------------------------------------------------------------------------
+// ISSUE 288. A render scale per vault entry.
+//
+// On the Shield `duel` costs 121 ms a frame and `storm` 136 ms against a 16.7 ms
+// budget, while `pulse` (5.56 ms) and `drift` (14.59 ms) are far cheaper. One
+// global number cannot express that: low enough for `duel` makes everything else
+// needlessly soft, and 1.0 leaves two of the four shipped entries unwatchable.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("with no overrides every entry gets the global scale", "[gatekeeper][render]")
+{
+    // The behaviour before this existed, pinned so adding the feature cannot
+    // have changed it for anybody who never asks for it.
+    Gatekeeper g;
+    g.render_scale = 0.71;
+    CHECK(render_scale_for(g, "duel") == 0.71);
+    CHECK(render_scale_for(g, "pulse") == 0.71);
+    CHECK(render_scale_for(g, "") == 0.71);
+}
+
+TEST_CASE("an override applies to its entry and to no other", "[gatekeeper][render]")
+{
+    Scratch     s;
+    Gatekeeper  cfg;
+    std::string detail;
+
+    REQUIRE(load_gatekeeper(s.write("[render]\n"
+                                    "scale = 1.0\n"
+                                    "[render.scale_overrides]\n"
+                                    "duel = 0.5\n"
+                                    "storm = 0.4\n"),
+                            cfg, detail) == GatekeeperError::kOk);
+
+    CHECK(render_scale_for(cfg, "duel") == 0.5);
+    CHECK(render_scale_for(cfg, "storm") == 0.4);
+
+    // THE FLIP BACK IS THE POINT. An override that leaked onto the next crystal
+    // would soften a picture nobody asked to soften, and it would do it silently.
+    CHECK(render_scale_for(cfg, "pulse") == 1.0);
+    CHECK(render_scale_for(cfg, "drift") == 1.0);
+}
+
+TEST_CASE("an override is matched exactly, not by prefix", "[gatekeeper][render]")
+{
+    Scratch     s;
+    Gatekeeper  cfg;
+    std::string detail;
+
+    REQUIRE(load_gatekeeper(s.write("[render]\nscale = 1.0\n"
+                                    "[render.scale_overrides]\nduel = 0.5\n"),
+                            cfg, detail) == GatekeeperError::kOk);
+
+    // A vault holding both `duel` and `duel-lite` must not have one silently
+    // inherit the other's tuning.
+    CHECK(render_scale_for(cfg, "duel") == 0.5);
+    CHECK(render_scale_for(cfg, "duel-lite") == 1.0);
+    CHECK(render_scale_for(cfg, "due") == 1.0);
+}
+
+TEST_CASE("an override is held to the same range as the global key",
+          "[gatekeeper][render]")
+{
+    Scratch     s;
+    Gatekeeper  cfg;
+    std::string detail;
+
+    // An override that could reach somewhere the default cannot would be a
+    // second, quieter setting with different rules.
+    CHECK(load_gatekeeper(s.write("[render.scale_overrides]\nduel = 0.1\n"), cfg, detail) !=
+          GatekeeperError::kOk);
+    CHECK(load_gatekeeper(s.write("[render.scale_overrides]\nduel = 2.5\n"), cfg, detail) !=
+          GatekeeperError::kOk);
+    CHECK(load_gatekeeper(s.write("[render.scale_overrides]\nduel = \"half\"\n"), cfg, detail) !=
+          GatekeeperError::kOk);
+}
