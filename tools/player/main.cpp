@@ -57,6 +57,7 @@
 #include <holocron/overlay_facet.hpp>
 #include <holocron/palette.hpp>
 #include <holocron/platform_paths.hpp>
+#include <holocron/shader_cache.hpp>
 #include <holocron/text_render.hpp>
 #include <holocron/track_context.hpp>
 #include <holocron/gdm_responder.hpp>
@@ -720,7 +721,8 @@ std::string first_line(const std::string& text, std::size_t limit = 90)
 // compile" and "compiled and changed nothing visible" were indistinguishable.
 // The caller puts this on screen; see the toast in the render loop.
 bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
-                 const ProjectMContext& pm, std::string* out_error = nullptr)
+                 const ProjectMContext& pm, const ShaderCache* cache = nullptr,
+                 std::string* out_error = nullptr)
 {
     // HOW LONG THE SWITCH ITSELF TAKES, which is not the crossfade.
     //
@@ -792,7 +794,7 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
 
         auto        facet = std::make_unique<CrystalFacet>();
         std::string log;
-        if (!facet->init(crystal, log)) {
+        if (!facet->init(crystal, log, cache)) {
             std::fprintf(stderr, "holocron: %s failed -- `%s` did not build\n%s\n"
                                  "holocron: still drawing what was already up\n",
                          verb, crystal.name.c_str(), log.c_str());
@@ -2935,6 +2937,34 @@ int main(int argc, char** argv)
     std::printf("holocron: GL %d.%d core on %s\n", window.gl_major(), window.gl_minor(),
                 window.gl_renderer());
     std::printf("holocron: %s\n", window.gl_version());
+
+    // ISSUE 288. Linked programs kept on disk, because `duel` takes 23,859 ms to
+    // compile on Tegra and that happens on this thread.
+    //
+    // OPENED HERE, after the context exists and before anything is built: the
+    // driver's vendor, renderer and version strings are part of every key, so a
+    // cache opened earlier would be keyed on empty strings and would hand a
+    // Tegra binary to whatever ran next.
+    //
+    // BESIDE THE CONFIG, not in a system cache directory. On Android the data
+    // directory is the only writable place the app reliably owns, and on Windows
+    // keeping it next to `gatekeeper.toml` means "delete the folder" is advice
+    // that works on both. Nothing in it is precious -- every file is
+    // reconstructible by compiling.
+    ShaderCache shader_cache;
+    shader_cache.open(resolve_data_path("shader-cache"));
+    if (shader_cache.available()) {
+        std::printf("holocron: shader cache at %s\n",
+                    resolve_data_path("shader-cache").c_str());
+    } else {
+        // Said out loud rather than degrading quietly. The player is correct
+        // either way and only slower without it, but "slower" here is measured in
+        // whole seconds per crystal switch and somebody should be able to find
+        // out why.
+        std::printf("holocron: no shader cache -- %s. Crystals will compile every "
+                    "time they are switched to\n",
+                    shader_cache.unavailable_reason().c_str());
+    }
     // The device does not exist until something is playing, because its format
     // follows the SOURCE. Saying "audio (none)" here reads as "no audio device
     // could be opened", which is a different and much worse thing -- and it was
@@ -3180,7 +3210,7 @@ int main(int argc, char** argv)
 
         Archive archive;
         if (!archive_for(vault[current], archive) ||
-            !build_stack(archive, live_stack, "opened", projectm_ctx)) {
+            !build_stack(archive, live_stack, "opened", projectm_ctx, &shader_cache)) {
             // Unlike a reload, there is nothing already on screen to fall back
             // to, so this one is fatal. The builder has already printed why.
             window.close();
@@ -5121,7 +5151,7 @@ int main(int argc, char** argv)
                 LiveStack   next;
                 std::string why;
                 if (build_stack(archive_of_crystal(kSyncStem, "sync"), next,
-                                "beat instrument", projectm_ctx, &why)) {
+                                "beat instrument", projectm_ctx, &shader_cache, &why)) {
                     showing_sync = true;
                     begin_stack(std::move(next));
                     if (watch) {
@@ -5259,7 +5289,7 @@ int main(int argc, char** argv)
                 LiveStack   next;
                 std::string why;
                 if (archive_for(vault[wanted], archive, &why) &&
-                    build_stack(archive, next, "switched to", projectm_ctx, &why)) {
+                    build_stack(archive, next, "switched to", projectm_ctx, &shader_cache, &why)) {
                     current      = wanted;
                     current_stem = vault[wanted].stem;
                     current_kind = vault[wanted].kind;
@@ -5360,7 +5390,7 @@ int main(int argc, char** argv)
                                      ? (archive = archive_of_crystal(kSyncStem, "sync"), true)
                                      : have_anchor && archive_for(anchor, archive, &why);
 
-                if (got && build_stack(archive, next, "reloaded", projectm_ctx, &why)) {
+                if (got && build_stack(archive, next, "reloaded", projectm_ctx, &shader_cache, &why)) {
                     // u_time CARRIES ACROSS, layer for layer, so slow motion does
                     // not snap back to zero on every save -- the whole reason the
                     // clock is settable. Only where the stack still has a layer in
@@ -6145,6 +6175,15 @@ int main(int argc, char** argv)
     std::printf("holocron: %d frames drawn, %llu analysis frames published\n",
                 rendered,
                 static_cast<unsigned long long>(session.frames_published()));
+    if (shader_cache.available()) {
+        // The only way anyone can tell the cache did anything. A second run
+        // reporting 0 restored is a cache being written and never read, which
+        // from outside looks identical to one that is working.
+        std::printf("holocron: shader cache -- %llu restored, %llu compiled, %llu written\n",
+                    static_cast<unsigned long long>(shader_cache.hits()),
+                    static_cast<unsigned long long>(shader_cache.misses()),
+                    static_cast<unsigned long long>(shader_cache.writes()));
+    }
     if (lapped_reads > 0) {
         // Only when it happened, and loudly when it did. The history holds about
         // 1.37 seconds at 93.75 Hz, so a non-zero count here means this thread

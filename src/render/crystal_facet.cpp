@@ -11,6 +11,8 @@
 #include <holocron/frame_binding.hpp>
 #include <holocron/track_context.hpp>
 
+#include <holocron/shader_cache.hpp>
+
 #include "gl_api.hpp"
 
 #include "gl_bind.hpp"
@@ -149,10 +151,29 @@ struct CrystalFacet::Impl {
 CrystalFacet::CrystalFacet() : impl_(std::make_unique<Impl>()) {}
 CrystalFacet::~CrystalFacet() { shutdown(); }
 
-bool CrystalFacet::init(const Crystal& crystal, std::string& out_log)
+bool CrystalFacet::init(const Crystal& crystal, std::string& out_log, const ShaderCache* cache)
 {
     shutdown();
     out_log.clear();
+
+    // ISSUE 288. `duel` takes 23,859 ms to compile and link on Tegra, on this
+    // thread, which is a twenty-four second freeze of the picture every time it
+    // is switched to. A restored binary skips all of it.
+    //
+    // THE KEY IS BOTH STAGES. Keying on the fragment source alone would let two
+    // crystals that share a `.frag` but are built against different vertex
+    // shaders collide -- and that failure would be a wrong PICTURE rather than a
+    // stall, which is the one kind of failure a cache here must not have.
+    const std::string cache_key =
+        cache != nullptr ? std::string(kVertexShader) + "\n\x1e\n" + crystal.fragment_source
+                         : std::string{};
+
+    if (cache != nullptr) {
+        if (const std::uint32_t restored = cache->load(cache_key); restored != 0) {
+            impl_->program = restored;
+            return finish_init(crystal);
+        }
+    }
 
     const GLuint vs = compile(GL_VERTEX_SHADER, kVertexShader, out_log);
     if (vs == 0) {
@@ -172,6 +193,14 @@ bool CrystalFacet::init(const Crystal& crystal, std::string& out_log)
     impl_->program = glCreateProgram();
     glAttachShader(impl_->program, vs);
     glAttachShader(impl_->program, fs);
+
+    // BEFORE glLinkProgram, and it has to be: a driver is entitled to discard the
+    // binary of a program that was never hinted as retrievable, and then every
+    // store() silently keeps nothing while looking exactly like a working cache.
+    if (cache != nullptr) {
+        cache->prepare(impl_->program);
+    }
+
     glLinkProgram(impl_->program);
     glDeleteShader(vs);
     glDeleteShader(fs);
@@ -189,6 +218,23 @@ bool CrystalFacet::init(const Crystal& crystal, std::string& out_log)
         return false;
     }
 
+    // Stored only after the link is known good, so a program that failed can
+    // never be handed back to a later run.
+    if (cache != nullptr) {
+        cache->store(cache_key, impl_->program);
+    }
+
+    return finish_init(crystal);
+}
+
+// Everything that depends on a linked program and nothing on how it was linked.
+//
+// SHARED BY BOTH PATHS ON PURPOSE. A uniform resolved after a fresh compile but
+// not after a restore -- or resolved differently -- would make the cache change
+// the picture rather than the duration, which is the one failure this design
+// does not tolerate. One body means the two cannot drift.
+bool CrystalFacet::finish_init(const Crystal& crystal)
+{
     impl_->u_resolution = glGetUniformLocation(impl_->program, "u_resolution");
     impl_->u_time       = glGetUniformLocation(impl_->program, "u_time");
 
