@@ -200,6 +200,7 @@ projectM is fed from **`AudioFrame::waveform`** — 512 mono samples at 48 kHz,
 which is exactly one analysis hop, so consecutive frames tile the signal with no
 gap and no overlap.
 
+<!-- measured: trim_ms.rack -->
 **Not from `PcmRing`.** That ring is single-producer, single-consumer and its
 consumer is already the audio callback; a second tap on the decode side would
 also be *uncorrected*. The decoder runs ahead of the speakers (measured at 51 ms)

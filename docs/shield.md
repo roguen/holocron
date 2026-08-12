@@ -706,6 +706,10 @@ VRAM bandwidth. The Shield has no such cache. Re-measure.
 
 **`duel` at 8.10 ms at 4K.** Same reason, and it is the most expensive crystal.
 
+<!-- measured: trim_ms.rack -->
 **`trim_ms = -30` mostly DOES port**, and is the exception. It is a difference
 between the audio and display paths, not a latency, and both boxes reach the same
 projector through the same receiver. Re-measure to confirm rather than to discover.
+That re-measurement is issue 278, and when it exists it belongs in
+[`measurements.toml`](measurements.toml) as `trim_ms.shield`, with its own
+bracket and resolution — this paragraph then quotes that instead of the rack's.

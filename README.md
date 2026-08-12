@@ -227,6 +227,7 @@ a 160-frame (~3.6 ms) device period, zero dropouts.
 order deliberately because it is the one the project exists for. M2, M3 and M4 are
 not finished, which is why this is not `v0.6.0`.
 
+<!-- measured: trim_ms.rack -->
 `--trim-ms` compensates for latency *downstream* of the device clock — the DAC, the
 HDMI link, the receiver's own processing. It is **measured at −30 ms on the
 reference rack** and it is a *difference*, not a latency: the projector is slower
@@ -375,6 +376,23 @@ contribution.
 The one thing worth knowing before trying: **ask "early or late", never "is it
 aligned."** Direction is a judgement the eye can make; coincidence is not, and a
 sweep looking for alignment never converges.
+
+The result goes in `gatekeeper.toml`, which is gitignored — and it also goes in
+[`docs/measurements.toml`](docs/measurements.toml), which is not. That file is the
+committed record of every measured value this project quotes in prose: the number,
+the date, the bracket it came from and the resolution that bracket implies. Each
+paragraph that quotes one declares which measurement it means, in a comment that
+renders as nothing, and `scripts/check-measurements.sh` fails CI when a
+declaration and the record disagree — in either direction.
+
+```
+scripts/check-measurements.sh
+```
+
+It exists because `trim_ms` was re-measured, correctly recorded in the gitignored
+config, and eight published documents went on quoting the old figure for a day
+without anything failing ([issue #265](https://github.com/roguen/holocron/issues/265)).
+Re-measuring now means editing one file; everything stale fails by name and line.
 
 ---
 
