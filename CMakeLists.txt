@@ -460,6 +460,7 @@ add_library(holocron_render STATIC
     src/render/window.cpp
     src/render/debug_facet.cpp
     src/render/crystal_facet.cpp
+    src/render/shader_cache.cpp
     src/render/art_texture.cpp
     src/render/overlay_facet.cpp
     src/render/render_target.cpp

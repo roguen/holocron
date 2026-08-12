@@ -143,6 +143,20 @@ struct Gatekeeper {
     // for on hardware that is already comfortable.
     double render_scale = 1.0;
 
+    // How often to print what a frame costs, in seconds. 0 is off, and off is
+    // the default.
+    //
+    // ISSUE 283. Every render cost in this project was measured with `--frames N`
+    // and the slope between two runs, and that switch is ARGV-ONLY -- so on
+    // Android, where an Activity launch passes no argv, the project's own
+    // instrument could not be run at all. Found while trying to answer "what does
+    // a crystal cost on Tegra" and having no way to ask.
+    //
+    // A key rather than a flag for exactly the reason the others got keys: a
+    // television has no command line, and this is a measurement that has to be
+    // made on the machine doing the work rather than inferred from a desktop.
+    double frame_report_seconds = 0.0;
+
     // When to move to the next thing in the vault by itself.
     //
     // THE CAST-AND-FORGET CASE IS THE WHOLE POINT (D-029). An album is forty

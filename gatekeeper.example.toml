@@ -256,7 +256,33 @@ vsync = true
 
 # Internal render scale. Below 1.0 renders smaller and upscales, which is the
 # first thing to try if a heavy crystal cannot hold the refresh rate.
+#
+# 0.25 to 2.0. ABOVE 1.0 IS AN INSTRUMENT, NOT A PICTURE SETTING: the resolve is
+# a bilinear filter, which is the wrong one for supersampling, so 2.0 looks
+# quietly WORSE than 1.0 and costs four times as much. What it is for is asking
+# "what would this cost at four times the pixels" on a machine whose display
+# cannot be made to show them -- the Shield's ROM caps its framebuffer at
+# 1920x1080, so this is the only way to shade 8.3M pixels there and find out
+# whether 4K would hold a frame budget before any work is done to reach it.
+# Issue 283. The player says the scale out loud whenever it is not 1.0.
 scale = 1.0
+
+# How often to print what a frame costs, in seconds. 0 is off.
+#
+# ISSUE 283. Every render cost in this project was measured with `--frames N` and
+# the slope between two runs, and that switch is ARGV-ONLY -- so on Android,
+# where an Activity launch passes no argv, the project's own instrument could not
+# be run at all. This is the key that makes the measurement possible on the
+# machine actually doing the work.
+#
+# READ THE WORST ALONGSIDE THE MEAN. The timer stops after the buffer swap, so
+# with vsync on a healthy frame reads as the refresh interval however little work
+# it did; only frames that MISSED show up as longer. A mean of 16.7 ms with a
+# worst of 16.7 ms is a budget being met. The same mean with a worst of 33 ms is
+# not.
+#
+# LIVE.
+frame_report_seconds = 0.0
 
 # Fill the display, ignoring width and height above. LIVE. Also --fullscreen,
 # and --windowed to override this for one run.

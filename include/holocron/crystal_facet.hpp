@@ -66,6 +66,8 @@ struct AudioFrame;
 struct Crystal;
 struct TrackContext;
 
+class ShaderCache;
+
 class CrystalFacet final : public Facet {
 public:
     CrystalFacet();
@@ -79,7 +81,12 @@ public:
     // Returns false if the shader did not compile or link, with the compiler's
     // own message in `out_log` -- a shader error is the crystal author's to fix
     // and the driver's wording is far more useful than anything invented here.
-    bool init(const Crystal& crystal, std::string& out_log);
+    // `cache`, when given, is consulted before compiling and written to after a
+    // successful link. Optional and nullable on purpose: it is a DURATION
+    // optimisation and nothing else, and a player built or run without one must
+    // draw exactly the same picture. Issue 288 -- `duel` takes 23,859 ms to
+    // compile on Tegra, on the render thread.
+    bool init(const Crystal& crystal, std::string& out_log, const ShaderCache* cache = nullptr);
 
     void shutdown();
     bool ready() const override;
@@ -105,6 +112,11 @@ public:
     void draw(const AudioFrame& frame, const TrackContext& track, int width, int height) override;
 
 private:
+    // The half of init() that depends on having a linked program and not on how
+    // it was linked. Shared by the compile path and the cache path so the two
+    // cannot drift apart -- see the note at its definition.
+    bool finish_init(const Crystal& crystal);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

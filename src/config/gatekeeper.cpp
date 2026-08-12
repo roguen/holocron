@@ -188,6 +188,7 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     read_bool(tbl, "render", "watch", out.watch, bad);
     read_bool(tbl, "render", "compositor", out.compositor, bad);
     read_double(tbl, "render", "scale", out.render_scale, bad);
+    read_double(tbl, "render", "frame_report_seconds", out.frame_report_seconds, bad);
     read_double(tbl, "render", "bloom", out.bloom, bad);
     read_double(tbl, "render", "bloom_threshold", out.bloom_threshold, bad);
     read_double(tbl, "render", "grain", out.grain, bad);
@@ -205,14 +206,26 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
         bad = "[render] advance must be \"off\", \"track\" or \"timer\", not \"" + out.advance +
               "\"";
     }
-    if (bad.empty() && (out.render_scale < 0.25 || out.render_scale > 1.0)) {
-        // ABOVE 1.0 IS REFUSED RATHER THAN ALLOWED. Supersampling is a real thing
-        // and a reasonable thing to want, but it is not this key: the layer is
-        // upscaled by a bilinear filter, which is the wrong resolve for
-        // supersampling and would make 2.0 quietly worse than 1.0 at four times
-        // the cost. Below 0.25 the picture is unwatchable and the setting is far
-        // more likely to be a typo than an intention.
-        bad = "[render] scale must be between 0.25 and 1.0";
+    if (bad.empty() && (out.render_scale < 0.25 || out.render_scale > 2.0)) {
+        // BELOW 0.25 the picture is unwatchable and the setting is far more
+        // likely to be a typo than an intention.
+        //
+        // ABOVE 1.0 IS AN INSTRUMENT, NOT A PICTURE SETTING, and the ceiling was
+        // 1.0 until issue 283 needed one. Supersampling is a real thing and a
+        // reasonable thing to want, but this key is not it: the resolve is a
+        // bilinear filter, which is the wrong one for supersampling, so 2.0 is
+        // quietly WORSE than 1.0 at four times the cost.
+        //
+        // What it is good for is asking "what would this cost at four times the
+        // pixels" on a machine whose display cannot be made to show them. The
+        // Shield is exactly that machine: its ROM caps the framebuffer at
+        // 1920x1080, so scale 2.0 is the only way to shade 8.3M pixels there and
+        // find out whether 4K would hold a frame budget before any work is done
+        // to reach it. The player says the scale out loud whenever it is not 1.0.
+        bad = "[render] scale must be between 0.25 and 2.0";
+    }
+    if (bad.empty() && out.frame_report_seconds < 0.0) {
+        bad = "[render] frame_report_seconds cannot be negative";
     }
     if (bad.empty() && (out.bloom < 0.0 || out.bloom > 4.0)) {
         bad = "[render] bloom must be between 0 and 4";
