@@ -5523,8 +5523,19 @@ int main(int argc, char** argv)
         //
         // AT LEAST ONE PIXEL EACH WAY. A window dragged to nothing must not ask
         // for a zero-sized texture, which is a GL error rather than a small one.
-        const int layer_w = std::max(1, static_cast<int>(window.width() * cfg.render_scale));
-        const int layer_h = std::max(1, static_cast<int>(window.height() * cfg.render_scale));
+        // PER-ENTRY, FALLING BACK TO THE GLOBAL KEY. Issue 288: `duel` costs
+        // 121 ms a frame on Tegra and `pulse` costs 5.56, so one number for the
+        // whole vault either softens what does not need it or leaves what does
+        // unwatchable.
+        //
+        // Taken from the stack that is being drawn INTO the layers. During a
+        // crossfade the outgoing crystal draws at the incoming one's size for
+        // those 0.4 seconds -- deliberate, because the alternative is two layer
+        // sets at two sizes, and reallocating 16 MB of RGBA16F on the exact frame
+        // a transition begins is the worst possible moment for it.
+        const double active_scale = render_scale_for(cfg, live_stack.archive.name);
+        const int layer_w = std::max(1, static_cast<int>(window.width() * active_scale));
+        const int layer_h = std::max(1, static_cast<int>(window.height() * active_scale));
 
         const bool into_layer = layered &&
                                 compositor.resize(layers_wanted, layer_w, layer_h) &&
@@ -5550,7 +5561,7 @@ int main(int argc, char** argv)
                 std::printf("holocron: compositing %zu layer%s of %dx%d RGBA16F, upscaled to "
                             "%dx%d (scale %.2f)\n",
                             layers_wanted, layers_wanted == 1 ? "" : "s", draw_w, draw_h,
-                            window.width(), window.height(), cfg.render_scale);
+                            window.width(), window.height(), active_scale);
             }
             std::fflush(stdout);
         } else if (!into_layer && !announced_direct) {
@@ -6120,7 +6131,7 @@ int main(int argc, char** argv)
                             "worst %.2f ms\n",
                             live_stack.archive.name.c_str(), live_stack.facets.size(),
                             compositor.width(), compositor.height(), window.width(),
-                            window.height(), cfg.render_scale, n, mean, worst);
+                            window.height(), render_scale_for(cfg, live_stack.archive.name), n, mean, worst);
                 std::fflush(stdout);
                 report_started = now;
                 report_total   = std::chrono::steady_clock::duration::zero();
