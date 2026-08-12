@@ -410,7 +410,7 @@ pull requests are not.
 | Platform | Role | State today |
 |---|---|---|
 | **Windows x86-64 + discrete GPU** | The build and test target | **Runs everything.** Plays bit-perfect through `WasapiSink` in exclusive mode, is cast to from Plexamp, and draws the whole facet stack. |
-| **Android TV — NVIDIA Shield** | Where it is going | **Runs and draws.** An ES 3.2 context on Tegra, the `RGBA16F` compositor layers, crystals, hot reload and the licence panel. The Companion control page answers on it — **HTTP 200 in 2.5 ms**. **It has been cast to**, 2026-08-11: a 44.1 kHz FLAC streamed over HTTPS from the NAS, position advancing 39.98 s against 40.02 s of wall clock, `drift` drawing at 3840×2160 and driven by the audio. **Not bit-perfect there**, and that is the device rather than the code — see below. |
+| **Android TV — NVIDIA Shield** | Where it is going | **Runs and draws.** An ES 3.2 context on Tegra, the `RGBA16F` compositor layers, crystals, hot reload and the licence panel. The Companion control page answers on it — **HTTP 200 in 2.5 ms**. **It has been cast to**, 2026-08-11: a 44.1 kHz FLAC streamed over HTTPS from the NAS, position advancing 39.98 s against 40.02 s of wall clock, `drift` drawing at 1920×1080 upscaled to the 4K signal, and driven by the audio. **Not bit-perfect there**, and that is the device rather than the code — see below. |
 | **Linux** | CI only | Builds and hygiene checks run here. Not a deployment target. |
 | **macOS** | Not supported | Was the development host until 2026-08-01. No longer in the project. |
 

@@ -561,7 +561,26 @@ holocron: registered with your Plex account at http://192.168.68.38:36599
 ```
 
 **Measured while it played:** position advanced **39.98 s against 40.02 s of wall
-clock**, and `drift` drawing at 3840x2160.
+clock**, and `drift` drawing at **1920x1080**, not 3840x2160.
+
+> **THIS LINE READ 3840x2160 UNTIL 2026-08-12 AND WAS WRONG.** It quoted the
+> display MODE, which is 2160p59.94, rather than the framebuffer the renderer was
+> given. The player's own log says `window 1920x1080 logical, 1920x1080 pixels`,
+> and it has said so on every launch.
+>
+> The Shield's ROM caps the UI framebuffer: `ro.config.size_override` reads
+> `1920,1080` and is read-only, derived from NVIDIA's
+> `persist.vendor.sys.NV_DISPYRES=1080`. `wm size reset` is a NO-OP because it
+> resets *to* that value, not to the physical size. Tegra then upscales to the
+> 4K signal — `persist.vendor.tegra.hwc.upscale.filter=auto`.
+>
+> **The device has been up 18 days**, so the read-only property has held that
+> value since before the cast this section describes. Nothing rendered on this
+> Shield has ever been at 4K. Issue 283.
+>
+> It is D-049 exactly: a desktop at 1920x1080 upscaled to a 4K signal, believed
+> to be 4K because the signal was. **A resolution read off the display is not a
+> measurement of what was rendered.**
 
 **`drift`'s COLOUR SAYS NOTHING ABOUT ALBUM ART, and this document claimed twice
 that it did.** The shader binds six `AudioFrame` fields and **no palette**; its
