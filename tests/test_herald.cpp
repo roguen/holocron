@@ -383,6 +383,68 @@ TEST_CASE("a volume template with no ceiling forwards nothing", "[herald][volume
     h.stop();
 }
 
+TEST_CASE("a level read off the receiver comes back in Plex's units", "[herald][volume]")
+{
+    // ISSUE 319, and the round trip is the property that matters: a level read
+    // back and immediately echoed by a controller must map to itself, or the echo
+    // sends a command and the volume moves on its own.
+    CHECK(level_from_receiver(140, 140) == 100);
+    CHECK(level_from_receiver(70, 140) == 50);
+    CHECK(level_from_receiver(0, 140) == 0);
+
+    // The rack's own numbers, 2026-08-12. 80 raw is a displayed 40, which is
+    // where the owner listens, and against a ceiling of 140 that is 57%.
+    CHECK(level_from_receiver(80, 140) == 57);
+}
+
+TEST_CASE("a receiver above our ceiling is clamped, not wrapped", "[herald][volume]")
+{
+    // The receiver is under no obligation to respect `volume_max` -- its own
+    // remote does not know about it. The rack was found at a raw 91 against a
+    // ceiling of 40, which is 227 unclamped.
+    CHECK(level_from_receiver(91, 40) == 100);
+    CHECK(level_from_receiver(255, 140) == 100);
+
+    // Exactly at the ceiling is 100 and not 101.
+    CHECK(level_from_receiver(40, 40) == 100);
+}
+
+TEST_CASE("a level that cannot be made sense of is unknown, never a default",
+          "[herald][volume]")
+{
+    // THE WHOLE OF ISSUE 319 IN ONE ASSERTION. Reporting a default for an unknown
+    // level is what put a controller's slider at the top of its travel and made
+    // casting drive the amplifier to the ceiling. -1 means unknown and the caller
+    // is required to carry that through rather than substitute anything.
+    CHECK(level_from_receiver(-1, 140) == -1);
+    CHECK(level_from_receiver(80, 0) == -1);
+    CHECK(level_from_receiver(80, -1) == -1);
+}
+
+TEST_CASE("an unreachable receiver leaves the volume unknown", "[herald][volume]")
+{
+    // 192.0.2.0/24 is TEST-NET-1 and is guaranteed unroutable, which is what makes
+    // this deterministic on both CI platforms. The query fails, and the level must
+    // stay unknown rather than falling back to anything -- because `main` derives
+    // "offer a volume slider at all" from exactly this, and a slider offered
+    // against a guessed position is the bug.
+    HeraldConfig cfg;
+    cfg.on_volume          = "eiscp://192.0.2.50/MVL{:02X}";
+    cfg.volume_max         = 140;
+    cfg.connect_timeout_ms = 150;
+
+    Herald      h;
+    std::string detail;
+    REQUIRE(h.start(cfg, detail));
+    CHECK(h.forwards_volume());
+
+    // Long enough for the worker's first pass at the query to have failed.
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    CHECK(h.volume_sent() == -1);
+
+    h.stop();
+}
+
 TEST_CASE("a volume ceiling the spelling cannot render is refused", "[herald][volume]")
 {
     // 256 rather than 255, and the difference is the whole point. `{:02X}` renders

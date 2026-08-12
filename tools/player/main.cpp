@@ -4716,13 +4716,33 @@ int main(int argc, char** argv)
                 timeline.time_ms = at;
             }
         }
-        // WHAT WAS SENT, NOT WHAT WAS APPLIED. Issue 126: the receiver can be
-        // turned up by its own remote at any moment and nothing here would know,
-        // so the last commanded level is the most this can truthfully report.
-        // Pushed every frame because the herald sends on its own schedule -- it
-        // paces a drag -- so there is no event here to hang it on.
-        timeline.volume_controllable = herald.forwards_volume();
+        // WHAT THE RECEIVER IS BELIEVED TO BE AT -- asked, then tracked.
+        //
+        // Issue 126 reported the last level SENT, because that was all the herald
+        // knew: the receiver's own remote can move the volume and nothing here
+        // would hear about it. Issue 319 made that a safety problem rather than a
+        // cosmetic one. Before anything had been sent the report was a constant
+        // 100, a controller reads it as a position, and Plexamp echoed it
+        // straight back on connect -- so casting drove the receiver to
+        // `volume_max` before anybody touched a slider.
+        //
+        // The herald now ASKS on startup and on every playback start, so the
+        // report is seeded with the truth. It is still not live: the remote can
+        // still move it between queries and nothing here would know.
+        //
+        // CLAIMED ONLY WHEN THE LEVEL IS KNOWN. A slider whose position is a
+        // guess is the whole bug, and a controller that is offered no slider
+        // cannot echo a wrong one at the amplifier. This does NOT reintroduce the
+        // deadlock issue 126 warned about -- deriving the capability from "a
+        // level has been SENT" cannot recover, because no slider means no command
+        // means nothing ever sent. Deriving it from "a level is KNOWN" is fine,
+        // because the query does not need the slider to have existed.
+        //
+        // Pushed every frame because the herald works on its own schedule -- it
+        // paces a drag and queries off-thread -- so there is no event here to
+        // hang it on.
         timeline.volume_sent         = herald.volume_sent();
+        timeline.volume_controllable = herald.forwards_volume() && timeline.volume_sent >= 0;
 
         companion.set_timeline(timeline);
 
