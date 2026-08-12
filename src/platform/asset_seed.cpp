@@ -45,7 +45,11 @@ namespace {
 // The directory inside the APK. Matches what scripts/android-apk.sh stages under
 // `assets/`, and the two have to agree by hand -- there is no build step that
 // checks, which is worth knowing before renaming either.
-constexpr const char* kAssetVaultDir = "crystals";
+// The asset directory is now the caller's, so the same code seeds `crystals` and
+// `instruments`. It used to be hardcoded to "crystals", which is why
+// `instruments/sync` never reached the device and the beat instrument failed
+// there with "manifest not found" -- taking the one measurement M8 still needs
+// with it (issues 278 and 294).
 
 // Copy one asset out, unless something is already there.
 //
@@ -91,7 +95,8 @@ bool copy_one(AAssetManager* mgr, const std::string& asset_path,
 
 }  // namespace
 
-SeedReport seed_vault_from_assets(const std::string& destination)
+SeedReport seed_vault_from_assets(const std::string& destination,
+                                 const std::string& asset_dir)
 {
     SeedReport report;
 
@@ -131,7 +136,7 @@ SeedReport seed_vault_from_assets(const std::string& destination)
         return report;
     }
 
-    AAssetDir* dir = AAssetManager_openDir(mgr, kAssetVaultDir);
+    AAssetDir* dir = AAssetManager_openDir(mgr, asset_dir.c_str());
     if (dir == nullptr) {
         report.state = SeedState::kUnavailable;
         return report;
@@ -159,7 +164,7 @@ SeedReport seed_vault_from_assets(const std::string& destination)
             ++report.skipped;  // never overwritten; see the header
             continue;
         }
-        if (copy_one(mgr, std::string(kAssetVaultDir) + "/" + name, out_path)) {
+        if (copy_one(mgr, asset_dir + "/" + name, out_path)) {
             ++report.copied;
         } else {
             any_failed = true;
@@ -184,7 +189,7 @@ namespace holocron {
 // On Windows and Linux the vault ships beside the executable and there is
 // nothing packaged to unpack. kUnsupported is the honest answer; the header says
 // explicitly that it is not an error.
-SeedReport seed_vault_from_assets(const std::string&)
+SeedReport seed_vault_from_assets(const std::string&, const std::string&)
 {
     return SeedReport{};
 }

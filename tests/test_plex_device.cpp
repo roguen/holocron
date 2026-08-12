@@ -222,3 +222,35 @@ TEST_CASE("the announced version comes from the build", "[plex]")
     REQUIRE_FALSE(version.empty());
     REQUIRE(version != "0.0.0-unknown");
 }
+
+TEST_CASE("the device name says which box and the product says which app", "[plex]")
+{
+    // D-066. Two destinations, one account. Until 2026-08-12 both the PC and
+    // the Shield announced themselves as `Holocron`, so the cast list showed
+    // two identical entries for two players that are not interchangeable.
+    //
+    // ONLY ONE BRANCH OF THE `#if` IS COMPILED ANYWHERE, so this cannot assert
+    // the pair. What it can assert is the shape of the split, and that is what
+    // would actually be lost by a future edit collapsing them back together:
+    // the name is the DEVICE, the product is the APP, and they are not the same
+    // string.
+    const PlexDevice d;
+
+    REQUIRE_FALSE(d.name.empty());
+    REQUIRE(d.product == "Holocron");
+    REQUIRE(d.name != d.product);
+
+    // The platform this test is being compiled for should be the one it names.
+    // Windows and Linux CI both take the desktop branch; the Android build is
+    // checked by scripts/android-check.sh, which compiles this header.
+#if defined(__ANDROID__)
+    REQUIRE(d.name == "Theater Shield");
+#else
+    REQUIRE(d.name == "Theater PC");
+#endif
+
+    // `device_class` deliberately did NOT move with the name -- see the comment
+    // on the field. An unverified protocol deviation is how `navigation` cost a
+    // session, and the name already solves the problem this entry is about.
+    REQUIRE(d.device_class == "pc");
+}

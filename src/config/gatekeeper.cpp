@@ -390,6 +390,104 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     return GatekeeperError::kOk;
 }
 
+std::string update_trim_ms(const std::string& contents, double value)
+{
+    char rendered[64];
+    std::snprintf(rendered, sizeof(rendered), "trim_ms = %.1f", value);
+
+    // Split keeping the line endings, so a CRLF file stays CRLF and a file with
+    // no trailing newline does not silently gain one.
+    std::vector<std::string> lines;
+    std::size_t              at = 0;
+    while (at <= contents.size()) {
+        const std::size_t nl = contents.find('\n', at);
+        if (nl == std::string::npos) {
+            if (at < contents.size()) {
+                lines.push_back(contents.substr(at));
+            }
+            break;
+        }
+        lines.push_back(contents.substr(at, nl - at + 1));
+        at = nl + 1;
+    }
+
+    const auto trimmed = [](const std::string& line) {
+        const std::size_t b = line.find_first_not_of(" \t");
+        if (b == std::string::npos) {
+            return std::string{};
+        }
+        const std::size_t e = line.find_last_not_of(" \t\r\n");
+        return line.substr(b, e - b + 1);
+    };
+
+    bool        in_audio      = false;
+    std::size_t audio_header  = std::string::npos;
+    std::size_t audio_end     = std::string::npos;
+
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const std::string text = trimmed(lines[i]);
+
+        // A COMMENT IS NOT A KEY. The explanatory prose above this very setting
+        // contains `# trim_ms = -90` as documentation of a superseded reading,
+        // and rewriting that would corrupt the file's own record of itself.
+        if (text.empty() || text[0] == '#') {
+            continue;
+        }
+        if (text[0] == '[') {
+            if (in_audio) {
+                audio_end = i;
+                in_audio  = false;
+            }
+            if (text.rfind("[audio]", 0) == 0) {
+                in_audio     = true;
+                audio_header = i;
+            }
+            continue;
+        }
+        if (in_audio && text.rfind("trim_ms", 0) == 0 &&
+            text.find('=') != std::string::npos) {
+            // Found the live one. Replace the line, keeping its line ending.
+            const std::string ending =
+                lines[i].size() >= 2 && lines[i].substr(lines[i].size() - 2) == "\r\n"
+                    ? "\r\n"
+                    : (!lines[i].empty() && lines[i].back() == '\n' ? "\n" : "");
+            lines[i] = std::string(rendered) + ending;
+
+            std::string out;
+            for (const std::string& l : lines) {
+                out += l;
+            }
+            return out;
+        }
+    }
+    if (in_audio) {
+        audio_end = lines.size();
+    }
+
+    std::string out;
+    if (audio_header != std::string::npos) {
+        // The table exists and has no trim_ms. Insert directly under its header
+        // rather than at the end of the table, so it lands where a reader looks.
+        (void)audio_end;
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            out += lines[i];
+            if (i == audio_header) {
+                out += std::string(rendered) + "\n";
+            }
+        }
+        return out;
+    }
+
+    // No [audio] at all. Append one, and make sure it starts on its own line.
+    out = contents;
+    if (!out.empty() && out.back() != '\n') {
+        out += "\n";
+    }
+    out += "\n[audio]\n";
+    out += std::string(rendered) + "\n";
+    return out;
+}
+
 double render_scale_for(const Gatekeeper& cfg, const std::string& entry_name)
 {
     // Linear, and that is not laziness: the vault is four entries today and the

@@ -9,8 +9,17 @@ A Force meld joins separate minds into one. This is the same job for branches:
 several steps of it fail **silently** when skipped, so it exists to be followed
 rather than remembered.
 
-Read `CLAUDE.md` first if it is not already in context — the four standing rules
+Read `CLAUDE.md` first if it is not already in context — the five standing rules
 are the authority and this is only their procedure.
+
+**Rule 5 lands here.** A release publishes for BOTH destinations and deploys to
+both — a Windows build and an APK, on the GitHub release for the tag, installed
+on the rack and on the Shield. Today neither artifact is published and CI does
+not package the APK ([#293](https://github.com/roguen/holocron/issues/293)), so
+until that closes, the release steps below build and attach both **by hand** —
+`scripts/build.cmd` and `scripts/android-apk.sh` — and say plainly in the report
+if either was skipped. A release that reached only the PC is a release that is
+half done, not a release with a footnote.
 
 **Do not ask permission for any of this.** The owner's standing instruction is to
 commit, PR, watch CI, merge, release and close issues without checking in. The

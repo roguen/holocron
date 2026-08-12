@@ -72,6 +72,16 @@ struct SeedReport {
 // Call it before the vault is scanned, and once. It is cheap when there is
 // nothing to do -- a directory listing and a few `exists` calls -- but it is not
 // free, so it does not belong in a loop.
-SeedReport seed_vault_from_assets(const std::string& destination);
+// `asset_dir` is the directory INSIDE the APK, and `destination` is where it
+// lands. The two shipped sets are "crystals" and "instruments"; the second was
+// missing entirely until 2026-08-12, which meant `instruments/sync` -- the
+// thing --calibrate and the tuning page draw -- did not exist on the Shield,
+// and the one measurement M8 still needs could not be made on the device it is
+// about. Issue 294.
+//
+// The asset path and what scripts/android-apk.sh stages under `assets/` have to
+// agree BY HAND. Nothing checks, which is exactly how the omission survived.
+SeedReport seed_vault_from_assets(const std::string& destination,
+                                 const std::string& asset_dir);
 
 }  // namespace holocron

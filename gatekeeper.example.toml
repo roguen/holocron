@@ -573,7 +573,19 @@ mesh_y = 32
 discovery = true
 
 # What appears in Plexamp's device list. LIVE.
-device_name = "Holocron"
+#
+# THE DEFAULT DIFFERS PER PLATFORM AND THAT IS THE POINT: "Theater PC" on the
+# Windows build, "Theater Shield" on the Android one. There are two destinations
+# and they are not interchangeable -- the Shield renders at 1080p and resamples
+# to 48 kHz 16-bit, the PC renders at 4K and is bit-perfect -- so the one string
+# a phone in another room shows you has to say which is which. D-066.
+#
+# THE APP IS HOLOCRON ON BOTH. That identity travels in the Plex `product`
+# field, which is not configurable and does not change; this key is the DEVICE.
+#
+# Set it if your theater is not this one. Leaving it out is the right answer on
+# the Shield, where editing this file means an ADB session.
+device_name = "Theater PC"
 
 # Identifies this player to Plex clients, and must be STABLE across restarts --
 # with a new one each run, Plexamp's device list gains a new entry every time

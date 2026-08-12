@@ -725,6 +725,25 @@ VRAM bandwidth. The Shield has no such cache. Re-measure.
 
 **`duel` at 8.10 ms at 4K.** Same reason, and it is the most expensive crystal.
 
+**And none of them ever will port, which is D-066.** §7 was written as a caution
+about carrying figures between machines. The figures have since been measured on
+both, and they say something larger than "re-measure": the Shield is **20× behind
+on memory bandwidth**, its ROM caps the framebuffer at 1080p, and its audio policy
+puts every mixer output at 48 kHz 16-bit. The two boxes are two tiers rather than
+one target converging, and the Shield's job is the cheap crystals at 1080p with
+the rack asleep. Do not plan work here that assumes the gap closes.
+
+**The two now announce different names.** `Theater Shield` on this box, `Theater
+PC` on the rack — platform-derived in `plex_device.hpp`, because a default that
+needs an ADB session to correct is wrong on the platform with no keyboard.
+`[plex] device_name` still overrides. The Plex `product` field stays `Holocron`
+on both: the app is the same, the device is not.
+
+**`device_class` deliberately stayed `pc` on the Shield.** `stb` is very probably
+right and it is exactly the obviously-harmless deviation that made the device
+vanish from Plexamp when `navigation` was dropped from the capability string.
+Match the reference; trim with evidence.
+
 <!-- measured: trim_ms.rack -->
 **`trim_ms = -30` mostly DOES port**, and is the exception. It is a difference
 between the audio and display paths, not a latency, and both boxes reach the same

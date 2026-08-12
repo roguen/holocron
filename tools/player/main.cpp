@@ -116,6 +116,7 @@
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -541,8 +542,22 @@ void describe(const char* verb, const Crystal& crystal, const CrystalFacet& face
 // tuning sub-page -- and they must name the same file, which is why this is a
 // constant rather than a literal in each of them.
 //
-// Relative to the working directory, exactly as `--calibrate` has always been.
-constexpr const char* kSyncStem = "instruments/sync";
+// RESOLVED AGAINST THE DATA DIRECTORY, not the working directory.
+//
+// It was `"instruments/sync"` bare until 2026-08-12, which is right on a desktop
+// and unreachable on Android: an Activity launches with cwd `/`, so the beat
+// instrument failed there with "manifest not found" -- and it is the ONLY
+// instrument for the one measurement M8 still needs (issue 278). Found by the
+// owner mid-cast, trying to tune the trim on the projector.
+//
+// Two callers load it -- `--calibrate` and the control page's tuning sub-page --
+// and they must name the same file, which is why this is a function rather than
+// a literal in each of them. Issue 294.
+const std::string& sync_stem()
+{
+    static const std::string stem = resolve_data_path("instruments/sync");
+    return stem;
+}
 
 // `current` names nothing in the vault.
 //
@@ -2681,7 +2696,7 @@ int main(int argc, char** argv)
     // --calibrate is --crystal instruments/sync with the arrow keys live. Set
     // here rather than in parse() so an explicit --crystal still wins.
     if (opt.calibrate && opt.crystal == nullptr) {
-        opt.crystal = kSyncStem;
+        opt.crystal = sync_stem().c_str();
         opt.vault   = nullptr;
     }
 
@@ -2775,8 +2790,63 @@ int main(int argc, char** argv)
     companion.set_colophon_handler([&cast](bool visible) { cast.request_colophon(visible); });
     companion.set_now_playing_handler(
         [&cast](bool visible) { cast.request_now_playing(visible); });
+    // What the Save button writes, and where. Issue 295.
+    //
+    // An ATOMIC rather than the live `trim_ms`, because the save runs on an HTTP
+    // worker and the trim is moved by the render loop. The render loop publishes
+    // here after every change; a save is then a read of one atomic rather than a
+    // race against a double being written elsewhere.
+    std::atomic<double> saved_trim_ms{opt.trim_ms};
+    const std::string   config_for_save = resolve_data_path(opt.config);
+
     companion.set_trim_handler([&cast](double delta_ms) { cast.request_trim(delta_ms); });
     companion.set_sync_handler([&cast] { cast.request_sync(); });
+
+    // ISSUE 295. The Save button on /control/tuning.
+    //
+    // RUNS ON AN HTTP WORKER, and it reads `trim_ms` -- which the render loop
+    // moves with the arrow keys and the phone's own buttons. `saved_trim_ms` is
+    // an atomic the render loop publishes after every change, so this thread
+    // never reads the live double.
+    //
+    // The write itself is a read-modify-write of the config file through
+    // update_trim_ms(), which is a tested pure function precisely because THIS
+    // FILE HOLDS THE PLEX TOKEN.
+    companion.set_save_tuning_handler([&saved_trim_ms, config_for_save]() -> bool {
+        std::ifstream in(config_for_save, std::ios::binary);
+        std::string   before;
+        if (in.is_open()) {
+            std::ostringstream buf;
+            buf << in.rdbuf();
+            before = buf.str();
+            in.close();
+        }
+        // An absent config is not a failure: a first run with no file at all
+        // should still be able to keep a measurement.
+        const std::string after =
+            update_trim_ms(before, saved_trim_ms.load(std::memory_order_relaxed));
+
+        // VIA A TEMPORARY AND A RENAME. A half-written gatekeeper.toml is a
+        // player that cannot authenticate and cannot say why.
+        const std::string temp = config_for_save + ".new";
+        {
+            std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+            if (!out.is_open()) {
+                return false;
+            }
+            out << after;
+            if (!out) {
+                return false;
+            }
+        }
+        std::error_code ec;
+        std::filesystem::rename(temp, config_for_save, ec);
+        if (ec) {
+            std::filesystem::remove(temp, ec);
+            return false;
+        }
+        return true;
+    });
     companion.set_advance_handler([&cast](const std::string& mode) {
         cast.request_advance(mode);
     });
@@ -4880,6 +4950,9 @@ int main(int argc, char** argv)
             companion.set_control_vault(names, vault_generation);
             companion.set_control_info(track_context.title, track_context.artist,
                                        track_context.has_art);
+            // Published for the Save button, which runs on an HTTP worker and
+            // must not read the live double this loop is writing. Issue 295.
+            saved_trim_ms.store(trim_ms, std::memory_order_relaxed);
             companion.set_control_tuning(trim_ms, headroom_ms, showing_sync, opt.config);
 
             // WHETHER THE SECTION APPEARS AT ALL follows the LIVE stack rather
@@ -5151,7 +5224,7 @@ int main(int argc, char** argv)
             if (cast.take_sync()) {
                 LiveStack   next;
                 std::string why;
-                if (build_stack(archive_of_crystal(kSyncStem, "sync"), next,
+                if (build_stack(archive_of_crystal(sync_stem(), "sync"), next,
                                 "beat instrument", projectm_ctx, &shader_cache, &why)) {
                     showing_sync = true;
                     begin_stack(std::move(next));
@@ -5167,7 +5240,7 @@ int main(int argc, char** argv)
                     std::fprintf(stderr,
                                  "holocron: %s is loaded relative to the working directory; "
                                  "run holocron from the directory that has instruments/\n",
-                                 kSyncStem);
+                                 sync_stem().c_str());
                     // The request came from the tuning page, so the person who
                     // made it is holding a phone and looking at the picture.
                     notify(why.empty() ? std::string("no beat instrument") : why, /*bad=*/true);
@@ -5388,7 +5461,7 @@ int main(int argc, char** argv)
                     !anchor.stem.empty() || anchor.kind == VaultKind::kProjectM;
 
                 const bool got = showing_sync
-                                     ? (archive = archive_of_crystal(kSyncStem, "sync"), true)
+                                     ? (archive = archive_of_crystal(sync_stem(), "sync"), true)
                                      : have_anchor && archive_for(anchor, archive, &why);
 
                 if (got && build_stack(archive, next, "reloaded", projectm_ctx, &shader_cache, &why)) {

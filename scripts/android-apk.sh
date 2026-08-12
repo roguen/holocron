@@ -226,6 +226,16 @@ cp "$out/classes.dex" "$out/staging/"
 mkdir -p "$out/staging/assets/crystals"
 cp crystals/* "$out/staging/assets/crystals/"
 
+# THE INSTRUMENTS, for the same reason and one that is sharper.
+#
+# `instruments/sync` is what --calibrate and the phone's /control/tuning page
+# draw, and it was never packaged -- so on the Shield the beat instrument failed
+# with "manifest not found" and the ONE measurement M8 still needs (issue 278)
+# could not be made on the device it is about. Found by the owner on 2026-08-12,
+# mid-cast, trying to tune the trim.
+mkdir -p "$out/staging/assets/instruments"
+cp instruments/* "$out/staging/assets/instruments/"
+
 # `aapt add`, NOT `zip`. Git Bash on Windows ships no zip, and this is the tool
 # the Android SDK provides for the job -- aapt v1, not aapt2, which has no `add`.
 #
