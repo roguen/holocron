@@ -403,10 +403,25 @@ pull requests are not.
 
 | Platform | Role | State today |
 |---|---|---|
-| **Windows x86-64 + discrete GPU** | The build and test target | **Runs everything.** Plays bit-perfect through `WasapiSink` in exclusive mode, is cast to from Plexamp, and draws the whole facet stack. |
-| **Android TV — NVIDIA Shield** | Where it is going | **Runs, draws and has been cast to.** An ES 3.2 context on Tegra, the `RGBA16F` compositor layers, crystals, hot reload and the licence panel — and `holocron-analyze` has run there too, against the same tone as on Windows: 21,802 of 21,996 CSV cells bit-identical, 182 more inside the golden file's tolerance, and the last 12 differing by exactly one printed ULP. The Companion control page answers, but the port itself can move: on a Shield with the Plex mobile app installed, that app frequently already holds the usual port, and Holocron falls back to a free one and announces it. **It has been cast to from Plexamp**, 2026-08-11 — the real thing from the phone, not a synthetic command from the rack. A 44.1 kHz FLAC streamed over HTTPS from the NAS, an album queue walked track by track with the phone's own controls live, `drift` drawing at 1920×1080 upscaled to the 4K signal and driven by the audio. The first such cast found a bug that had never been exercised ([#280](https://github.com/roguen/holocron/issues/280)). **Not bit-perfect there**, and that is the device rather than the code — see below. |
+| **Windows x86-64 + discrete GPU** | The build and test target, and the reference tier | **Runs everything.** Plays bit-perfect through `WasapiSink` in exclusive mode, is cast to from Plexamp, and draws the whole facet stack. |
+| **Android TV — NVIDIA Shield** | The second destination, and a second tier | **Runs, draws and has been cast to.** An ES 3.2 context on Tegra, the `RGBA16F` compositor layers, crystals, hot reload and the licence panel — and `holocron-analyze` has run there too, against the same tone as on Windows: 21,802 of 21,996 CSV cells bit-identical, 182 more inside the golden file's tolerance, and the last 12 differing by exactly one printed ULP. The Companion control page answers, but the port itself can move: on a Shield with the Plex mobile app installed, that app frequently already holds the usual port, and Holocron falls back to a free one and announces it. **It has been cast to from Plexamp**, 2026-08-11 — the real thing from the phone, not a synthetic command from the rack. A 44.1 kHz FLAC streamed over HTTPS from the NAS, an album queue walked track by track with the phone's own controls live, `drift` drawing at 1920×1080 upscaled to the 4K signal and driven by the audio. The first such cast found a bug that had never been exercised ([#280](https://github.com/roguen/holocron/issues/280)). **Not bit-perfect there**, and that is the device rather than the code — see below. |
 | **Linux** | CI only | Builds and hygiene checks run here. Not a deployment target. |
 | **macOS** | Not supported | Was the development host until 2026-08-01. No longer in the project. |
+
+**The two destinations are two tiers, and the Shield does not catch the PC.**
+Measured on both, not suspected: the Shield is about **20× behind on memory
+bandwidth** — the cheapest crystal in the vault costs 14.59 ms there against
+0.73 ms on the desktop — its ROM caps the framebuffer at **1920×1080** and
+upscales to whatever the display is running, and its audio policy resamples
+everything to 48 kHz 16-bit. So the PC is the reference: 4K, every crystal, and
+bit-perfect output. The Shield is the convenience tier: 1080p, the cheaper
+crystals, 48 kHz 16-bit, at about 10 W with the desktop switched off. Both are
+supported destinations and each release is built for both.
+
+They therefore **announce different names** — `Theater PC` and `Theater Shield`
+in a controller's device list, overridable with `[plex] device_name` — while both
+still identify as the `Holocron` product, because the app is the same and the
+device is not.
 
 **The Shield will not be bit-perfect, and that is the device rather than the
 code.** Every mixer output on it is 48 kHz 16-bit, and every output that carries
