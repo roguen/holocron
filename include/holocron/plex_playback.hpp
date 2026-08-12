@@ -339,6 +339,45 @@ HttpError fetch_play_queue(const PlayRequest& request, const std::string& queue_
 // testable without a server.
 bool parse_play_queue(const std::string& xml, PlexQueue& out);
 
+// The play queue id inside a `containerKey`, or empty if it does not name one.
+//
+// ISSUE 280. `playMedia` carries `containerKey=/playQueues/11603?own=1` and, when
+// Plexamp hands off a queue it ALREADY OWNS, that is the only thing in the
+// command that says which queue is being played -- no `createPlayQueue` follows.
+// The player used to resolve the track and ignore this, which left it playing one
+// song with no queue behind it: the wrong track, no advance at the end, and a
+// timeline with four empty identifiers that Plexamp cannot resolve.
+//
+// A containerKey that names anything else -- a library section, a single item --
+// yields empty, and the caller falls back to playing the one track it was given.
+//
+// THE `?` AND `&` INSIDE IT ARE UNENCODED, so the value arrives with its own
+// query string still attached. That is the controller's bug and not the parser's;
+// see the note at the top of this header. Everything from the first `?` is
+// discarded here.
+std::string play_queue_id_from_container_key(const std::string& container_key);
+
+// Where in a queue to start: the index of `start_key`, else the server's own
+// selection, else the beginning.
+//
+// THE ORDER MATTERS AND HAS BEEN WRONG TWICE, in opposite directions.
+//
+// Issue 115: casting from the middle of an album sends a `playMedia` naming the
+// tapped track and then a `createPlayQueue` built from track ONE, with no
+// `skipTo` after it. There, `selected` is 0 and the key from the earlier command
+// is the only record of what was tapped -- so the key wins.
+//
+// Issue 280: handing off a queue Plexamp already owns sends a `playMedia` whose
+// key is the queue's FIRST item regardless of what is playing, and the truth is
+// `playQueueSelectedItemID` inside the queue. There the caller passes no key, so
+// `selected` wins. Both callers get what they need from one rule because the
+// second one declines to supply a key rather than supplying a misleading one.
+//
+// The range check is not decoration: `parse_play_queue` assigns `selected` before
+// pushing the track, and a track with no Part is skipped, so a selected last
+// track with no playable Part leaves `selected == tracks.size()`.
+std::size_t queue_start_index(const PlexQueue& queue, const std::string& start_key);
+
 // Tell the MEDIA SERVER where playback has reached.
 //
 // SEPARATE FROM THE TIMELINE A CONTROLLER POLLS, AND NOT A SUBSTITUTE FOR IT.

@@ -36,6 +36,8 @@ redefining "bass" — there is only a vault of crystals that all quietly look wr
   that has input lag of its own pushing the other way. So the value belongs to a
   whole rack and not to the receiver, and changing the display invalidates it.
 
+  <!-- measured: trim_ms.rack -->
+  <!-- measured: trim_ms.rack@2026-08-04 -->
   Measured **−30 ms** on the rack (2026-08-10, 4K 60 Hz RGB 8-bit), bracketed
   against a generated click track: late at 0, early at −50, midpoint −25, taken as
   −30 with a resolution of about ±25 ms. It read −90 until then, measured at 4K

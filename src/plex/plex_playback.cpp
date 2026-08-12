@@ -623,6 +623,49 @@ HttpError create_play_queue(const PlayRequest& request, const std::string& clien
     return HttpError::kOk;
 }
 
+std::string play_queue_id_from_container_key(const std::string& container_key)
+{
+    // Everything from the first `?` is the controller's unencoded query string
+    // riding along inside the value. Drop it before looking at the path.
+    std::string path = container_key.substr(0, container_key.find('?'));
+
+    static const std::string kPrefix = "/playQueues/";
+    if (path.compare(0, kPrefix.size(), kPrefix) != 0) {
+        return {};
+    }
+    std::string id = path.substr(kPrefix.size());
+
+    // `/playQueues/11603/whatever` is not an id, and neither is `/playQueues/`.
+    // Refusing both is better than returning a fragment: a wrong id fetches
+    // somebody else's queue, which is worse than fetching none.
+    if (id.empty() || id.find('/') != std::string::npos) {
+        return {};
+    }
+    for (const char c : id) {
+        if (c < '0' || c > '9') {
+            return {};
+        }
+    }
+    return id;
+}
+
+std::size_t queue_start_index(const PlexQueue& queue, const std::string& start_key)
+{
+    if (queue.tracks.empty()) {
+        return 0;
+    }
+    if (!start_key.empty()) {
+        for (std::size_t i = 0; i < queue.tracks.size(); ++i) {
+            if (queue.tracks[i].key == start_key) {
+                return i;
+            }
+        }
+        // A key that is not in this queue is not a reason to refuse to play.
+        // Fall through to the server's selection.
+    }
+    return queue.selected < queue.tracks.size() ? queue.selected : 0;
+}
+
 HttpError fetch_play_queue(const PlayRequest& request, const std::string& queue_id,
                            const std::string& client_identifier, PlexQueue& out,
                            std::string& out_detail)

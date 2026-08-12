@@ -46,7 +46,7 @@ first written down as open, and M2's last unbuilt criterion closed the same day:
 | **M2** | **DONE, 8 of 8, two amended, 2026-08-10.** Per-uniform envelope overrides landed — the last unbuilt piece — and **the owner authorised the closure the same day**. The visual language was his judgement and nobody else's, which is why the milestone stayed open for a few hours after the code was finished. `v0.6.0`. |
 | **M6** | **DONE, 4 of 4, one amended, 2026-08-10.** Closed by the owner **on the projector**: the card, the lyric line and the colophon's seven pages all read from the couch. Criterion 1 was amended the same day (D-045: the phone IS the control surface). **Three things had to be fixed before the question could honestly be asked** — there was no fullscreen mode at all, the desktop was 1920×1080 upscaled to a 4K signal, and the link was at 29 Hz to carry RGB 10-bit the 8-bit renderer never produces. All three were silent and two looked healthy. D-049. |
 | **M7** | **DONE, 3 of 3, 2026-08-10.** The **herald** runs errands when playback starts and stops -- eISCP over TCP 60128. **Confirmed against the receiver the day it went on the network**: ONKYO TX-RZ720 at `192.168.68.128`, `SLI11` to `SLI05` and `LMD80` to `LMD01` read back from fresh connections, and the player reporting 3 commands sent and 0 failed. **It was found in `LMD80`, Dolby PLII Movie** -- the milestone's own premise, observed. An errand is a URI, so a webhook replaces eISCP by editing a value. D-048. |
-| **M8** | **IN SCOPE, and the only milestone still open. Rendering, platform layer, packaging AND provisioning are all DONE; what is left is the audio criterion.** D-046 and D-047 held: shaders are `#version 300 es` and the `GL_RGBA16F` layers port, confirmed on the Shield itself. **The DSA port is DONE** — 43 call sites, one bind-based path (D-051). **D-055 finished the rendering half**: glad pinned to `gl-api-45` generated the *desktop* loader for the Android triplet, which compiled perfectly and would have been null on an ES driver, so Android now takes the NDK's `<GLES3/gl32.h>` (issue 237). 61 GL commands and 57 enums then checked against Khronos' `gl.xml` for ES ≤ 3.2 — one enum missing, `GL_BGR` in `--shot`, fixed. **D-053: the audio sink needed NO CODE** and the framing question had a wrong premise (see below). **D-054: every TU in `src/` cross-compiles for `aarch64-linux-android30` in CI.** **AND THE WHOLE PROJECT NOW BUILDS AND LINKS FOR `arm64-android` — 56 targets, both executables — and `holocron-analyze` HAS RUN ON THE SHIELD.** Against the same tone through Windows/MSVC and Tegra/clang: 21,802 of 21,996 CSV cells bit-identical, 182 inside the golden file's 5e-4 tolerance, and all 12 exceedances differ by exactly one printed ULP. **M1's whole spine is confirmed on the target.** **Packaging is DONE too (D-056) and IT RUNS ON THE SHIELD** — a crystal on screen, ES 3.2 on Tegra, `RGBA16F` compositing, hot reload, and the colophon legible at 3840×2160. `v0.8.6` gave FFmpeg TLS (239) and made the account path portable (241); `v0.8.7` made the machine identifier stick (248, D-057); **`v0.8.8` fixed the Companion port (247)**, and the filed diagnosis was half right: it is **`com.plexapp.android`, the Plex PLAYER app**, not Plex Media Server. Confirmed by uid out of `/proc/net/tcp6` — force-stopping it frees 32500 and relaunching it rebinds after about fifteen seconds, which is why an impatient ten-second check says it does not. On a Shield with the Plex app installed, **Holocron cannot reliably have 32500 at all**, so the fallback is the only reason the control page exists there. **AND IT HAS NOW BEEN CAST TO, 2026-08-11** — a 44.1 kHz FLAC over HTTPS from the NAS, position advancing 39.98 s against 40.02 s of wall clock, `drift` drawing at 3840×2160, its colour driven by the music's spectral centroid. The token had to come from the PIN flow run on the RACK carrying the SHIELD's identifier; **copying the rack's token does not work** (see below). **`v0.9.0` CLOSED THE PROVISIONING WORK (242)**: the app keeps playing and stays controllable while backgrounded, GDM takes a `MulticastLock`, the vault ships in the APK and unpacks itself on first run, and the four argv-only switches that mattered got config keys. What is left on M8 is the audio criterion. See `docs/shield.md` §5 and §6. |
+| **M8** | **IN SCOPE, and the only milestone still open. Rendering, platform layer, packaging AND provisioning are all DONE; what is left is the audio criterion.** D-046 and D-047 held: shaders are `#version 300 es` and the `GL_RGBA16F` layers port, confirmed on the Shield itself. **The DSA port is DONE** — 43 call sites, one bind-based path (D-051). **D-055 finished the rendering half**: glad pinned to `gl-api-45` generated the *desktop* loader for the Android triplet, which compiled perfectly and would have been null on an ES driver, so Android now takes the NDK's `<GLES3/gl32.h>` (issue 237). 61 GL commands and 57 enums then checked against Khronos' `gl.xml` for ES ≤ 3.2 — one enum missing, `GL_BGR` in `--shot`, fixed. **D-053: the audio sink needed NO CODE** and the framing question had a wrong premise (see below). **D-054: every TU in `src/` cross-compiles for `aarch64-linux-android30` in CI.** **AND THE WHOLE PROJECT NOW BUILDS AND LINKS FOR `arm64-android` — 56 targets, both executables — and `holocron-analyze` HAS RUN ON THE SHIELD.** Against the same tone through Windows/MSVC and Tegra/clang: 21,802 of 21,996 CSV cells bit-identical, 182 inside the golden file's 5e-4 tolerance, and all 12 exceedances differ by exactly one printed ULP. **M1's whole spine is confirmed on the target.** **Packaging is DONE too (D-056) and IT RUNS ON THE SHIELD** — a crystal on screen, ES 3.2 on Tegra, `RGBA16F` compositing, hot reload, and the colophon legible — at 1920×1080 upscaled to a 4K signal, not at 4K; the Shield's ROM caps the UI framebuffer and `wm size reset` cannot lift it (issue 283). `v0.8.6` gave FFmpeg TLS (239) and made the account path portable (241); `v0.8.7` made the machine identifier stick (248, D-057); **`v0.8.8` fixed the Companion port (247)**, and the filed diagnosis was half right: it is **`com.plexapp.android`, the Plex PLAYER app**, not Plex Media Server. Confirmed by uid out of `/proc/net/tcp6` — force-stopping it frees 32500 and relaunching it rebinds after about fifteen seconds, which is why an impatient ten-second check says it does not. On a Shield with the Plex app installed, **Holocron cannot reliably have 32500 at all**, so the fallback is the only reason the control page exists there. **AND IT HAS NOW BEEN CAST TO, 2026-08-11** — a 44.1 kHz FLAC over HTTPS from the NAS, position advancing 39.98 s against 40.02 s of wall clock, `drift` drawing at 1920×1080 upscaled to the 4K signal, its colour driven by the music's spectral centroid. The token had to come from the PIN flow run on the RACK carrying the SHIELD's identifier; **copying the rack's token does not work** (see below). **`v0.9.0` CLOSED THE PROVISIONING WORK (242)**: the app keeps playing and stays controllable while backgrounded, GDM takes a `MulticastLock`, the vault ships in the APK and unpacks itself on first run, and the four argv-only switches that mattered got config keys. What is left on M8 is the audio criterion. See `docs/shield.md` §5 and §6. |
 | **M5** | **DONE — all six criteria, one amended.** The last debt closed 2026-08-10 by measuring rather than building: the NAS answers a repeat sleeve in **1 ms**, so the art cache stays in memory (D-044). `artwork_cache.hpp` ships unused on purpose. |
 
 See the eight-row table at the top of the wiki
@@ -125,6 +125,26 @@ has somebody to dismiss it.
 device appears in the list, a play command resolves against the media server,
 and a `PlaybackSession` starts from the resulting URL.
 
+**AND A REAL PLEXAMP CAST NOW PLAYS A QUEUE CORRECTLY, 2026-08-11, on the
+SHIELD** -- which is the first time any cast came from the phone rather than a
+synthetic `playMedia` posted from the rack, and it broke immediately. Handing
+over a queue Plexamp ALREADY OWNS sends `playMedia` with
+`containerKey=/playQueues/N` and **no `createPlayQueue` after it**. The handler
+resolved the track and ignored the containerKey, so the player had a song and no
+queue: it played the queue's first item rather than the tapped one, reported a
+timeline with `ratingKey`, `playQueueID`, `playQueueVersion` and
+`playQueueItemID` all empty -- which left the phone polling 339 times and never
+drawing its controls -- and stopped at `0 of 0 in the queue`. **One missing
+call, three symptoms.** `git log -S fetch_play_queue` on that file is empty, so
+it had never worked; the verified path was `createPlayQueue`, whose own comment
+says *"No playMedia arrives at all -- observed against a real Plexamp"*, true
+for the case it was observed on and not for a handoff. Fixed in issue 280 and
+**confirmed by a cast**: all four identifiers populated and the queue walked to
+track four. **Where playback starts now lives in one tested function**,
+`queue_start_index`, because it has been wrong twice in opposite directions --
+the tapped key must win after a `createPlayQueue` (115) and must be ignored in a
+handoff (280).
+
 **What is NOT confirmed: audible output from a real cast.** The cast path was
 exercised with `--no-audio`; the file path is verified bit-perfect. That gap is
 the first thing to close.
@@ -201,6 +221,7 @@ Cache** holds a 66 MB layer comfortably, which is the only thing that fits the
 number. **Do not carry this figure to another GPU**, and specifically not to the
 Shield at M8, where there is no such cache.
 
+<!-- measured: trim_ms.rack -->
 **`--trim-ms` does NOT need re-measuring for this.** The M3 issue flagged the
 compositor as a risk to the calibration, and the measurement answers it: the pass
 is an extra draw call inside the same frame before the same swap, so it adds no
@@ -353,14 +374,24 @@ hot reload and the vault all exist and are tested. The undecided part is the
 should inherit from the debug facet, which is an instrument panel. That call is
 the owner's and should not be made from a screenshot.
 
+<!-- measured: trim_ms.rack -->
 **`--trim-ms` is measured: `-30` on this rack.** Re-measured **2026-08-10 at 4K
 60 Hz, RGB 8-bit** against the generated click track — bracketed late at `0` and
 early at `-50`, midpoint `-25`, taken as **`-30`** on the 5 ms grid the tool steps
 in, so the resolution is about **±25 ms**. It lives in `gatekeeper.toml`;
 re-measure with `holocron <track> --calibrate`.
 
-**It was `-90` until then, and that figure is still all over the older
-documents.** −90 was measured 2026-08-04 at 4K **29 Hz**, RGB 10-bit. The
+**Every document that quotes it is checked against `docs/measurements.toml`**
+(issue 265). That file is the committed record — value, date, bracket,
+resolution — and `scripts/check-measurements.sh` requires each block quoting a
+recorded figure to declare which one it means, and each declaration to match.
+Re-measuring means editing the record; everything stale then fails by name.
+`gatekeeper.toml` is still gitignored and still the source of truth for the
+*program*, which is why that one step cannot be automated.
+
+<!-- measured: trim_ms.rack@2026-08-04 -->
+**It was `-90` until then, and that figure is still quoted in the documents that
+explain the move.** −90 was measured 2026-08-04 at 4K **29 Hz**, RGB 10-bit. The
 projector evening changed the link to 4K 60 Hz 8-bit (D-049), and two refreshes of
 vsync'd present pipeline went from 69 ms to 33 ms — which accounts for about 36 of
 the 60 ms move. The rest is plausibly the projector processing 4K60 8-bit faster
@@ -490,7 +521,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.9.0`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.9.1`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 

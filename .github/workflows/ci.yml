@@ -574,3 +574,18 @@ jobs:
             fi
             echo "tag $GITHUB_REF_NAME matches the tree"
           fi
+
+      # Issue #265, and the same shape as #38 above with one difference that
+      # decided the design: the source of truth is `gatekeeper.toml`, which is
+      # GITIGNORED, so unlike the version there is nothing in the tree for CI to
+      # compare a document against. `trim_ms` was re-measured on 2026-08-10 and
+      # eight published documents went on quoting the superseded figure for a
+      # day; it was found by an audit, because nothing could fail.
+      #
+      # docs/measurements.toml is the committed record that closes that, and the
+      # script enforces it in both directions -- an undeclared quotation is an
+      # error, and so is a declaration that no longer matches. The script rather
+      # than inline YAML so the rack can run it before pushing, which is the same
+      # reason scripts/android-check.sh is a script.
+      - name: Documents agree with the measured values on record
+        run: scripts/check-measurements.sh

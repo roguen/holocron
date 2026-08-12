@@ -62,6 +62,7 @@ bloom_threshold = 1.0
 
 ### 3. Re-calibrate the trim, ONCE, after both changes
 
+<!-- measured: trim_ms.rack@2026-08-04 -->
 `trim_ms = -90` was measured at 29 Hz. One refresh goes from 34.5 ms to 16.7 ms,
 and a vsync present pipeline is one to two refreshes, so a large part of that −90
 is about to stop being true.
@@ -77,6 +78,7 @@ at `/control/tuning`, which is where the judgement is actually easier to make.
 Expect somewhere around **−55 to −70**. If nudging stops helping, read the line —
 it tells you when you have run out of lead rather than leaving you guessing.
 
+<!-- measured: trim_ms.rack -->
 > **OUTCOME, 2026-08-10: −30.** Outside the range predicted here, and in the same
 > direction — the move was larger than the refresh-rate arithmetic alone predicts.
 > Bracketed late at 0 and early at −50, midpoint −25, taken as −30 on the 5 ms
