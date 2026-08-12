@@ -679,6 +679,26 @@ bool Herald::start(const HeraldConfig& config, std::string& out_detail)
     // typo is reported at startup with everything else. Finding out at the moment
     // somebody reaches for the slider -- in a dark room, from a phone -- is the
     // worst possible time for it.
+    // The largest `volume_max` that will be accepted.
+    //
+    // 100 UNTIL 2026-08-12, AND THAT WAS THE UNITS ERROR OF ISSUE 312 BUILT INTO
+    // THE VALIDATOR. Plex's slider is 0..100, so 100 looked like the natural
+    // bound -- but `volume_max` is not in Plex's units, it is in the receiver's,
+    // and on a unit with half-step volume the protocol value is double the number
+    // on the front panel. The reference rack's own maximum is 164 (a displayed
+    // 82), so every ceiling above a displayed 50 was unreachable and the herald
+    // refused the config outright, taking the phone's volume control with it.
+    //
+    // 255 because that is what the SPELLING allows: `{:02X}` renders two hex
+    // digits, and a larger value would silently produce three and send a
+    // malformed command. It is not a claim about any receiver's range -- the real
+    // ceiling is a property of the unit and must be read off it (D-048).
+    //
+    // This is not a loosened safety limit. `volume_max` IS the safety limit; this
+    // bound only decides which values may be written down, and refusing a legal
+    // one is not caution, it is a feature that does not work.
+    static constexpr int kVolumeMaxCeiling = 255;
+
     if (!config.on_volume.empty()) {
         const auto refuse = [&out_detail](const std::string& why) {
             if (!out_detail.empty()) {
@@ -687,13 +707,14 @@ bool Herald::start(const HeraldConfig& config, std::string& out_detail)
             out_detail += "holocron: herald ignored on_volume -- " + why;
         };
 
-        if (config.volume_max <= 0 || config.volume_max > 100) {
+        if (config.volume_max <= 0 || config.volume_max > kVolumeMaxCeiling) {
             // REQUIRED, AND WITH NO DEFAULT. See HeraldConfig: there is no
             // ceiling that is safe on every rack, and the only alternative to
             // demanding one was guessing -- where the obvious guess is the
             // amplifier's own maximum, which is the worst answer available.
-            refuse("it needs `volume_max` as well, between 1 and 100, in the "
-                   "receiver's own units -- read it off the unit rather than a table");
+            refuse("it needs `volume_max` as well, between 1 and " +
+                   std::to_string(kVolumeMaxCeiling) +
+                   ", in the receiver's own units -- read it off the unit rather than a table");
         } else {
             std::string probe;
             std::string why;

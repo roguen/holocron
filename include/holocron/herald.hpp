@@ -172,10 +172,28 @@ struct HeraldConfig {
     //
     // THIS IS A SAFETY CLAMP AND IT HAS NO DEFAULT ON PURPOSE. Plex's slider is
     // 0..100 and eISCP's MVL is hex, so a naive pass-through sends `MVL64` for a
-    // slider at the top -- which on a theater amplifier is full output, into a
-    // room, possibly at night, from a phone in somebody's pocket. There is no
-    // value that is safe on every rack, so the honest options were to demand one
-    // or to guess one.
+    // slider at the top -- very loud on a theater amplifier, into a room,
+    // possibly at night, from a phone in somebody's pocket. There is no value
+    // that is safe on every rack, so the honest options were to demand one or to
+    // guess one.
+    //
+    // "RECEIVER'S OWN UNITS" IS LOAD-BEARING AND WAS READ AS DECORATIVE. On a
+    // receiver with half-step volume the protocol value is DOUBLE the number on
+    // the front panel: on the reference rack `volume_max = 140` tops out at a
+    // displayed 70, and `MVL64` is a displayed 50 rather than the maximum of 82.
+    //
+    // Issue 312 is what that cost. The owner set 40, watched the panel stop at
+    // 20, and the conclusion drawn -- by everyone, for a session -- was that his
+    // phone sent 50 instead of 100 at the top of its travel. It sends 100. The
+    // scaling below was correct the whole time. The two explanations are
+    // indistinguishable from the numbers alone and were separated only by
+    // capturing a drag command by command.
+    //
+    // NOTHING HERE CONVERTS TO PANEL UNITS, deliberately. The ratio belongs to
+    // the receiver rather than to eISCP -- units reporting `volstep = 1` are 1:1
+    // -- so halving it here would be right on this rack and wrong on the next.
+    // The player reports the MVL it sent and the panel is the authority on what
+    // that means.
     //
     // Demanding it. `on_volume` set with no `volume_max` reports the error and
     // forwards nothing, which is a feature that does not work until it is

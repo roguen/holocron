@@ -383,11 +383,15 @@ TEST_CASE("a volume template with no ceiling forwards nothing", "[herald][volume
     h.stop();
 }
 
-TEST_CASE("a volume ceiling above the scale is refused", "[herald][volume]")
+TEST_CASE("a volume ceiling the spelling cannot render is refused", "[herald][volume]")
 {
+    // 256 rather than 255, and the difference is the whole point. `{:02X}` renders
+    // two hex digits; 255 is `FF` and fits, 256 is `100` and would go on the wire
+    // as a malformed command. The bound is a property of the SPELLING, not of Plex's
+    // 0..100 slider.
     HeraldConfig cfg;
     cfg.on_volume  = "eiscp://192.0.2.50/MVL{:02X}";
-    cfg.volume_max = 255;
+    cfg.volume_max = 256;
 
     Herald      h;
     std::string detail;
@@ -395,6 +399,45 @@ TEST_CASE("a volume ceiling above the scale is refused", "[herald][volume]")
     CHECK_FALSE(h.forwards_volume());
     CHECK_FALSE(detail.empty());
     h.stop();
+}
+
+TEST_CASE("a ceiling above Plex's own 0..100 is accepted", "[herald][volume]")
+{
+    // ISSUE 312's SECOND HALF. `volume_max` was validated to 1..100 because Plex's
+    // slider is 0..100 -- but it is not in Plex's units, it is in the RECEIVER'S,
+    // and on a unit with half-step volume the protocol value is double the number
+    // on the front panel. The reference rack's maximum is 164, a displayed 82.
+    //
+    // So every ceiling above a displayed 50 was refused outright, and refusing it
+    // did not merely clamp the volume: `forwards_volume()` went false, the timeline
+    // stopped claiming the capability, and the slider disappeared from the phone
+    // altogether. Found by setting a real ceiling of 140 on the rack.
+    HeraldConfig cfg;
+    cfg.on_volume  = "eiscp://192.0.2.50/MVL{:02X}";
+    cfg.volume_max = 140;
+
+    Herald      h;
+    std::string detail;
+    CHECK(h.start(cfg, detail));
+    CHECK(h.forwards_volume());
+    h.stop();
+}
+
+TEST_CASE("the top of the slider scales to the ceiling, above 100 as below",
+          "[herald][volume]")
+{
+    // The arithmetic is `(level * volume_max) / 100`, so a ceiling of 140 has to
+    // put a slider at 100% on 140 exactly -- which on the reference rack is a
+    // displayed 70. Checked through the rendered errand rather than by repeating
+    // the multiplication, so this tests what goes on the wire.
+    std::string rendered;
+    std::string why;
+
+    REQUIRE(render_errand("eiscp://192.0.2.50/MVL{:02X}", 140, rendered, why));
+    CHECK(rendered == "eiscp://192.0.2.50/MVL8C");   // 140 == 0x8C
+
+    REQUIRE(render_errand("eiscp://192.0.2.50/MVL{:02X}", 255, rendered, why));
+    CHECK(rendered == "eiscp://192.0.2.50/MVLFF");
 }
 
 TEST_CASE("volume capability is known before any volume has been sent",
