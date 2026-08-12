@@ -485,8 +485,35 @@ std::string tuning_page(const CompanionServer::ControlState& state)
     // THE BUTTON, not a block of text to retype. Issue 295: this page is used
     // standing in a dark room holding a phone, and the measurement it produces
     // is the one M8 has been waiting on.
-    out += "<form method=\"post\" action=\"/control/tuning/save\">"
-           "<button class=\"wide\" type=\"submit\">Save the trim to the config</button></form>";
+    // SAVE AND RESET SIDE BY SIDE. Issue 302: Save makes the live value the saved
+    // one, Reset makes the saved value live again, and neither is useful without
+    // the other.
+    out += "<div class=\"row\">"
+           "<form method=\"post\" action=\"/control/tuning/save\">"
+           "<button type=\"submit\">Save</button></form>"
+           "<form method=\"post\" action=\"/control/tuning/reset\">"
+           "<button type=\"submit\">Reset</button></form>"
+           "</div>";
+
+    // WHETHER THERE IS ANYTHING TO SAVE, said only when there is. A banner that
+    // is always present stops being read; a line that appears exactly when the
+    // live value has drifted from the file is the whole of the state somebody
+    // needs to know before deciding which of the two buttons to press.
+    {
+        char saved_line[192];
+        if (state.trim_ms != state.saved_trim_ms) {
+            std::snprintf(saved_line, sizeof(saved_line),
+                          "Unsaved. The config says %.0f ms; Reset goes back to that.",
+                          state.saved_trim_ms);
+        } else {
+            std::snprintf(saved_line, sizeof(saved_line),
+                          "Saved. The config says %.0f ms, which is what is in force.",
+                          state.saved_trim_ms);
+        }
+        out += "<div class=\"sub\" style=\"margin:8px 0\">";
+        out += html_escape(saved_line);
+        out += "</div>";
+    }
 
     if (state.save_result > 0) {
         out += "<div class=\"sub\" style=\"margin:8px 0\">Written to <b>";
@@ -599,6 +626,7 @@ struct CompanionServer::Impl {
     CompanionServer::NowPlayingHandler    now_playing_handler;
     CompanionServer::TrimHandler          trim_handler;
     CompanionServer::SaveTuningHandler save_tuning_handler;
+    CompanionServer::ResetTuningHandler reset_tuning_handler;
     CompanionServer::SyncHandler          sync_handler;
     CompanionServer::AdvanceHandler       advance_handler;
     CompanionServer::ProjectMStepHandler   projectm_step_handler;
@@ -1081,6 +1109,26 @@ void CompanionServer::Impl::install_routes()
                 std::fprintf(stderr, "control: refusing a trim step of %lld ms\n",
                              static_cast<long long>(ms));
             }
+        }
+        redirect_to_tuning(res);
+    });
+
+    // ISSUE 302. Put the trim back to what is in the config.
+    //
+    // The other half of Save. A sweep that went somewhere wrong otherwise has no
+    // way back except sweeping out again by eye, which is exactly the judgement
+    // this page exists to avoid asking anyone to make twice.
+    self->server.Post("/control/tuning/reset", [self, redirect_to_tuning](
+                                                   const httplib::Request&, httplib::Response& res) {
+        self->decorate(res);
+        if (self->reset_tuning_handler) {
+            self->reset_tuning_handler();
+        }
+        std::printf("control: reset tuning to the saved value\n");
+        std::fflush(stdout);
+        {
+            const std::lock_guard<std::mutex> lock(self->control_mutex);
+            self->control.save_result = 0;   // the page is clean again
         }
         redirect_to_tuning(res);
     });
@@ -1736,6 +1784,11 @@ void CompanionServer::set_save_tuning_handler(SaveTuningHandler handler)
     impl_->save_tuning_handler = std::move(handler);
 }
 
+void CompanionServer::set_reset_tuning_handler(ResetTuningHandler handler)
+{
+    impl_->reset_tuning_handler = std::move(handler);
+}
+
 void CompanionServer::set_advance_handler(AdvanceHandler handler)
 {
     impl_->advance_handler = std::move(handler);
@@ -1764,9 +1817,10 @@ void CompanionServer::set_advance(const std::string& mode, int seconds)
 }
 
 void CompanionServer::set_control_tuning(double trim_ms, double headroom_ms, bool sync_showing,
-                                         const std::string& config_path)
+                                         const std::string& config_path, double saved_trim_ms)
 {
     const std::lock_guard<std::mutex> lock(impl_->control_mutex);
+    impl_->control.saved_trim_ms = saved_trim_ms;
     impl_->control.trim_ms      = trim_ms;
     impl_->control.headroom_ms  = headroom_ms;
     impl_->control.sync_showing = sync_showing;

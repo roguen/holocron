@@ -347,6 +347,13 @@ public:
         // measurement that stays in a terminal scrollback.
         std::string config_path;
 
+        // What is in the CONFIG FILE, as against `trim_ms` which is live.
+        //
+        // Shown beside the live value only when the two differ, which is the
+        // page's way of saying "there is something unsaved here" without a
+        // banner that has to be dismissed. Issue 302.
+        double saved_trim_ms = 0.0;
+
         // What the last Save did: 0 nothing yet, 1 written, -1 failed.
         //
         // SHOWN ON THE PAGE RATHER THAN ASSUMED. A save that silently did
@@ -471,6 +478,14 @@ public:
     // rather than claiming a save that did not happen.
     using SaveTuningHandler = std::function<bool()>;
 
+    // Put the trim back to what is in the config file.
+    //
+    // Issue 302. Save and Reset are a pair: Save makes the live value the saved
+    // one, Reset makes the saved value live again. Without the second, a sweep
+    // that went somewhere wrong has no way back except sweeping out again by
+    // eye -- which is the thing this page exists to avoid asking anyone to do.
+    using ResetTuningHandler = std::function<void()>;
+
     // "off", "track" or "timer". Validated before it reaches the handler.
     using AdvanceHandler = std::function<void(const std::string& mode)>;
 
@@ -503,6 +518,7 @@ public:
     void set_trim_handler(TrimHandler handler);
     void set_sync_handler(SyncHandler handler);
     void set_save_tuning_handler(SaveTuningHandler handler);
+    void set_reset_tuning_handler(ResetTuningHandler handler);
     void set_advance_handler(AdvanceHandler handler);
     void set_projectm_step_handler(ProjectMStepHandler handler);
     void set_projectm_shuffle_handler(ProjectMToggleHandler handler);
@@ -521,7 +537,7 @@ public:
     // Descriptive tuning state, pushed from the render loop like the vault and
     // the now-playing strings. Safe to call every frame.
     void set_control_tuning(double trim_ms, double headroom_ms, bool sync_showing,
-                            const std::string& config_path);
+                            const std::string& config_path, double saved_trim_ms);
 
     // Descriptive projectM state: whether one is drawing and which preset. Safe
     // to call every frame, and deliberately does NOT touch shuffle or lock --
