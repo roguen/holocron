@@ -481,10 +481,27 @@ std::string tuning_page(const CompanionServer::ControlState& state)
     // -- how to keep it ------------------------------------------------------
 
     out += "<h2>Keep it</h2>";
-    out += "<div class=\"sub\" style=\"margin-bottom:8px\">Nothing here is saved. Put this in "
+
+    // THE BUTTON, not a block of text to retype. Issue 295: this page is used
+    // standing in a dark room holding a phone, and the measurement it produces
+    // is the one M8 has been waiting on.
+    out += "<form method=\"post\" action=\"/control/tuning/save\">"
+           "<button class=\"wide\" type=\"submit\">Save the trim to the config</button></form>";
+
+    if (state.save_result > 0) {
+        out += "<div class=\"sub\" style=\"margin:8px 0\">Written to <b>";
+        out += html_escape(state.config_path.empty() ? "gatekeeper.toml" : state.config_path);
+        out += "</b>. It will be there at the next restart.</div>";
+    } else if (state.save_result < 0) {
+        out += "<div class=\"sub\" style=\"margin:8px 0\"><b>Could not write ";
+        out += html_escape(state.config_path.empty() ? "gatekeeper.toml" : state.config_path);
+        out += "</b>. The value below is still what is in force; paste it in by hand.</div>";
+    }
+
+    out += "<div class=\"sub\" style=\"margin-bottom:8px\">Or put this in "
            "<b>";
     out += html_escape(state.config_path.empty() ? "gatekeeper.toml" : state.config_path);
-    out += "</b> or it is gone at the next restart.</div>";
+    out += "</b> by hand.</div>";
     char lines[128];
     std::snprintf(lines, sizeof(lines), "[audio]\ntrim_ms = %.1f\n", state.trim_ms);
     out += "<pre>";
@@ -581,6 +598,7 @@ struct CompanionServer::Impl {
     CompanionServer::LyricsHandler        colophon_handler;
     CompanionServer::NowPlayingHandler    now_playing_handler;
     CompanionServer::TrimHandler          trim_handler;
+    CompanionServer::SaveTuningHandler save_tuning_handler;
     CompanionServer::SyncHandler          sync_handler;
     CompanionServer::AdvanceHandler       advance_handler;
     CompanionServer::ProjectMStepHandler   projectm_step_handler;
@@ -1063,6 +1081,29 @@ void CompanionServer::Impl::install_routes()
                 std::fprintf(stderr, "control: refusing a trim step of %lld ms\n",
                              static_cast<long long>(ms));
             }
+        }
+        redirect_to_tuning(res);
+    });
+
+    // ISSUE 295. Write the trim that is in force into the config file.
+    //
+    // The tuning page used to print the two lines to paste and say "nothing here
+    // is saved" -- which asks somebody standing in a dark room with a phone to
+    // remember a number, find a keyboard, and edit a file on a television. The
+    // measurement M8 still needs is made HERE, and it was being thrown away at
+    // every restart.
+    self->server.Post("/control/tuning/save", [self, redirect_to_tuning](
+                                                  const httplib::Request&, httplib::Response& res) {
+        self->decorate(res);
+        bool saved = false;
+        if (self->save_tuning_handler) {
+            saved = self->save_tuning_handler();
+        }
+        std::printf("control: save tuning -- %s' + NL + '", saved ? "written" : "FAILED");
+        std::fflush(stdout);
+        {
+            const std::lock_guard<std::mutex> lock(self->control_mutex);
+            self->control.save_result = saved ? 1 : -1;
         }
         redirect_to_tuning(res);
     });
@@ -1688,6 +1729,11 @@ void CompanionServer::set_trim_handler(TrimHandler handler)
 void CompanionServer::set_sync_handler(SyncHandler handler)
 {
     impl_->sync_handler = std::move(handler);
+}
+
+void CompanionServer::set_save_tuning_handler(SaveTuningHandler handler)
+{
+    impl_->save_tuning_handler = std::move(handler);
 }
 
 void CompanionServer::set_advance_handler(AdvanceHandler handler)

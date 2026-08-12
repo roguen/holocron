@@ -346,6 +346,14 @@ public:
         // point anywhere, and a measurement that is awkward to record is a
         // measurement that stays in a terminal scrollback.
         std::string config_path;
+
+        // What the last Save did: 0 nothing yet, 1 written, -1 failed.
+        //
+        // SHOWN ON THE PAGE RATHER THAN ASSUMED. A save that silently did
+        // nothing -- a read-only data directory, a config the process cannot
+        // write -- would leave somebody believing a measurement is kept when it
+        // is not, and they would only find out after the next restart lost it.
+        int save_result = 0;
     };
 
     // WHO OWNS WHAT, AND WHY IT IS SPLIT IN TWO.
@@ -450,6 +458,19 @@ public:
     using TrimHandler = std::function<void(double delta_ms)>;
     using SyncHandler = std::function<void()>;
 
+    // Write the trim that is in force into the config file.
+    //
+    // The owner, mid-cast on 2026-08-12: "Nothing here is saved... I would
+    // like whatever I'm setting in the tuning to be pushed into the gatekeeper
+    // file for me." A calibration made on the phone, in the room, against the
+    // actual projector is the ONLY way this number can be measured -- and it
+    // was being thrown away at every restart, which is why the trim on the
+    // Shield read 0 after an evening of tuning it.
+    //
+    // Returns false if the file could not be written, so the page can say so
+    // rather than claiming a save that did not happen.
+    using SaveTuningHandler = std::function<bool()>;
+
     // "off", "track" or "timer". Validated before it reaches the handler.
     using AdvanceHandler = std::function<void(const std::string& mode)>;
 
@@ -481,6 +502,7 @@ public:
     void set_now_playing_handler(NowPlayingHandler handler);
     void set_trim_handler(TrimHandler handler);
     void set_sync_handler(SyncHandler handler);
+    void set_save_tuning_handler(SaveTuningHandler handler);
     void set_advance_handler(AdvanceHandler handler);
     void set_projectm_step_handler(ProjectMStepHandler handler);
     void set_projectm_shuffle_handler(ProjectMToggleHandler handler);

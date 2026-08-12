@@ -581,3 +581,113 @@ TEST_CASE("an override is held to the same range as the global key",
     CHECK(load_gatekeeper(s.write("[render.scale_overrides]\nduel = \"half\"\n"), cfg, detail) !=
           GatekeeperError::kOk);
 }
+
+// ---------------------------------------------------------------------------
+// Writing the trim back into the config.
+//
+// The owner, mid-cast on 2026-08-12, having tuned the trim on the phone:
+// "Nothing here is saved... I would like whatever I'm setting in the tuning to
+// be pushed into the gatekeeper file for me."
+//
+// THE FILE THIS EDITS HOLDS A PLEX TOKEN, which is why the transformation is a
+// pure function over a string and why these cases exist. A rewrite that dropped
+// a line would not be noticed until the next cast failed to authenticate.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("saving the trim rewrites one line and nothing else", "[gatekeeper][trim]")
+{
+    const std::string before =
+        "# a comment\n"
+        "[audio]\n"
+        "backend = \"auto\"\n"
+        "trim_ms = 0.0\n"
+        "lead_ms = 250.0\n"
+        "\n"
+        "[plex]\n"
+        "token = \"SECRET\"\n";
+
+    const std::string after = update_trim_ms(before, -60.0);
+
+    CHECK(after.find("trim_ms = -60.0") != std::string::npos);
+    CHECK(after.find("trim_ms = 0.0") == std::string::npos);
+
+    // EVERYTHING ELSE SURVIVES. The token especially: losing it turns a Save
+    // button into a device that quietly falls off the account.
+    CHECK(after.find("token = \"SECRET\"") != std::string::npos);
+    CHECK(after.find("backend = \"auto\"") != std::string::npos);
+    CHECK(after.find("lead_ms = 250.0") != std::string::npos);
+    CHECK(after.find("# a comment") != std::string::npos);
+    CHECK(after.find("[plex]") != std::string::npos);
+}
+
+TEST_CASE("a commented trim is documentation and is left alone", "[gatekeeper][trim]")
+{
+    // gatekeeper.example.toml carries `-90` inside its explanatory prose as the
+    // record of a superseded measurement. Rewriting that would corrupt the
+    // file's own account of itself -- and it is the exact text the measured-value
+    // check in issue 265 reads.
+    const std::string before =
+        "[audio]\n"
+        "# MEASURED 2026-08-04: trim_ms = -90 at 4K 29 Hz.\n"
+        "trim_ms = -30.0\n";
+
+    const std::string after = update_trim_ms(before, -60.0);
+
+    CHECK(after.find("# MEASURED 2026-08-04: trim_ms = -90 at 4K 29 Hz.") != std::string::npos);
+    CHECK(after.find("trim_ms = -60.0") != std::string::npos);
+    CHECK(after.find("trim_ms = -30.0") == std::string::npos);
+}
+
+TEST_CASE("a trim in another table is not the one to change", "[gatekeeper][trim]")
+{
+    const std::string before =
+        "[render]\n"
+        "trim_ms = 999.0\n"
+        "[audio]\n"
+        "trim_ms = 0.0\n";
+
+    const std::string after = update_trim_ms(before, -60.0);
+
+    CHECK(after.find("trim_ms = 999.0") != std::string::npos);   // untouched
+    CHECK(after.find("trim_ms = -60.0") != std::string::npos);
+}
+
+TEST_CASE("the key is inserted when the table has no trim", "[gatekeeper][trim]")
+{
+    const std::string before = "[audio]\nbackend = \"auto\"\n\n[plex]\ntoken = \"SECRET\"\n";
+    const std::string after  = update_trim_ms(before, -60.0);
+
+    CHECK(after.find("trim_ms = -60.0") != std::string::npos);
+    CHECK(after.find("token = \"SECRET\"") != std::string::npos);
+
+    // Under [audio], not under [plex] -- a key in the wrong table is silently
+    // ignored by the loader, which is the worst possible outcome for a Save
+    // button: it reports success and changes nothing.
+    CHECK(after.find("[audio]") < after.find("trim_ms = -60.0"));
+    CHECK(after.find("trim_ms = -60.0") < after.find("[plex]"));
+}
+
+TEST_CASE("an [audio] table is created when there is none", "[gatekeeper][trim]")
+{
+    // The Shield's own config was exactly this shape: a [render] and a [plex]
+    // table and no [audio] at all, which is why the trim read 0 every launch.
+    const std::string before = "[plex]\ntoken = \"SECRET\"\n";
+    const std::string after  = update_trim_ms(before, -60.0);
+
+    CHECK(after.find("[audio]") != std::string::npos);
+    CHECK(after.find("trim_ms = -60.0") != std::string::npos);
+    CHECK(after.find("token = \"SECRET\"") != std::string::npos);
+}
+
+TEST_CASE("what is written can be read back", "[gatekeeper][trim]")
+{
+    // The round trip, which is the only thing that proves the output is TOML the
+    // loader accepts rather than merely a string that looks right.
+    Scratch     s;
+    Gatekeeper  cfg;
+    std::string detail;
+
+    const std::string written = update_trim_ms("[plex]\ntoken = \"SECRET\"\n", -60.0);
+    REQUIRE(load_gatekeeper(s.write(written), cfg, detail) == GatekeeperError::kOk);
+    CHECK(cfg.trim_ms == -60.0);
+}

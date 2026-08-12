@@ -260,11 +260,25 @@ int main(int argc, char** argv)
     // somewhere else has a vault already and does not want this one unpacked on
     // top of it. Seeding the default is what makes a FIRST run work.
     if (!holocron::data_directory().empty()) {
-        const holocron::SeedReport seed =
-            holocron::seed_vault_from_assets(holocron::resolve_data_path("crystals"));
-        if (seed.state != holocron::SeedState::kUnsupported) {
-            std::printf("holocron: %s -- %d copied, %d already there\n",
-                        holocron::to_string(seed.state), seed.copied, seed.skipped);
+        // BOTH SETS, and the second one is the fix for issue 294.
+        //
+        // `instruments/sync` is what `--calibrate` and the phone's
+        // /control/tuning page draw, and it was never packaged -- so on the
+        // Shield the beat instrument failed with "manifest not found" and the
+        // ONE measurement M8 still needs could not be made on the device it is
+        // about. Found by the owner mid-cast, 2026-08-12, trying to tune the
+        // trim.
+        //
+        // It is a separate directory from the vault rather than a crystal in it
+        // because `scan_vault` would otherwise put a calibration target on the
+        // arrow keys between two things somebody wants to look at.
+        for (const char* set : {"crystals", "instruments"}) {
+            const holocron::SeedReport seed =
+                holocron::seed_vault_from_assets(holocron::resolve_data_path(set), set);
+            if (seed.state != holocron::SeedState::kUnsupported) {
+                std::printf("holocron: %s %s -- %d copied, %d already there\n", set,
+                            holocron::to_string(seed.state), seed.copied, seed.skipped);
+            }
         }
     }
 

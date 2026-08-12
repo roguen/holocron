@@ -84,13 +84,39 @@ inline constexpr std::uint16_t kCompanionPort = 32500;
 inline constexpr const char* kProtocolCapabilities =
     "timeline,playback,navigation,playqueues";
 
+// THE TWO DESTINATIONS, TOLD APART IN THE ONE PLACE A CONTROLLER SHOWS THEM.
+//
+// D-066. There are exactly two boxes this runs on -- the theater PC and the
+// theater Shield -- and until 2026-08-12 both announced themselves as
+// `Holocron`. Two entries under one name in Plexamp's device list is not a
+// cosmetic problem. They are not the same player: the Shield renders at 1080p
+// and resamples to 48 kHz 16-bit, the PC renders at 4K and is bit-perfect, and
+// the only thing a phone in another room has to decide is which of those the
+// music is about to come out of.
+//
+// THE APP IS STILL HOLOCRON ON BOTH, and that is what `product` carries -- it
+// is the field Plex means by "what program is this", it appears on the account's
+// authorised-device list, and it is deliberately unchanged. The NAME is the
+// device, so the name is the half that differs.
+//
+// Platform-derived rather than left to the config because the Shield has no
+// keyboard and no terminal: a default that is only correct after somebody edits
+// a file over ADB is a default that is wrong on every fresh install, which is
+// the platform where being wrong costs the most. `[plex] device_name` still
+// overrides, for a theater that is not this one.
+#if defined(__ANDROID__)
+inline constexpr const char* kDefaultDeviceName = "Theater Shield";
+#else
+inline constexpr const char* kDefaultDeviceName = "Theater PC";
+#endif
+
 // Everything Holocron announces about itself.
 //
 // A default-constructed PlexDevice is announceable as-is except for
 // `machine_identifier`, which has no safe default: see make_machine_identifier().
 struct PlexDevice {
-    // What appears in Plexamp's device list.
-    std::string name = "Holocron";
+    // What appears in Plexamp's device list. Differs per platform; see above.
+    std::string name = kDefaultDeviceName;
 
     // Stable across restarts, or the device list grows a new entry every run.
     // Empty is invalid; the player generates one and asks for it to be saved.
@@ -99,8 +125,18 @@ struct PlexDevice {
     std::string product = "Holocron";
     std::string version = "0.0.0";
 
-    // "pc" is what a desktop player announces. The Shield at M8 would be "stb";
-    // the value is not free-form and Plex clients group the device list by it.
+    // "pc" is what a desktop player announces, and it is what the Shield
+    // announces too. The value is not free-form and Plex clients group the
+    // device list by it.
+    //
+    // THIS STAYED "pc" ON PURPOSE WHEN THE NAME WAS SPLIT (D-066). "stb" is
+    // very probably the right word for a Shield and it is exactly the kind of
+    // obviously-harmless deviation that cost this project a session once
+    // already -- see kProtocolCapabilities above, where dropping `navigation`
+    // was sound reasoning and made the device vanish from Plexamp with no
+    // other symptom. Match the reference first; trim afterwards with evidence.
+    // The name already answers the question the owner asked, and it answers it
+    // without touching anything a controller might be matching on.
     std::string device_class = "pc";
 
     std::string capabilities = kProtocolCapabilities;

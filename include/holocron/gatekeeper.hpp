@@ -38,6 +38,10 @@
 #include <utility>
 #include <vector>
 
+// For kDefaultDeviceName. The default announced name differs per platform
+// (D-066) and defining it twice is how the two would drift apart.
+#include "holocron/plex_device.hpp"
+
 namespace holocron {
 
 enum class GatekeeperError : std::uint8_t {
@@ -275,7 +279,13 @@ struct Gatekeeper {
     bool plex_discovery = true;
 
     // What appears in Plexamp's device list.
-    std::string plex_device_name = "Holocron";
+    //
+    // The default is PLATFORM-DERIVED -- "Theater PC" on the desktop build and
+    // "Theater Shield" on the Android one -- because the two destinations are
+    // two different players and a controller shows only this string. See
+    // kDefaultDeviceName in plex_device.hpp for why the app identity (`product`)
+    // deliberately did NOT move with it. D-066.
+    std::string plex_device_name = kDefaultDeviceName;
 
     // Must be stable across restarts, or the device list gains a new entry every
     // run. Empty means "not chosen yet": the player generates one and prints the
@@ -380,5 +390,23 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out,
 // arrow keys and the control page both show, so the name in the config is the
 // name on the screen.
 double render_scale_for(const Gatekeeper& cfg, const std::string& entry_name);
+
+// Return `contents` with `[audio] trim_ms` set to `value`, everything else byte
+// for byte unchanged.
+//
+// THE FILE THIS EDITS HOLDS A PLEX TOKEN. That is the whole reason this is a
+// pure function over a string rather than something that opens a file: the risky
+// part is the transformation, and a transformation that can be tested cannot
+// quietly drop a line nobody reads until they next try to cast.
+//
+// It rewrites ONE line -- the live `trim_ms` inside `[audio]` -- or inserts one
+// if the key is absent, or appends an `[audio]` table if there is none. Comments,
+// ordering, spacing and every other key survive, because a config that comes back
+// from a Save button reformatted is a config nobody presses Save on twice.
+//
+// A `trim_ms` inside some other table is not touched, and neither is a commented
+// one: `# trim_ms = -90` in the explanatory prose above the key is documentation,
+// and rewriting it would corrupt the file's own account of itself.
+std::string update_trim_ms(const std::string& contents, double value);
 
 }  // namespace holocron
