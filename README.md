@@ -578,7 +578,7 @@ Acquired through vcpkg manifest mode ([`vcpkg.json`](vcpkg.json)), pinned by a
 |---|---|---|
 | C++20 toolchain | everything | MSVC Build Tools on the target; GCC/clang on Linux CI |
 | CMake + Ninja | build | vcpkg manifest mode (D-023) |
-| FFmpeg | decode | **LGPL-2.1**, `default-features` off with an explicit feature list so `gpl` and `nonfree` are excluded |
+| FFmpeg | decode | **LGPL-2.1**, `default-features` off with an explicit feature list so `gpl` and `nonfree` are excluded. The list is `avcodec`, `avformat`, `swresample`, plus **`openssl` on non-Windows only** — Windows gets TLS from schannel, and every other platform got none at all until that platform expression was added (#239). Without it a cast on the Shield would have played silence. |
 | SDL3 | window, event loop, portable sink | Zlib AND MIT AND Apache-2.0 |
 | WASAPI | audio output | Win32 SDK, nothing to acquire. Behind `AudioSink`. |
 | glad | GL 4.5 function loader | MIT, pinned to `gl-api-45` so a 4.6-only call is a compile error |
@@ -593,7 +593,7 @@ Acquired through vcpkg manifest mode ([`vcpkg.json`](vcpkg.json)), pinned by a
 
 | Dependency | For | Notes |
 |---|---|---|
-| spdlog | logging | MIT. Diagnostics currently go through plain `stderr`. |
+| spdlog | logging | MIT. **Still not acquired at `v1.0.0`, and increasingly unlikely to be.** Diagnostics go to `stdout` and `stderr`, and the one thing a logging library was wanted for — output that survives the process — is what `run_log.hpp` does in about 150 lines, with the rotation that matters (the run that failed is the *previous* run by the time anyone looks). |
 
 Plex's play-queue and timeline responses are consumed as XML and parsed by hand
 ([`src/plex/plex_playback.cpp`](src/plex/plex_playback.cpp)), so no JSON library
