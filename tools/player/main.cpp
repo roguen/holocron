@@ -722,6 +722,19 @@ std::string first_line(const std::string& text, std::size_t limit = 90)
 bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
                  const ProjectMContext& pm, std::string* out_error = nullptr)
 {
+    // HOW LONG THE SWITCH ITSELF TAKES, which is not the crossfade.
+    //
+    // The crossfade is timed already and reads 400-600 ms. What was never timed
+    // is THIS -- reading the files and compiling and linking the shaders -- and
+    // it happens on the render thread, so every millisecond of it is a frame not
+    // drawn. On the reference rack that is invisible; the owner reports switching
+    // as sluggish on the Shield and `duel` as the worst of them, and `duel` is by
+    // a wide margin the largest shader in the vault.
+    //
+    // "Sluggish" cannot be acted on and "built in 412 ms" can, which is the whole
+    // reason this line exists.
+    const auto build_started = std::chrono::steady_clock::now();
+
     LiveStack next;
     next.archive = archive;
     next.facets.reserve(archive.layers.size());
@@ -805,6 +818,14 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
         std::printf("holocron: \"%s\" is %zu layers\n", out.archive.name.c_str(),
                     out.archive.layers.size());
     }
+
+    // Printed always, not only when it is slow. A threshold would need a number
+    // nobody has yet, and the point of this line is to be the thing that
+    // produces one.
+    std::printf("holocron: \"%s\" built in %.0f ms\n", out.archive.name.c_str(),
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                          build_started)
+                    .count());
     std::fflush(stdout);
     return true;
 }
@@ -4056,6 +4077,18 @@ int main(int argc, char** argv)
     // Progress reporting to the media server, and the instrumentation for it.
     auto           last_server_report      = std::chrono::steady_clock::now();
     auto           last_poll_report        = std::chrono::steady_clock::now();
+
+    // Issue 283's instrument. Off unless `[render] frame_report_seconds` says
+    // otherwise, because a line every few seconds is noise on a machine nobody
+    // is measuring -- and on the Shield the log is the only output there is.
+    const auto frame_report_interval =
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(cfg.frame_report_seconds));
+    auto last_frame_at   = std::chrono::steady_clock::now();
+    auto report_started  = last_frame_at;
+    auto report_total    = std::chrono::steady_clock::duration::zero();
+    auto report_worst    = std::chrono::steady_clock::duration::zero();
+    std::uint64_t report_frames = 0;
     TransportState last_reported_state     = TransportState::kStopped;
     std::uint64_t  last_poll_count         = 0;
     bool           reported_server_failure = false;
@@ -6019,6 +6052,51 @@ int main(int argc, char** argv)
         track_context.track_changed_this_frame = false;
 
         ++rendered;
+
+        // WHAT A FRAME COSTS, ON THE MACHINE IT IS COSTING IT ON.
+        //
+        // `--frames N` and the slope between two runs is how every render cost in
+        // this project has been measured, and it is ARGV-ONLY -- so on Android,
+        // where an Activity launch passes no argv, the project's own instrument
+        // cannot be run at all. That was found while trying to answer "what does
+        // a crystal cost on Tegra" and having no way to ask (issue 283).
+        //
+        // MEASURED AFTER swap(), so the number includes waiting for vsync. That
+        // is deliberate and it is the reason to read the MAXIMUM as well as the
+        // mean: with vsync on, a healthy frame reads as the refresh interval no
+        // matter how little work it did, and only the frames that MISSED show up
+        // as longer. A mean pinned to 16.7 ms with a maximum of 16.7 ms is a
+        // budget being met; the same mean with a maximum of 33 ms is not.
+        if (frame_report_interval > std::chrono::seconds::zero()) {
+            const auto now       = std::chrono::steady_clock::now();
+            const auto this_frame = now - last_frame_at;
+            last_frame_at        = now;
+
+            // The first frame after startup or a switch measures the thing that
+            // came before it, not a frame. Dropped rather than averaged in.
+            if (report_frames > 0) {
+                report_total += this_frame;
+                report_worst = std::max(report_worst, this_frame);
+            }
+            ++report_frames;
+
+            if (now - report_started >= frame_report_interval && report_frames > 1) {
+                const double n    = static_cast<double>(report_frames - 1);
+                const double mean = std::chrono::duration<double, std::milli>(report_total).count() / n;
+                const double worst = std::chrono::duration<double, std::milli>(report_worst).count();
+                std::printf("holocron: frame report -- \"%s\" %zu layer(s) of %dx%d "
+                            "(window %dx%d, scale %.2f): %.0f frames, mean %.2f ms, "
+                            "worst %.2f ms\n",
+                            live_stack.archive.name.c_str(), live_stack.facets.size(),
+                            compositor.width(), compositor.height(), window.width(),
+                            window.height(), cfg.render_scale, n, mean, worst);
+                std::fflush(stdout);
+                report_started = now;
+                report_total   = std::chrono::steady_clock::duration::zero();
+                report_worst   = std::chrono::steady_clock::duration::zero();
+                report_frames  = 1;
+            }
+        }
         if (opt.frames > 0 && rendered >= opt.frames) {
             break;
         }

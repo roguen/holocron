@@ -442,3 +442,66 @@ TEST_CASE("the four argv-only switches default to the flagless behaviour",
     CHECK(g.compositor);
     CHECK_FALSE(g.debug_facet);
 }
+
+// ---------------------------------------------------------------------------
+// ISSUE 283. Making a render cost measurable on the machine paying it.
+//
+// Every render figure in this project came from `--frames N` and the slope
+// between two runs. That switch is argv-only, and an Android Activity launch
+// passes no argv -- so on the one platform whose performance was actually in
+// question, the project's own instrument could not be run at all. It was found
+// by trying to answer "what does a crystal cost on Tegra" and having no way to
+// ask.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("the frame report is off unless asked for", "[gatekeeper][render]")
+{
+    // A line every few seconds is noise on a machine nobody is measuring, and on
+    // the Shield the log is the only output there is.
+    Gatekeeper g;
+    CHECK(g.frame_report_seconds == 0.0);
+}
+
+TEST_CASE("the frame report interval is read and validated", "[gatekeeper][render]")
+{
+    Scratch     s;
+    Gatekeeper  cfg;
+    std::string detail;
+
+    REQUIRE(load_gatekeeper(s.write("[render]\nframe_report_seconds = 5.0\n"), cfg, detail) ==
+            GatekeeperError::kOk);
+    CHECK(cfg.frame_report_seconds == 5.0);
+
+    // Negative is a typo, not a request, and a live key holding a value the
+    // player cannot act on is fatal by this file's own rule.
+    Gatekeeper bad;
+    CHECK(load_gatekeeper(s.write("[render]\nframe_report_seconds = -1.0\n"), bad, detail) !=
+          GatekeeperError::kOk);
+}
+
+TEST_CASE("render scale reaches 2.0, because measuring 4K needs it", "[gatekeeper][render]")
+{
+    Scratch     s;
+    Gatekeeper  cfg;
+    std::string detail;
+
+    // THE CEILING WAS 1.0 UNTIL ISSUE 283. The Shield's ROM caps its framebuffer
+    // at 1920x1080, so scale 2.0 is the only way to shade 8.3M pixels on that
+    // device and find out whether 4K would hold a frame budget -- before any work
+    // is done to reach it.
+    //
+    // It is an INSTRUMENT and not a picture setting: the resolve is bilinear,
+    // which is the wrong filter for supersampling, so 2.0 looks worse than 1.0
+    // and costs four times as much.
+    REQUIRE(load_gatekeeper(s.write("[render]\nscale = 2.0\n"), cfg, detail) ==
+            GatekeeperError::kOk);
+    CHECK(cfg.render_scale == 2.0);
+
+    Gatekeeper below;
+    CHECK(load_gatekeeper(s.write("[render]\nscale = 0.1\n"), below, detail) !=
+          GatekeeperError::kOk);
+
+    Gatekeeper above;
+    CHECK(load_gatekeeper(s.write("[render]\nscale = 2.5\n"), above, detail) !=
+          GatekeeperError::kOk);
+}
