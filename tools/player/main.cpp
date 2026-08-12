@@ -57,6 +57,8 @@
 #include <holocron/overlay_facet.hpp>
 #include <holocron/palette.hpp>
 #include <holocron/platform_paths.hpp>
+#include <holocron/run_log.hpp>
+#include <holocron/shader_cache.hpp>
 #include <holocron/text_render.hpp>
 #include <holocron/track_context.hpp>
 #include <holocron/gdm_responder.hpp>
@@ -114,6 +116,7 @@
 #include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -539,8 +542,22 @@ void describe(const char* verb, const Crystal& crystal, const CrystalFacet& face
 // tuning sub-page -- and they must name the same file, which is why this is a
 // constant rather than a literal in each of them.
 //
-// Relative to the working directory, exactly as `--calibrate` has always been.
-constexpr const char* kSyncStem = "instruments/sync";
+// RESOLVED AGAINST THE DATA DIRECTORY, not the working directory.
+//
+// It was `"instruments/sync"` bare until 2026-08-12, which is right on a desktop
+// and unreachable on Android: an Activity launches with cwd `/`, so the beat
+// instrument failed there with "manifest not found" -- and it is the ONLY
+// instrument for the one measurement M8 still needs (issue 278). Found by the
+// owner mid-cast, trying to tune the trim on the projector.
+//
+// Two callers load it -- `--calibrate` and the control page's tuning sub-page --
+// and they must name the same file, which is why this is a function rather than
+// a literal in each of them. Issue 294.
+const std::string& sync_stem()
+{
+    static const std::string stem = resolve_data_path("instruments/sync");
+    return stem;
+}
 
 // `current` names nothing in the vault.
 //
@@ -720,8 +737,22 @@ std::string first_line(const std::string& text, std::size_t limit = 90)
 // compile" and "compiled and changed nothing visible" were indistinguishable.
 // The caller puts this on screen; see the toast in the render loop.
 bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
-                 const ProjectMContext& pm, std::string* out_error = nullptr)
+                 const ProjectMContext& pm, const ShaderCache* cache = nullptr,
+                 std::string* out_error = nullptr)
 {
+    // HOW LONG THE SWITCH ITSELF TAKES, which is not the crossfade.
+    //
+    // The crossfade is timed already and reads 400-600 ms. What was never timed
+    // is THIS -- reading the files and compiling and linking the shaders -- and
+    // it happens on the render thread, so every millisecond of it is a frame not
+    // drawn. On the reference rack that is invisible; the owner reports switching
+    // as sluggish on the Shield and `duel` as the worst of them, and `duel` is by
+    // a wide margin the largest shader in the vault.
+    //
+    // "Sluggish" cannot be acted on and "built in 412 ms" can, which is the whole
+    // reason this line exists.
+    const auto build_started = std::chrono::steady_clock::now();
+
     LiveStack next;
     next.archive = archive;
     next.facets.reserve(archive.layers.size());
@@ -779,7 +810,7 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
 
         auto        facet = std::make_unique<CrystalFacet>();
         std::string log;
-        if (!facet->init(crystal, log)) {
+        if (!facet->init(crystal, log, cache)) {
             std::fprintf(stderr, "holocron: %s failed -- `%s` did not build\n%s\n"
                                  "holocron: still drawing what was already up\n",
                          verb, crystal.name.c_str(), log.c_str());
@@ -805,6 +836,14 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
         std::printf("holocron: \"%s\" is %zu layers\n", out.archive.name.c_str(),
                     out.archive.layers.size());
     }
+
+    // Printed always, not only when it is slow. A threshold would need a number
+    // nobody has yet, and the point of this line is to be the thing that
+    // produces one.
+    std::printf("holocron: \"%s\" built in %.0f ms\n", out.archive.name.c_str(),
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                          build_started)
+                    .count());
     std::fflush(stdout);
     return true;
 }
@@ -2264,7 +2303,7 @@ bool start_discovery(PlexDevice& device, GdmResponder& gdm, CompanionServer& com
 
     // start() reports a port it had to move away from this way, without failing.
     if (!detail.empty()) {
-        std::fprintf(stderr, "holocron: the Companion HTTP port had to move\n  %s\n",
+        say("holocron: the Companion HTTP port had to move\n  %s\n",
                      detail.c_str());
     }
 
@@ -2297,7 +2336,7 @@ bool start_discovery(PlexDevice& device, GdmResponder& gdm, CompanionServer& com
 
     std::printf("holocron: announcing as \"%s\" (%s)\n", device.name.c_str(),
                 device.machine_identifier.c_str());
-    std::printf("holocron: GDM on UDP %u, Companion on TCP %u\n",
+    say("holocron: GDM on UDP %u, Companion on TCP %u\n",
                 static_cast<unsigned>(kGdmClientUpdatePort), static_cast<unsigned>(device.port));
     // Printed on its own line and in full, because these two are what get
     // varied while working out why a client does or does not offer the device.
@@ -2348,7 +2387,7 @@ void register_with_account(const Gatekeeper& cfg, const PlexDevice& device)
                      to_string(err), detail.c_str());
         return;
     }
-    std::printf("holocron: registered with your Plex account at %s\n", uri.c_str());
+    say("holocron: registered with your Plex account at %s\n", uri.c_str());
 }
 
 // --link: sign this Holocron in to a Plex account.
@@ -2608,7 +2647,7 @@ int main(int argc, char** argv)
         if (gerr == GatekeeperError::kNotFound) {
             std::printf("holocron: %s\n", cfg_detail.c_str());
         } else {
-            std::printf("holocron: config %s\n", config_path.c_str());
+            say("holocron: config %s\n", config_path.c_str());
 
             if (!opt.given.trim_ms) {
                 opt.trim_ms = cfg.trim_ms;
@@ -2657,7 +2696,7 @@ int main(int argc, char** argv)
     // --calibrate is --crystal instruments/sync with the arrow keys live. Set
     // here rather than in parse() so an explicit --crystal still wins.
     if (opt.calibrate && opt.crystal == nullptr) {
-        opt.crystal = kSyncStem;
+        opt.crystal = sync_stem().c_str();
         opt.vault   = nullptr;
     }
 
@@ -2751,8 +2790,63 @@ int main(int argc, char** argv)
     companion.set_colophon_handler([&cast](bool visible) { cast.request_colophon(visible); });
     companion.set_now_playing_handler(
         [&cast](bool visible) { cast.request_now_playing(visible); });
+    // What the Save button writes, and where. Issue 295.
+    //
+    // An ATOMIC rather than the live `trim_ms`, because the save runs on an HTTP
+    // worker and the trim is moved by the render loop. The render loop publishes
+    // here after every change; a save is then a read of one atomic rather than a
+    // race against a double being written elsewhere.
+    std::atomic<double> saved_trim_ms{opt.trim_ms};
+    const std::string   config_for_save = resolve_data_path(opt.config);
+
     companion.set_trim_handler([&cast](double delta_ms) { cast.request_trim(delta_ms); });
     companion.set_sync_handler([&cast] { cast.request_sync(); });
+
+    // ISSUE 295. The Save button on /control/tuning.
+    //
+    // RUNS ON AN HTTP WORKER, and it reads `trim_ms` -- which the render loop
+    // moves with the arrow keys and the phone's own buttons. `saved_trim_ms` is
+    // an atomic the render loop publishes after every change, so this thread
+    // never reads the live double.
+    //
+    // The write itself is a read-modify-write of the config file through
+    // update_trim_ms(), which is a tested pure function precisely because THIS
+    // FILE HOLDS THE PLEX TOKEN.
+    companion.set_save_tuning_handler([&saved_trim_ms, config_for_save]() -> bool {
+        std::ifstream in(config_for_save, std::ios::binary);
+        std::string   before;
+        if (in.is_open()) {
+            std::ostringstream buf;
+            buf << in.rdbuf();
+            before = buf.str();
+            in.close();
+        }
+        // An absent config is not a failure: a first run with no file at all
+        // should still be able to keep a measurement.
+        const std::string after =
+            update_trim_ms(before, saved_trim_ms.load(std::memory_order_relaxed));
+
+        // VIA A TEMPORARY AND A RENAME. A half-written gatekeeper.toml is a
+        // player that cannot authenticate and cannot say why.
+        const std::string temp = config_for_save + ".new";
+        {
+            std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+            if (!out.is_open()) {
+                return false;
+            }
+            out << after;
+            if (!out) {
+                return false;
+            }
+        }
+        std::error_code ec;
+        std::filesystem::rename(temp, config_for_save, ec);
+        if (ec) {
+            std::filesystem::remove(temp, ec);
+            return false;
+        }
+        return true;
+    });
     companion.set_advance_handler([&cast](const std::string& mode) {
         cast.request_advance(mode);
     });
@@ -2804,7 +2898,7 @@ int main(int argc, char** argv)
                          detail.c_str());
         } else {
             if (!detail.empty()) {
-                std::fprintf(stderr, "holocron: the Companion HTTP port had to move\n  %s\n",
+                say("holocron: the Companion HTTP port had to move\n  %s\n",
                              detail.c_str());
             }
             device.port = companion.bound_port();
@@ -2819,7 +2913,7 @@ int main(int argc, char** argv)
         // the routing table will not say -- still correct, just only useful from
         // this machine.
         const std::string host = local_address_towards("192.168.1.1");
-        std::printf("holocron: control page at http://%s:%u/control\n",
+        say("holocron: control page at http://%s:%u/control\n",
                     host.empty() ? "127.0.0.1" : host.c_str(),
                     static_cast<unsigned>(companion.bound_port()));
         std::fflush(stdout);
@@ -2911,9 +3005,37 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::printf("holocron: GL %d.%d core on %s\n", window.gl_major(), window.gl_minor(),
+    say("holocron: GL %d.%d core on %s\n", window.gl_major(), window.gl_minor(),
                 window.gl_renderer());
     std::printf("holocron: %s\n", window.gl_version());
+
+    // ISSUE 288. Linked programs kept on disk, because `duel` takes 23,859 ms to
+    // compile on Tegra and that happens on this thread.
+    //
+    // OPENED HERE, after the context exists and before anything is built: the
+    // driver's vendor, renderer and version strings are part of every key, so a
+    // cache opened earlier would be keyed on empty strings and would hand a
+    // Tegra binary to whatever ran next.
+    //
+    // BESIDE THE CONFIG, not in a system cache directory. On Android the data
+    // directory is the only writable place the app reliably owns, and on Windows
+    // keeping it next to `gatekeeper.toml` means "delete the folder" is advice
+    // that works on both. Nothing in it is precious -- every file is
+    // reconstructible by compiling.
+    ShaderCache shader_cache;
+    shader_cache.open(resolve_data_path("shader-cache"));
+    if (shader_cache.available()) {
+        std::printf("holocron: shader cache at %s\n",
+                    resolve_data_path("shader-cache").c_str());
+    } else {
+        // Said out loud rather than degrading quietly. The player is correct
+        // either way and only slower without it, but "slower" here is measured in
+        // whole seconds per crystal switch and somebody should be able to find
+        // out why.
+        std::printf("holocron: no shader cache -- %s. Crystals will compile every "
+                    "time they are switched to\n",
+                    shader_cache.unavailable_reason().c_str());
+    }
     // The device does not exist until something is playing, because its format
     // follows the SOURCE. Saying "audio (none)" here reads as "no audio device
     // could be opened", which is a different and much worse thing -- and it was
@@ -3159,7 +3281,7 @@ int main(int argc, char** argv)
 
         Archive archive;
         if (!archive_for(vault[current], archive) ||
-            !build_stack(archive, live_stack, "opened", projectm_ctx)) {
+            !build_stack(archive, live_stack, "opened", projectm_ctx, &shader_cache)) {
             // Unlike a reload, there is nothing already on screen to fall back
             // to, so this one is fatal. The builder has already printed why.
             window.close();
@@ -4056,6 +4178,18 @@ int main(int argc, char** argv)
     // Progress reporting to the media server, and the instrumentation for it.
     auto           last_server_report      = std::chrono::steady_clock::now();
     auto           last_poll_report        = std::chrono::steady_clock::now();
+
+    // Issue 283's instrument. Off unless `[render] frame_report_seconds` says
+    // otherwise, because a line every few seconds is noise on a machine nobody
+    // is measuring -- and on the Shield the log is the only output there is.
+    const auto frame_report_interval =
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(cfg.frame_report_seconds));
+    auto last_frame_at   = std::chrono::steady_clock::now();
+    auto report_started  = last_frame_at;
+    auto report_total    = std::chrono::steady_clock::duration::zero();
+    auto report_worst    = std::chrono::steady_clock::duration::zero();
+    std::uint64_t report_frames = 0;
     TransportState last_reported_state     = TransportState::kStopped;
     std::uint64_t  last_poll_count         = 0;
     bool           reported_server_failure = false;
@@ -4816,6 +4950,9 @@ int main(int argc, char** argv)
             companion.set_control_vault(names, vault_generation);
             companion.set_control_info(track_context.title, track_context.artist,
                                        track_context.has_art);
+            // Published for the Save button, which runs on an HTTP worker and
+            // must not read the live double this loop is writing. Issue 295.
+            saved_trim_ms.store(trim_ms, std::memory_order_relaxed);
             companion.set_control_tuning(trim_ms, headroom_ms, showing_sync, opt.config);
 
             // WHETHER THE SECTION APPEARS AT ALL follows the LIVE stack rather
@@ -5087,8 +5224,8 @@ int main(int argc, char** argv)
             if (cast.take_sync()) {
                 LiveStack   next;
                 std::string why;
-                if (build_stack(archive_of_crystal(kSyncStem, "sync"), next,
-                                "beat instrument", projectm_ctx, &why)) {
+                if (build_stack(archive_of_crystal(sync_stem(), "sync"), next,
+                                "beat instrument", projectm_ctx, &shader_cache, &why)) {
                     showing_sync = true;
                     begin_stack(std::move(next));
                     if (watch) {
@@ -5103,7 +5240,7 @@ int main(int argc, char** argv)
                     std::fprintf(stderr,
                                  "holocron: %s is loaded relative to the working directory; "
                                  "run holocron from the directory that has instruments/\n",
-                                 kSyncStem);
+                                 sync_stem().c_str());
                     // The request came from the tuning page, so the person who
                     // made it is holding a phone and looking at the picture.
                     notify(why.empty() ? std::string("no beat instrument") : why, /*bad=*/true);
@@ -5226,7 +5363,7 @@ int main(int argc, char** argv)
                 LiveStack   next;
                 std::string why;
                 if (archive_for(vault[wanted], archive, &why) &&
-                    build_stack(archive, next, "switched to", projectm_ctx, &why)) {
+                    build_stack(archive, next, "switched to", projectm_ctx, &shader_cache, &why)) {
                     current      = wanted;
                     current_stem = vault[wanted].stem;
                     current_kind = vault[wanted].kind;
@@ -5324,10 +5461,10 @@ int main(int argc, char** argv)
                     !anchor.stem.empty() || anchor.kind == VaultKind::kProjectM;
 
                 const bool got = showing_sync
-                                     ? (archive = archive_of_crystal(kSyncStem, "sync"), true)
+                                     ? (archive = archive_of_crystal(sync_stem(), "sync"), true)
                                      : have_anchor && archive_for(anchor, archive, &why);
 
-                if (got && build_stack(archive, next, "reloaded", projectm_ctx, &why)) {
+                if (got && build_stack(archive, next, "reloaded", projectm_ctx, &shader_cache, &why)) {
                     // u_time CARRIES ACROSS, layer for layer, so slow motion does
                     // not snap back to zero on every save -- the whole reason the
                     // clock is settable. Only where the stack still has a layer in
@@ -5459,8 +5596,19 @@ int main(int argc, char** argv)
         //
         // AT LEAST ONE PIXEL EACH WAY. A window dragged to nothing must not ask
         // for a zero-sized texture, which is a GL error rather than a small one.
-        const int layer_w = std::max(1, static_cast<int>(window.width() * cfg.render_scale));
-        const int layer_h = std::max(1, static_cast<int>(window.height() * cfg.render_scale));
+        // PER-ENTRY, FALLING BACK TO THE GLOBAL KEY. Issue 288: `duel` costs
+        // 121 ms a frame on Tegra and `pulse` costs 5.56, so one number for the
+        // whole vault either softens what does not need it or leaves what does
+        // unwatchable.
+        //
+        // Taken from the stack that is being drawn INTO the layers. During a
+        // crossfade the outgoing crystal draws at the incoming one's size for
+        // those 0.4 seconds -- deliberate, because the alternative is two layer
+        // sets at two sizes, and reallocating 16 MB of RGBA16F on the exact frame
+        // a transition begins is the worst possible moment for it.
+        const double active_scale = render_scale_for(cfg, live_stack.archive.name);
+        const int layer_w = std::max(1, static_cast<int>(window.width() * active_scale));
+        const int layer_h = std::max(1, static_cast<int>(window.height() * active_scale));
 
         const bool into_layer = layered &&
                                 compositor.resize(layers_wanted, layer_w, layer_h) &&
@@ -5486,7 +5634,7 @@ int main(int argc, char** argv)
                 std::printf("holocron: compositing %zu layer%s of %dx%d RGBA16F, upscaled to "
                             "%dx%d (scale %.2f)\n",
                             layers_wanted, layers_wanted == 1 ? "" : "s", draw_w, draw_h,
-                            window.width(), window.height(), cfg.render_scale);
+                            window.width(), window.height(), active_scale);
             }
             std::fflush(stdout);
         } else if (!into_layer && !announced_direct) {
@@ -6019,6 +6167,51 @@ int main(int argc, char** argv)
         track_context.track_changed_this_frame = false;
 
         ++rendered;
+
+        // WHAT A FRAME COSTS, ON THE MACHINE IT IS COSTING IT ON.
+        //
+        // `--frames N` and the slope between two runs is how every render cost in
+        // this project has been measured, and it is ARGV-ONLY -- so on Android,
+        // where an Activity launch passes no argv, the project's own instrument
+        // cannot be run at all. That was found while trying to answer "what does
+        // a crystal cost on Tegra" and having no way to ask (issue 283).
+        //
+        // MEASURED AFTER swap(), so the number includes waiting for vsync. That
+        // is deliberate and it is the reason to read the MAXIMUM as well as the
+        // mean: with vsync on, a healthy frame reads as the refresh interval no
+        // matter how little work it did, and only the frames that MISSED show up
+        // as longer. A mean pinned to 16.7 ms with a maximum of 16.7 ms is a
+        // budget being met; the same mean with a maximum of 33 ms is not.
+        if (frame_report_interval > std::chrono::seconds::zero()) {
+            const auto now       = std::chrono::steady_clock::now();
+            const auto this_frame = now - last_frame_at;
+            last_frame_at        = now;
+
+            // The first frame after startup or a switch measures the thing that
+            // came before it, not a frame. Dropped rather than averaged in.
+            if (report_frames > 0) {
+                report_total += this_frame;
+                report_worst = std::max(report_worst, this_frame);
+            }
+            ++report_frames;
+
+            if (now - report_started >= frame_report_interval && report_frames > 1) {
+                const double n    = static_cast<double>(report_frames - 1);
+                const double mean = std::chrono::duration<double, std::milli>(report_total).count() / n;
+                const double worst = std::chrono::duration<double, std::milli>(report_worst).count();
+                std::printf("holocron: frame report -- \"%s\" %zu layer(s) of %dx%d "
+                            "(window %dx%d, scale %.2f): %.0f frames, mean %.2f ms, "
+                            "worst %.2f ms\n",
+                            live_stack.archive.name.c_str(), live_stack.facets.size(),
+                            compositor.width(), compositor.height(), window.width(),
+                            window.height(), render_scale_for(cfg, live_stack.archive.name), n, mean, worst);
+                std::fflush(stdout);
+                report_started = now;
+                report_total   = std::chrono::steady_clock::duration::zero();
+                report_worst   = std::chrono::steady_clock::duration::zero();
+                report_frames  = 1;
+            }
+        }
         if (opt.frames > 0 && rendered >= opt.frames) {
             break;
         }
@@ -6067,6 +6260,15 @@ int main(int argc, char** argv)
     std::printf("holocron: %d frames drawn, %llu analysis frames published\n",
                 rendered,
                 static_cast<unsigned long long>(session.frames_published()));
+    if (shader_cache.available()) {
+        // The only way anyone can tell the cache did anything. A second run
+        // reporting 0 restored is a cache being written and never read, which
+        // from outside looks identical to one that is working.
+        std::printf("holocron: shader cache -- %llu restored, %llu compiled, %llu written\n",
+                    static_cast<unsigned long long>(shader_cache.hits()),
+                    static_cast<unsigned long long>(shader_cache.misses()),
+                    static_cast<unsigned long long>(shader_cache.writes()));
+    }
     if (lapped_reads > 0) {
         // Only when it happened, and loudly when it did. The history holds about
         // 1.37 seconds at 93.75 Hz, so a non-zero count here means this thread
@@ -6085,6 +6287,12 @@ int main(int argc, char** argv)
         // COMMANDS, not errands -- a `wait://` is not counted, so that this
         // number keeps meaning "reached the amplifier". The arming line above
         // breaks its total down the same way so the two agree.
+        //
+        // KEPT, BUT NO LONGER THE ONLY REPORT. This runs at exit, and the
+        // Android app never exits -- so on the platform where the herald is
+        // hardest to observe, this line has never once been printed. Issue 285:
+        // each errand now says so as it happens, and this stays because it is
+        // still the right summary on a machine that can be quit.
         std::printf("holocron: herald sent %llu command(s), %llu failed\n",
                     static_cast<unsigned long long>(ran),
                     static_cast<unsigned long long>(lost));

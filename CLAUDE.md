@@ -29,6 +29,18 @@ read "possible, not committed" since the Roadmap was written. Windows remains th
 build and test target (D-022) and the Shield is now a destination rather than a
 maybe.
 
+**THE SHIELD DOES NOT REPLACE THE PC, AND THE PARAGRAPH ABOVE READS AS THOUGH IT
+MIGHT.** D-066, decided 2026-08-12 after the owner asked the question directly.
+The two boxes are **two tiers**, permanently, and the gap is measured rather than
+suspected: **20× the memory bandwidth** (`drift` costs 14.59 ms on the Shield
+against 0.73 on the rack), a **ROM that caps the framebuffer at 1080p** and cannot
+be lifted, and an audio policy where **every mixer output is 48 kHz 16-bit** so
+bit-perfection is unavailable at any effort. The PC is the reference — 4K, every
+crystal, bit-perfect. The Shield is the **convenience tier** — 1080p, the cheap
+crystals, 48/16, at ~10 W with the rack asleep. That is worth having and it is not
+the same thing. **Do not plan work that assumes convergence**; read D-066 first.
+Rule 5 is what follows from it.
+
 Read [`README.md`](README.md) for what it is and
 [`docs/audio-frame.md`](docs/audio-frame.md) for the contract everything depends on.
 This file is the operating context: the rules, the state, and the conventions.
@@ -521,7 +533,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.9.1`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.9.2`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
@@ -562,7 +574,7 @@ been checked against the target's own compiler rather than only g++/clang++ in C
 
 ---
 
-## The four standing rules
+## The five standing rules
 
 These came from the project owner and are **not derivable from the code**. They are
 recorded here because agent memory is machine-local and does not survive a clone.
@@ -653,6 +665,37 @@ done. Decided 2026-08-08 by the owner.
 
 `1.0.0` is reserved for the first build that plays music and renders end to end,
 not for finishing any particular milestone.
+
+### 5. There are two destinations and both are first-class
+
+**The theater PC and the theater Shield.** Added 2026-08-12 on the owner's
+instruction, alongside D-066, which is the measurement that makes it necessary.
+
+The Shield is **not** the PC's successor and will never catch it: 20× the memory
+bandwidth, a ROM that caps the framebuffer at 1080p, and an audio policy that
+resamples everything to 48 kHz 16-bit. It is a **second tier with its own
+envelope**, permanently. Read D-066 before planning work that assumes otherwise.
+
+What that means day to day:
+
+- **Every change is considered against both.** A change that only makes sense on
+  one destination is fine — say which, and say why, in the commit. A change that
+  was only *thought about* on one is the failure this rule exists to stop.
+- **"It works" means it works on the box it is for.** A crystal at 60 fps on the
+  rack is not verified for the Shield until it has a frame time from the Shield.
+  `[render] frame_report_seconds` is how, and `GL_EXT_disjoint_timer_query` is
+  present on the device (D-065).
+- **Every version and milestone release publishes for both and deploys to both.**
+  A Windows build and an APK, attached to the GitHub release for the tag, and
+  actually installed on the rack and on the Shield before the release is called
+  done. Not "the PC now and the Shield when somebody notices" — which is how two
+  crystals that run at 7 fps reached the default vault on the target device.
+
+**Today this rule is ahead of the machinery, deliberately.** CI cross-compiles
+every TU in `src/` for `aarch64-linux-android30` and nothing more — it does not
+link, package or run for Android — and no release has ever carried an artifact
+for *either* destination. `scripts/android-apk.sh` builds the APK by hand. Closing
+that is [#293](https://github.com/roguen/holocron/issues/293).
 
 ---
 

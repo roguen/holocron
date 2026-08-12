@@ -48,6 +48,7 @@
 #include <holocron/android_jni.hpp>
 #include <holocron/asset_seed.hpp>
 #include <holocron/platform_paths.hpp>
+#include <holocron/run_log.hpp>
 
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_hints.h>
@@ -230,9 +231,19 @@ int main(int argc, char** argv)
     // Said out loud because it is the first thing to check when the player comes
     // up on defaults: the answer is a path nobody can guess and every relative
     // path in the process now hangs off it.
-    std::printf("holocron: data directory %s\n",
-                holocron::data_directory().empty() ? "(none -- using the working directory)"
-                                                   : holocron::data_directory().c_str());
+    // ISSUE 281. The run log is opened HERE, first, before anything that can
+    // fail -- because the failure it exists to catch is a startup that stopped
+    // part way, and a log opened after the interesting part is a log of nothing.
+    // The data directory is known by this line and is the only writable place
+    // this process reliably owns.
+    holocron::open_run_log(holocron::data_directory());
+    if (!holocron::run_log_path().empty()) {
+        holocron::say("holocron: run log %s\n", holocron::run_log_path().c_str());
+    }
+
+    holocron::say("holocron: data directory %s\n",
+                  holocron::data_directory().empty() ? "(none -- using the working directory)"
+                                                     : holocron::data_directory().c_str());
 
     // THE SHIPPED VAULT, OUT OF THE APK AND ONTO THE FILESYSTEM.
     //
@@ -249,11 +260,25 @@ int main(int argc, char** argv)
     // somewhere else has a vault already and does not want this one unpacked on
     // top of it. Seeding the default is what makes a FIRST run work.
     if (!holocron::data_directory().empty()) {
-        const holocron::SeedReport seed =
-            holocron::seed_vault_from_assets(holocron::resolve_data_path("crystals"));
-        if (seed.state != holocron::SeedState::kUnsupported) {
-            std::printf("holocron: %s -- %d copied, %d already there\n",
-                        holocron::to_string(seed.state), seed.copied, seed.skipped);
+        // BOTH SETS, and the second one is the fix for issue 294.
+        //
+        // `instruments/sync` is what `--calibrate` and the phone's
+        // /control/tuning page draw, and it was never packaged -- so on the
+        // Shield the beat instrument failed with "manifest not found" and the
+        // ONE measurement M8 still needs could not be made on the device it is
+        // about. Found by the owner mid-cast, 2026-08-12, trying to tune the
+        // trim.
+        //
+        // It is a separate directory from the vault rather than a crystal in it
+        // because `scan_vault` would otherwise put a calibration target on the
+        // arrow keys between two things somebody wants to look at.
+        for (const char* set : {"crystals", "instruments"}) {
+            const holocron::SeedReport seed =
+                holocron::seed_vault_from_assets(holocron::resolve_data_path(set), set);
+            if (seed.state != holocron::SeedState::kUnsupported) {
+                std::printf("holocron: %s %s -- %d copied, %d already there\n", set,
+                            holocron::to_string(seed.state), seed.copied, seed.skipped);
+            }
         }
     }
 

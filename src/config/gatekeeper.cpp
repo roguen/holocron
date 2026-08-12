@@ -188,6 +188,37 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     read_bool(tbl, "render", "watch", out.watch, bad);
     read_bool(tbl, "render", "compositor", out.compositor, bad);
     read_double(tbl, "render", "scale", out.render_scale, bad);
+    read_double(tbl, "render", "frame_report_seconds", out.frame_report_seconds, bad);
+
+    // [render.scale_overrides] -- one key per vault entry name. Issue 288.
+    //
+    // Read as a sub-table rather than by changing the type of `scale`, so a
+    // config that never heard of this is unaffected and the existing key keeps
+    // meaning exactly what it meant.
+    if (bad.empty()) {
+        if (const auto* render = tbl["render"].as_table(); render != nullptr) {
+            if (const auto* overrides = (*render)["scale_overrides"].as_table();
+                overrides != nullptr) {
+                for (const auto& [key, value] : *overrides) {
+                    const auto number = value.value<double>();
+                    if (!number) {
+                        bad = "[render.scale_overrides] " + std::string(key.str()) +
+                              " must be a number";
+                        break;
+                    }
+                    // THE SAME RANGE THE GLOBAL KEY IS HELD TO. An override that
+                    // could go somewhere the default cannot would be a second,
+                    // quieter setting with different rules.
+                    if (*number < 0.25 || *number > 2.0) {
+                        bad = "[render.scale_overrides] " + std::string(key.str()) +
+                              " must be between 0.25 and 2.0";
+                        break;
+                    }
+                    out.render_scale_overrides.emplace_back(std::string(key.str()), *number);
+                }
+            }
+        }
+    }
     read_double(tbl, "render", "bloom", out.bloom, bad);
     read_double(tbl, "render", "bloom_threshold", out.bloom_threshold, bad);
     read_double(tbl, "render", "grain", out.grain, bad);
@@ -205,14 +236,26 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
         bad = "[render] advance must be \"off\", \"track\" or \"timer\", not \"" + out.advance +
               "\"";
     }
-    if (bad.empty() && (out.render_scale < 0.25 || out.render_scale > 1.0)) {
-        // ABOVE 1.0 IS REFUSED RATHER THAN ALLOWED. Supersampling is a real thing
-        // and a reasonable thing to want, but it is not this key: the layer is
-        // upscaled by a bilinear filter, which is the wrong resolve for
-        // supersampling and would make 2.0 quietly worse than 1.0 at four times
-        // the cost. Below 0.25 the picture is unwatchable and the setting is far
-        // more likely to be a typo than an intention.
-        bad = "[render] scale must be between 0.25 and 1.0";
+    if (bad.empty() && (out.render_scale < 0.25 || out.render_scale > 2.0)) {
+        // BELOW 0.25 the picture is unwatchable and the setting is far more
+        // likely to be a typo than an intention.
+        //
+        // ABOVE 1.0 IS AN INSTRUMENT, NOT A PICTURE SETTING, and the ceiling was
+        // 1.0 until issue 283 needed one. Supersampling is a real thing and a
+        // reasonable thing to want, but this key is not it: the resolve is a
+        // bilinear filter, which is the wrong one for supersampling, so 2.0 is
+        // quietly WORSE than 1.0 at four times the cost.
+        //
+        // What it is good for is asking "what would this cost at four times the
+        // pixels" on a machine whose display cannot be made to show them. The
+        // Shield is exactly that machine: its ROM caps the framebuffer at
+        // 1920x1080, so scale 2.0 is the only way to shade 8.3M pixels there and
+        // find out whether 4K would hold a frame budget before any work is done
+        // to reach it. The player says the scale out loud whenever it is not 1.0.
+        bad = "[render] scale must be between 0.25 and 2.0";
+    }
+    if (bad.empty() && out.frame_report_seconds < 0.0) {
+        bad = "[render] frame_report_seconds cannot be negative";
     }
     if (bad.empty() && (out.bloom < 0.0 || out.bloom > 4.0)) {
         bad = "[render] bloom must be between 0 and 4";
@@ -345,6 +388,117 @@ GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out, std::s
     }
 
     return GatekeeperError::kOk;
+}
+
+std::string update_trim_ms(const std::string& contents, double value)
+{
+    char rendered[64];
+    std::snprintf(rendered, sizeof(rendered), "trim_ms = %.1f", value);
+
+    // Split keeping the line endings, so a CRLF file stays CRLF and a file with
+    // no trailing newline does not silently gain one.
+    std::vector<std::string> lines;
+    std::size_t              at = 0;
+    while (at <= contents.size()) {
+        const std::size_t nl = contents.find('\n', at);
+        if (nl == std::string::npos) {
+            if (at < contents.size()) {
+                lines.push_back(contents.substr(at));
+            }
+            break;
+        }
+        lines.push_back(contents.substr(at, nl - at + 1));
+        at = nl + 1;
+    }
+
+    const auto trimmed = [](const std::string& line) {
+        const std::size_t b = line.find_first_not_of(" \t");
+        if (b == std::string::npos) {
+            return std::string{};
+        }
+        const std::size_t e = line.find_last_not_of(" \t\r\n");
+        return line.substr(b, e - b + 1);
+    };
+
+    bool        in_audio      = false;
+    std::size_t audio_header  = std::string::npos;
+    std::size_t audio_end     = std::string::npos;
+
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const std::string text = trimmed(lines[i]);
+
+        // A COMMENT IS NOT A KEY. The explanatory prose above this very setting
+        // contains `# trim_ms = -90` as documentation of a superseded reading,
+        // and rewriting that would corrupt the file's own record of itself.
+        if (text.empty() || text[0] == '#') {
+            continue;
+        }
+        if (text[0] == '[') {
+            if (in_audio) {
+                audio_end = i;
+                in_audio  = false;
+            }
+            if (text.rfind("[audio]", 0) == 0) {
+                in_audio     = true;
+                audio_header = i;
+            }
+            continue;
+        }
+        if (in_audio && text.rfind("trim_ms", 0) == 0 &&
+            text.find('=') != std::string::npos) {
+            // Found the live one. Replace the line, keeping its line ending.
+            const std::string ending =
+                lines[i].size() >= 2 && lines[i].substr(lines[i].size() - 2) == "\r\n"
+                    ? "\r\n"
+                    : (!lines[i].empty() && lines[i].back() == '\n' ? "\n" : "");
+            lines[i] = std::string(rendered) + ending;
+
+            std::string out;
+            for (const std::string& l : lines) {
+                out += l;
+            }
+            return out;
+        }
+    }
+    if (in_audio) {
+        audio_end = lines.size();
+    }
+
+    std::string out;
+    if (audio_header != std::string::npos) {
+        // The table exists and has no trim_ms. Insert directly under its header
+        // rather than at the end of the table, so it lands where a reader looks.
+        (void)audio_end;
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            out += lines[i];
+            if (i == audio_header) {
+                out += std::string(rendered) + "\n";
+            }
+        }
+        return out;
+    }
+
+    // No [audio] at all. Append one, and make sure it starts on its own line.
+    out = contents;
+    if (!out.empty() && out.back() != '\n') {
+        out += "\n";
+    }
+    out += "\n[audio]\n";
+    out += std::string(rendered) + "\n";
+    return out;
+}
+
+double render_scale_for(const Gatekeeper& cfg, const std::string& entry_name)
+{
+    // Linear, and that is not laziness: the vault is four entries today and the
+    // override list is expected to hold one or two. A map would cost a
+    // construction per config load to save nothing measurable per frame.
+    for (const auto& [name, scale] : cfg.render_scale_overrides) {
+        if (name == entry_name) {
+            return scale;
+        }
+    }
+    return cfg.render_scale;
 }
 
 }  // namespace holocron

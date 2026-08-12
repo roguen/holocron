@@ -442,3 +442,252 @@ TEST_CASE("the four argv-only switches default to the flagless behaviour",
     CHECK(g.compositor);
     CHECK_FALSE(g.debug_facet);
 }
+
+// ---------------------------------------------------------------------------
+// ISSUE 283. Making a render cost measurable on the machine paying it.
+//
+// Every render figure in this project came from `--frames N` and the slope
+// between two runs. That switch is argv-only, and an Android Activity launch
+// passes no argv -- so on the one platform whose performance was actually in
+// question, the project's own instrument could not be run at all. It was found
+// by trying to answer "what does a crystal cost on Tegra" and having no way to
+// ask.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("the frame report is off unless asked for", "[gatekeeper][render]")
+{
+    // A line every few seconds is noise on a machine nobody is measuring, and on
+    // the Shield the log is the only output there is.
+    Gatekeeper g;
+    CHECK(g.frame_report_seconds == 0.0);
+}
+
+TEST_CASE("the frame report interval is read and validated", "[gatekeeper][render]")
+{
+    Scratch     s;
+    Gatekeeper  cfg;
+    std::string detail;
+
+    REQUIRE(load_gatekeeper(s.write("[render]\nframe_report_seconds = 5.0\n"), cfg, detail) ==
+            GatekeeperError::kOk);
+    CHECK(cfg.frame_report_seconds == 5.0);
+
+    // Negative is a typo, not a request, and a live key holding a value the
+    // player cannot act on is fatal by this file's own rule.
+    Gatekeeper bad;
+    CHECK(load_gatekeeper(s.write("[render]\nframe_report_seconds = -1.0\n"), bad, detail) !=
+          GatekeeperError::kOk);
+}
+
+TEST_CASE("render scale reaches 2.0, because measuring 4K needs it", "[gatekeeper][render]")
+{
+    Scratch     s;
+    Gatekeeper  cfg;
+    std::string detail;
+
+    // THE CEILING WAS 1.0 UNTIL ISSUE 283. The Shield's ROM caps its framebuffer
+    // at 1920x1080, so scale 2.0 is the only way to shade 8.3M pixels on that
+    // device and find out whether 4K would hold a frame budget -- before any work
+    // is done to reach it.
+    //
+    // It is an INSTRUMENT and not a picture setting: the resolve is bilinear,
+    // which is the wrong filter for supersampling, so 2.0 looks worse than 1.0
+    // and costs four times as much.
+    REQUIRE(load_gatekeeper(s.write("[render]\nscale = 2.0\n"), cfg, detail) ==
+            GatekeeperError::kOk);
+    CHECK(cfg.render_scale == 2.0);
+
+    Gatekeeper below;
+    CHECK(load_gatekeeper(s.write("[render]\nscale = 0.1\n"), below, detail) !=
+          GatekeeperError::kOk);
+
+    Gatekeeper above;
+    CHECK(load_gatekeeper(s.write("[render]\nscale = 2.5\n"), above, detail) !=
+          GatekeeperError::kOk);
+}
+
+// ---------------------------------------------------------------------------
+// ISSUE 288. A render scale per vault entry.
+//
+// On the Shield `duel` costs 121 ms a frame and `storm` 136 ms against a 16.7 ms
+// budget, while `pulse` (5.56 ms) and `drift` (14.59 ms) are far cheaper. One
+// global number cannot express that: low enough for `duel` makes everything else
+// needlessly soft, and 1.0 leaves two of the four shipped entries unwatchable.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("with no overrides every entry gets the global scale", "[gatekeeper][render]")
+{
+    // The behaviour before this existed, pinned so adding the feature cannot
+    // have changed it for anybody who never asks for it.
+    Gatekeeper g;
+    g.render_scale = 0.71;
+    CHECK(render_scale_for(g, "duel") == 0.71);
+    CHECK(render_scale_for(g, "pulse") == 0.71);
+    CHECK(render_scale_for(g, "") == 0.71);
+}
+
+TEST_CASE("an override applies to its entry and to no other", "[gatekeeper][render]")
+{
+    Scratch     s;
+    Gatekeeper  cfg;
+    std::string detail;
+
+    REQUIRE(load_gatekeeper(s.write("[render]\n"
+                                    "scale = 1.0\n"
+                                    "[render.scale_overrides]\n"
+                                    "duel = 0.5\n"
+                                    "storm = 0.4\n"),
+                            cfg, detail) == GatekeeperError::kOk);
+
+    CHECK(render_scale_for(cfg, "duel") == 0.5);
+    CHECK(render_scale_for(cfg, "storm") == 0.4);
+
+    // THE FLIP BACK IS THE POINT. An override that leaked onto the next crystal
+    // would soften a picture nobody asked to soften, and it would do it silently.
+    CHECK(render_scale_for(cfg, "pulse") == 1.0);
+    CHECK(render_scale_for(cfg, "drift") == 1.0);
+}
+
+TEST_CASE("an override is matched exactly, not by prefix", "[gatekeeper][render]")
+{
+    Scratch     s;
+    Gatekeeper  cfg;
+    std::string detail;
+
+    REQUIRE(load_gatekeeper(s.write("[render]\nscale = 1.0\n"
+                                    "[render.scale_overrides]\nduel = 0.5\n"),
+                            cfg, detail) == GatekeeperError::kOk);
+
+    // A vault holding both `duel` and `duel-lite` must not have one silently
+    // inherit the other's tuning.
+    CHECK(render_scale_for(cfg, "duel") == 0.5);
+    CHECK(render_scale_for(cfg, "duel-lite") == 1.0);
+    CHECK(render_scale_for(cfg, "due") == 1.0);
+}
+
+TEST_CASE("an override is held to the same range as the global key",
+          "[gatekeeper][render]")
+{
+    Scratch     s;
+    Gatekeeper  cfg;
+    std::string detail;
+
+    // An override that could reach somewhere the default cannot would be a
+    // second, quieter setting with different rules.
+    CHECK(load_gatekeeper(s.write("[render.scale_overrides]\nduel = 0.1\n"), cfg, detail) !=
+          GatekeeperError::kOk);
+    CHECK(load_gatekeeper(s.write("[render.scale_overrides]\nduel = 2.5\n"), cfg, detail) !=
+          GatekeeperError::kOk);
+    CHECK(load_gatekeeper(s.write("[render.scale_overrides]\nduel = \"half\"\n"), cfg, detail) !=
+          GatekeeperError::kOk);
+}
+
+// ---------------------------------------------------------------------------
+// Writing the trim back into the config.
+//
+// The owner, mid-cast on 2026-08-12, having tuned the trim on the phone:
+// "Nothing here is saved... I would like whatever I'm setting in the tuning to
+// be pushed into the gatekeeper file for me."
+//
+// THE FILE THIS EDITS HOLDS A PLEX TOKEN, which is why the transformation is a
+// pure function over a string and why these cases exist. A rewrite that dropped
+// a line would not be noticed until the next cast failed to authenticate.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("saving the trim rewrites one line and nothing else", "[gatekeeper][trim]")
+{
+    const std::string before =
+        "# a comment\n"
+        "[audio]\n"
+        "backend = \"auto\"\n"
+        "trim_ms = 0.0\n"
+        "lead_ms = 250.0\n"
+        "\n"
+        "[plex]\n"
+        "token = \"SECRET\"\n";
+
+    const std::string after = update_trim_ms(before, -60.0);
+
+    CHECK(after.find("trim_ms = -60.0") != std::string::npos);
+    CHECK(after.find("trim_ms = 0.0") == std::string::npos);
+
+    // EVERYTHING ELSE SURVIVES. The token especially: losing it turns a Save
+    // button into a device that quietly falls off the account.
+    CHECK(after.find("token = \"SECRET\"") != std::string::npos);
+    CHECK(after.find("backend = \"auto\"") != std::string::npos);
+    CHECK(after.find("lead_ms = 250.0") != std::string::npos);
+    CHECK(after.find("# a comment") != std::string::npos);
+    CHECK(after.find("[plex]") != std::string::npos);
+}
+
+TEST_CASE("a commented trim is documentation and is left alone", "[gatekeeper][trim]")
+{
+    // gatekeeper.example.toml carries `-90` inside its explanatory prose as the
+    // record of a superseded measurement. Rewriting that would corrupt the
+    // file's own account of itself -- and it is the exact text the measured-value
+    // check in issue 265 reads.
+    const std::string before =
+        "[audio]\n"
+        "# MEASURED 2026-08-04: trim_ms = -90 at 4K 29 Hz.\n"
+        "trim_ms = -30.0\n";
+
+    const std::string after = update_trim_ms(before, -60.0);
+
+    CHECK(after.find("# MEASURED 2026-08-04: trim_ms = -90 at 4K 29 Hz.") != std::string::npos);
+    CHECK(after.find("trim_ms = -60.0") != std::string::npos);
+    CHECK(after.find("trim_ms = -30.0") == std::string::npos);
+}
+
+TEST_CASE("a trim in another table is not the one to change", "[gatekeeper][trim]")
+{
+    const std::string before =
+        "[render]\n"
+        "trim_ms = 999.0\n"
+        "[audio]\n"
+        "trim_ms = 0.0\n";
+
+    const std::string after = update_trim_ms(before, -60.0);
+
+    CHECK(after.find("trim_ms = 999.0") != std::string::npos);   // untouched
+    CHECK(after.find("trim_ms = -60.0") != std::string::npos);
+}
+
+TEST_CASE("the key is inserted when the table has no trim", "[gatekeeper][trim]")
+{
+    const std::string before = "[audio]\nbackend = \"auto\"\n\n[plex]\ntoken = \"SECRET\"\n";
+    const std::string after  = update_trim_ms(before, -60.0);
+
+    CHECK(after.find("trim_ms = -60.0") != std::string::npos);
+    CHECK(after.find("token = \"SECRET\"") != std::string::npos);
+
+    // Under [audio], not under [plex] -- a key in the wrong table is silently
+    // ignored by the loader, which is the worst possible outcome for a Save
+    // button: it reports success and changes nothing.
+    CHECK(after.find("[audio]") < after.find("trim_ms = -60.0"));
+    CHECK(after.find("trim_ms = -60.0") < after.find("[plex]"));
+}
+
+TEST_CASE("an [audio] table is created when there is none", "[gatekeeper][trim]")
+{
+    // The Shield's own config was exactly this shape: a [render] and a [plex]
+    // table and no [audio] at all, which is why the trim read 0 every launch.
+    const std::string before = "[plex]\ntoken = \"SECRET\"\n";
+    const std::string after  = update_trim_ms(before, -60.0);
+
+    CHECK(after.find("[audio]") != std::string::npos);
+    CHECK(after.find("trim_ms = -60.0") != std::string::npos);
+    CHECK(after.find("token = \"SECRET\"") != std::string::npos);
+}
+
+TEST_CASE("what is written can be read back", "[gatekeeper][trim]")
+{
+    // The round trip, which is the only thing that proves the output is TOML the
+    // loader accepts rather than merely a string that looks right.
+    Scratch     s;
+    Gatekeeper  cfg;
+    std::string detail;
+
+    const std::string written = update_trim_ms("[plex]\ntoken = \"SECRET\"\n", -60.0);
+    REQUIRE(load_gatekeeper(s.write(written), cfg, detail) == GatekeeperError::kOk);
+    CHECK(cfg.trim_ms == -60.0);
+}

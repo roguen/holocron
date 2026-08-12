@@ -35,7 +35,12 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
+
+// For kDefaultDeviceName. The default announced name differs per platform
+// (D-066) and defining it twice is how the two would drift apart.
+#include "holocron/plex_device.hpp"
 
 namespace holocron {
 
@@ -143,6 +148,38 @@ struct Gatekeeper {
     // for on hardware that is already comfortable.
     double render_scale = 1.0;
 
+    // Per-entry overrides of the scale above, by VAULT ENTRY NAME.
+    //
+    // ISSUE 288. On the Shield `duel` costs 121 ms a frame and `storm` 136 ms,
+    // against a 16.7 ms budget -- 8.3 and 7.4 fps -- while `pulse` and `drift`
+    // are comfortable at full size. One global number cannot express that: set
+    // it low enough for `duel` and everything else is needlessly soft, leave it
+    // at 1.0 and two of the four entries in the shipped vault are unwatchable.
+    //
+    // IN THE CONFIG RATHER THAN IN THE MANIFEST, and that is the whole design
+    // decision. A crystal's cost is not a property OF the crystal, it is a
+    // property of the crystal ON A MACHINE: `duel` is 2.50 ms on the rack and
+    // 121 ms on Tegra, a factor of 48. Putting the number in `duel.toml` would
+    // soften it on the rack, where it does not need softening, and would ship a
+    // machine-specific tuning value inside a first-party authored asset.
+    //
+    // Empty by default, which is the behaviour before this existed.
+    std::vector<std::pair<std::string, double>> render_scale_overrides;
+
+    // How often to print what a frame costs, in seconds. 0 is off, and off is
+    // the default.
+    //
+    // ISSUE 283. Every render cost in this project was measured with `--frames N`
+    // and the slope between two runs, and that switch is ARGV-ONLY -- so on
+    // Android, where an Activity launch passes no argv, the project's own
+    // instrument could not be run at all. Found while trying to answer "what does
+    // a crystal cost on Tegra" and having no way to ask.
+    //
+    // A key rather than a flag for exactly the reason the others got keys: a
+    // television has no command line, and this is a measurement that has to be
+    // made on the machine doing the work rather than inferred from a desktop.
+    double frame_report_seconds = 0.0;
+
     // When to move to the next thing in the vault by itself.
     //
     // THE CAST-AND-FORGET CASE IS THE WHOLE POINT (D-029). An album is forty
@@ -242,7 +279,13 @@ struct Gatekeeper {
     bool plex_discovery = true;
 
     // What appears in Plexamp's device list.
-    std::string plex_device_name = "Holocron";
+    //
+    // The default is PLATFORM-DERIVED -- "Theater PC" on the desktop build and
+    // "Theater Shield" on the Android one -- because the two destinations are
+    // two different players and a controller shows only this string. See
+    // kDefaultDeviceName in plex_device.hpp for why the app identity (`product`)
+    // deliberately did NOT move with it. D-066.
+    std::string plex_device_name = kDefaultDeviceName;
 
     // Must be stable across restarts, or the device list gains a new entry every
     // run. Empty means "not chosen yet": the player generates one and prints the
@@ -334,5 +377,36 @@ struct Gatekeeper {
 // including the line, and `out` is left at defaults.
 GatekeeperError load_gatekeeper(const std::string& path, Gatekeeper& out,
                                 std::string& out_detail);
+
+// The render scale to use for a given vault entry: its override, or the default.
+//
+// A FUNCTION RATHER THAN A LOOKUP AT THE CALL SITE, because the render loop asks
+// this every frame and the answer decides how big the layers are. Getting it
+// wrong in one of the two places that resize would allocate one size and draw
+// another; getting it wrong by matching loosely would silently soften a crystal
+// somebody never asked to soften.
+//
+// Matched on the vault entry name exactly -- "duel", "storm" -- which is what the
+// arrow keys and the control page both show, so the name in the config is the
+// name on the screen.
+double render_scale_for(const Gatekeeper& cfg, const std::string& entry_name);
+
+// Return `contents` with `[audio] trim_ms` set to `value`, everything else byte
+// for byte unchanged.
+//
+// THE FILE THIS EDITS HOLDS A PLEX TOKEN. That is the whole reason this is a
+// pure function over a string rather than something that opens a file: the risky
+// part is the transformation, and a transformation that can be tested cannot
+// quietly drop a line nobody reads until they next try to cast.
+//
+// It rewrites ONE line -- the live `trim_ms` inside `[audio]` -- or inserts one
+// if the key is absent, or appends an `[audio]` table if there is none. Comments,
+// ordering, spacing and every other key survive, because a config that comes back
+// from a Save button reformatted is a config nobody presses Save on twice.
+//
+// A `trim_ms` inside some other table is not touched, and neither is a commented
+// one: `# trim_ms = -90` in the explanatory prose above the key is documentation,
+// and rewriting it would corrupt the file's own account of itself.
+std::string update_trim_ms(const std::string& contents, double value);
 
 }  // namespace holocron
