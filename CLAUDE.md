@@ -47,7 +47,7 @@ This file is the operating context: the rules, the state, and the conventions.
 
 ---
 
-## Status: SEVEN milestones are DONE. Only M8 remains.
+## Status: ALL EIGHT MILESTONES ARE DONE.
 
 **`v0.9.0`.** M1 closed 2026-08-10, ten sessions after its last two criteria were
 first written down as open, and M2's last unbuilt criterion closed the same day:
@@ -64,7 +64,15 @@ first written down as open, and M2's last unbuilt criterion closed the same day:
 See the eight-row table at the top of the wiki
 [Roadmap](https://github.com/roguen/holocron/wiki/Roadmap).
 
-**Seven milestones are finished, and only M8 is left.** M6 — on-screen UI, closed
+<!-- measured: trim_ms.shield -->
+<!-- measured: trim_ms.rack -->
+**All eight milestones are finished.** M8 closed 2026-08-12 on the owner's
+word, when `trim_ms` was measured on the Shield's own chain: **+260 ms**,
+against the rack's −30. It does not port and it changes sign, because
+`played_us` comes from SDL's frame counter and that sits above AudioFlinger's
+own buffering — so the sound arrives later than the clock claims and the picture
+reads as early (issue 278).
+ M6 — on-screen UI, closed
 2026-08-10 by the owner **on the projector**, the first time anything from `v0.3.0`
 to `v0.7.0` had been seen in the room it was built for. M7 — the herald, closed
 2026-08-10 when the
@@ -533,7 +541,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.9.2`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.10.0`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
