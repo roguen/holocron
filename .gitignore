@@ -320,3 +320,22 @@ plex_token*
 !include/**
 !src/**
 !docs/**
+
+# ---------------------------------------------------------------------------
+# The compiled-program cache.
+#
+# GENERATED, MACHINE-SPECIFIC, AND NOT PORTABLE EVEN IN PRINCIPLE. A GL program
+# binary is valid only for the driver and GPU that produced it -- that is why
+# the cache keys on the vendor string -- so a committed one is dead weight on
+# every machine except the one it came from.
+#
+# It was not ignored, and a run of the player left two .bin files staged in an
+# unrelated commit. Found by reading `git status` rather than by anything
+# failing; nothing here would have complained.
+#
+# `[render] shader_cache` can move this, so the directory name is matched
+# anywhere rather than only at the root.
+# ---------------------------------------------------------------------------
+
+shader-cache/
+**/shader-cache/

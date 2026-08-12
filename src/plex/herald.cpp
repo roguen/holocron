@@ -8,6 +8,7 @@
 #include <holocron/eiscp.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -231,9 +232,91 @@ void close_politely(socket_t s)
     close_socket(s);
 }
 
+// Read frames until one of them answers `want`, or the budget runs out.
+//
+// ISSUE 319. THE HERALD HAS NEVER READ ANYTHING, and that is why the timeline
+// could only ever report what it had SENT. A player that has sent nothing then
+// had nothing truthful to say, and said 100 -- which a controller takes as a
+// position, puts its slider at the top, and echoes straight back. The cast
+// itself drove the receiver to the ceiling.
+//
+// BOUNDED THREE WAYS, because this runs on the herald's worker while the render
+// loop may be calling observe(): a select() timeout per read, a total budget,
+// and a cap on how many frames are consumed. The receiver volunteers state for
+// everything it is doing, so the answer wanted here is usually not the first
+// frame back and occasionally never arrives at all.
+//
+// A FAILED QUERY IS NOT AN ERROR. The receiver's normal state in this project is
+// absent -- see the cooldown -- and "I do not know the volume" is a legitimate
+// answer that the caller is required to handle. It must never become 100.
+bool query_reply(socket_t s, std::string_view want, int timeout_ms, std::string& out_parameter)
+{
+    using clock = std::chrono::steady_clock;
+    const auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
+
+    std::string buffer;
+    char        chunk[512];
+
+    for (int frames = 0; frames < 32; ++frames) {
+        const auto now = clock::now();
+        if (now >= deadline) {
+            return false;
+        }
+        const auto left =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+
+        fd_set read_set;
+        FD_ZERO(&read_set);
+        FD_SET(s, &read_set);
+        timeval tv{};
+        tv.tv_sec  = static_cast<decltype(tv.tv_sec)>(left / 1000);
+        tv.tv_usec = static_cast<decltype(tv.tv_usec)>((left % 1000) * 1000);
+        if (::select(static_cast<int>(s) + 1, &read_set, nullptr, nullptr, &tv) <= 0) {
+            return false;
+        }
+
+        const auto n = ::recv(s, chunk, sizeof(chunk), 0);
+        if (n <= 0) {
+            return false;
+        }
+        buffer.append(chunk, static_cast<std::size_t>(n));
+
+        // Drain whole frames out of the buffer. TCP framing is not message
+        // framing; eiscp_parse exists for exactly this and reports how much it
+        // consumed.
+        for (;;) {
+            IscpReply   reply;
+            std::size_t consumed = 0;
+            bool        fatal    = false;
+            const bool  got      = eiscp_parse(buffer, reply, consumed, fatal);
+            if (fatal) {
+                return false;
+            }
+            if (consumed == 0) {
+                break;   // needs more bytes
+            }
+            buffer.erase(0, consumed);
+            if (got && reply.command == want) {
+                out_parameter = reply.parameter;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
+
+int level_from_receiver(int raw, int ceiling)
+{
+    if (raw < 0 || ceiling <= 0) {
+        return -1;
+    }
+    const long scaled = (static_cast<long>(raw) * 100) / ceiling;
+    return static_cast<int>(scaled > 100 ? 100 : scaled);
+}
 
 bool render_errand(std::string_view templ, int level, std::string& out, std::string& out_why)
 {
@@ -449,8 +532,30 @@ struct Herald::Impl {
     // Plex's 0..100. `wanted` is the newest the slider has reported and `sent` is
     // the last one that actually reached the receiver; they differ while a drag
     // is in flight, which is the whole point of coalescing.
+    //
+    // ISSUE 319: `sent` IS ALSO SEEDED BY ASKING THE RECEIVER, so it is really
+    // "the level the receiver is believed to be at" and -1 means "nobody knows".
+    // Before that it could only ever be a level this program had commanded, so a
+    // fresh cast had nothing true to report and the timeline said 100 -- which a
+    // controller reads as a position, shows at the top of its slider, and echoes
+    // back. The cast drove the volume to the ceiling before anyone touched
+    // anything.
+    //
+    // Seeding it here rather than in a second field is deliberate: the run loop
+    // below sends only when `wanted != sent`, so a controller echoing the level
+    // it was just told becomes a no-op for free. Two fields would have needed
+    // that comparison written twice and kept in step.
     int              volume_wanted = -1;
     std::atomic<int> volume_sent{-1};
+
+    // Where to ask, and whether to ask.
+    //
+    // ONLY eISCP CAN BE ASKED. `on_volume` may be a webhook, which has no query
+    // and no reply, so these stay empty and the level stays honestly unknown --
+    // which the caller must handle rather than defaulting.
+    std::string   volume_query_host;
+    std::uint16_t volume_query_port    = 0;
+    bool          volume_query_pending = false;
 
     // The floor between two volume commands.
     //
@@ -553,17 +658,93 @@ struct Herald::Impl {
         }
     }
 
+    // Ask the receiver where its volume actually is, and believe the answer.
+    //
+    // ISSUE 319. Runs on the worker with the lock DROPPED, like run_one and for
+    // the same reason: observe() is called every frame by the render loop and must
+    // never wait on a network timeout.
+    //
+    // FAILURE IS SILENT AND LEAVES THE LEVEL UNKNOWN. A receiver that is off, or
+    // busy with its single connection slot, is the normal case here -- and a
+    // guess would reintroduce the exact bug this is fixing. It is retried on the
+    // next playback start, which is when a cast happens and therefore when it
+    // matters.
+    void query_volume(std::unique_lock<std::mutex>& lock)
+    {
+        const std::string host    = volume_query_host;
+        const auto        port    = volume_query_port;
+        const int         timeout = connect_timeout_ms;
+        const int         ceiling = volume_max;
+        volume_query_pending      = false;
+
+        if (host.empty() || ceiling <= 0) {
+            return;
+        }
+
+        lock.unlock();
+
+        int         level = -1;
+        std::string why;
+        const socket_t s = connect_bounded(host, port, timeout, why);
+        if (s != kInvalidSocket) {
+            const std::string frame = eiscp_frame(iscp_message('1', "MVL", "QSTN"));
+            std::string       parameter;
+            if (!frame.empty() && send_all(s, frame) &&
+                query_reply(s, "MVL", timeout, parameter)) {
+                // The reply is the receiver's own units, in hex, and the timeline
+                // speaks Plex's 0..100. Scaled against the SAME ceiling the
+                // outgoing direction uses, so a level read back and immediately
+                // echoed maps to itself.
+                char*      end = nullptr;
+                const long raw = std::strtol(parameter.c_str(), &end, 16);
+                if (end != nullptr && *end == '\0' && !parameter.empty() && raw >= 0 &&
+                    raw <= 0xFFFF) {
+                    level = level_from_receiver(static_cast<int>(raw), ceiling);
+                }
+            }
+            close_politely(s);
+        }
+
+        lock.lock();
+
+        if (level >= 0) {
+            volume_sent.store(level, std::memory_order_relaxed);
+            std::printf("holocron: herald -- the receiver is at %d%% of the ceiling\n", level);
+            std::fflush(stdout);
+        }
+    }
+
     void run()
     {
         std::unique_lock<std::mutex> lock(mutex);
         while (true) {
             cv.wait(lock, [this] {
-                return quit || pending != 0 ||
+                return quit || pending != 0 || volume_query_pending ||
                        (volume_wanted >= 0 &&
                         volume_wanted != volume_sent.load(std::memory_order_relaxed));
             });
             if (quit) {
                 return;
+            }
+
+            // ASKED ONLY WHEN NOTHING ELSE IS QUEUED, WHICH PUTS IT AFTER A
+            // POWER-ON RATHER THAN BEFORE IT.
+            //
+            // The obvious placement is first -- knowing the level before the next
+            // slider value arrives is the whole point. It is wrong on the case
+            // that matters most. A start edge queues `PWR01`, a four-second wait
+            // and an input select, and querying ahead of those asks a receiver
+            // that is still in standby, which fails and leaves the level unknown
+            // exactly when a cast is arriving.
+            //
+            // So: edges first, then ask. At startup there is no edge pending and
+            // this runs immediately, which is the common case -- the player is
+            // already up when the phone casts to it.
+            if (volume_query_pending && pending == 0) {
+                query_volume(lock);
+                if (quit) {
+                    return;
+                }
             }
 
             // -- the slider, before the edges ----------------------------------
@@ -679,6 +860,26 @@ bool Herald::start(const HeraldConfig& config, std::string& out_detail)
     // typo is reported at startup with everything else. Finding out at the moment
     // somebody reaches for the slider -- in a dark room, from a phone -- is the
     // worst possible time for it.
+    // The largest `volume_max` that will be accepted.
+    //
+    // 100 UNTIL 2026-08-12, AND THAT WAS THE UNITS ERROR OF ISSUE 312 BUILT INTO
+    // THE VALIDATOR. Plex's slider is 0..100, so 100 looked like the natural
+    // bound -- but `volume_max` is not in Plex's units, it is in the receiver's,
+    // and on a unit with half-step volume the protocol value is double the number
+    // on the front panel. The reference rack's own maximum is 164 (a displayed
+    // 82), so every ceiling above a displayed 50 was unreachable and the herald
+    // refused the config outright, taking the phone's volume control with it.
+    //
+    // 255 because that is what the SPELLING allows: `{:02X}` renders two hex
+    // digits, and a larger value would silently produce three and send a
+    // malformed command. It is not a claim about any receiver's range -- the real
+    // ceiling is a property of the unit and must be read off it (D-048).
+    //
+    // This is not a loosened safety limit. `volume_max` IS the safety limit; this
+    // bound only decides which values may be written down, and refusing a legal
+    // one is not caution, it is a feature that does not work.
+    static constexpr int kVolumeMaxCeiling = 255;
+
     if (!config.on_volume.empty()) {
         const auto refuse = [&out_detail](const std::string& why) {
             if (!out_detail.empty()) {
@@ -687,13 +888,14 @@ bool Herald::start(const HeraldConfig& config, std::string& out_detail)
             out_detail += "holocron: herald ignored on_volume -- " + why;
         };
 
-        if (config.volume_max <= 0 || config.volume_max > 100) {
+        if (config.volume_max <= 0 || config.volume_max > kVolumeMaxCeiling) {
             // REQUIRED, AND WITH NO DEFAULT. See HeraldConfig: there is no
             // ceiling that is safe on every rack, and the only alternative to
             // demanding one was guessing -- where the obvious guess is the
             // amplifier's own maximum, which is the worst answer available.
-            refuse("it needs `volume_max` as well, between 1 and 100, in the "
-                   "receiver's own units -- read it off the unit rather than a table");
+            refuse("it needs `volume_max` as well, between 1 and " +
+                   std::to_string(kVolumeMaxCeiling) +
+                   ", in the receiver's own units -- read it off the unit rather than a table");
         } else {
             std::string probe;
             std::string why;
@@ -708,6 +910,20 @@ bool Herald::start(const HeraldConfig& config, std::string& out_detail)
                 } else {
                     impl_->on_volume  = config.on_volume;
                     impl_->volume_max = config.volume_max;
+
+                    // ISSUE 319. Remember where to ASK, when the errand is one
+                    // that can be asked. `parse_errand` has already resolved the
+                    // host and port out of the template, so this costs nothing
+                    // and cannot disagree with where the commands go.
+                    //
+                    // kEiscp ONLY, and that is the point rather than a detail: a
+                    // webhook has no query and no reply, so a rack driving its
+                    // amplifier through Home Assistant leaves the level unknown
+                    // and gets no slider rather than a wrong one.
+                    if (errand.kind == ErrandKind::kEiscp) {
+                        impl_->volume_query_host = errand.host;
+                        impl_->volume_query_port = errand.port;
+                    }
                 }
             }
         }
@@ -721,6 +937,10 @@ bool Herald::start(const HeraldConfig& config, std::string& out_detail)
     impl_->pending       = 0;
     impl_->volume_wanted = -1;
     impl_->volume_sent.store(-1, std::memory_order_relaxed);
+
+    // ASK ONCE AT STARTUP, so the first cast of a session already knows where the
+    // receiver is rather than asserting 100 at it (issue 319).
+    impl_->volume_query_pending = !impl_->volume_query_host.empty();
     impl_->worker        = std::thread([this] {
         // AN EXCEPTION ESCAPING A std::thread IS std::terminate. A bad_alloc or a
         // system_error out of anything in here would take the player with it,
@@ -760,6 +980,16 @@ void Herald::observe(bool playing)
         edge = impl_->edge.observe(playing, std::chrono::steady_clock::now());
         if (edge != 0) {
             impl_->pending = edge;
+
+            // ISSUE 319. RE-ASK ON A PLAYBACK START. A cast is the moment the
+            // question matters -- it is when a controller attaches, reads the
+            // reported level and puts its slider there -- and it is also the
+            // moment a receiver that was off at startup has just been woken by
+            // the on_start errands. One query at launch would have been stale or
+            // impossible in exactly the case that matters most.
+            if (edge > 0 && !impl_->volume_query_host.empty()) {
+                impl_->volume_query_pending = true;
+            }
         }
     }
     if (edge != 0) {

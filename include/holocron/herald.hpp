@@ -119,6 +119,28 @@ bool parse_errand(std::string_view uri, Errand& out, std::string& out_why);
 // startup rather than in a dark room.
 bool render_errand(std::string_view templ, int level, std::string& out, std::string& out_why);
 
+// The other direction: a level read back OFF the receiver, in Plex's 0..100.
+//
+// ISSUE 319. The herald had only ever written, so the timeline could only report
+// what this program had commanded -- and before it had commanded anything it
+// reported a constant 100. A controller reads that as a position, puts its slider
+// at the top and echoes it back, so the act of casting drove the receiver to
+// `volume_max`. Asking first is the fix, and this is the arithmetic that makes
+// the answer comparable with what the slider sends.
+//
+// Scaled against the SAME ceiling the outgoing direction uses, so a level read
+// back and immediately echoed maps to itself and sends nothing.
+//
+// CLAMPED AT 100, because the receiver is under no obligation to respect
+// `volume_max` -- its own remote does not know about it. The rack was found at a
+// raw 91 against a ceiling of 40, which is 227 unclamped: a nonsense a controller
+// would reject or wrap.
+//
+// Returns -1 when there is no sensible answer, which the caller must report as
+// "unknown" rather than substituting a default. Substituting a default is the
+// entire bug.
+int level_from_receiver(int raw, int ceiling);
+
 // How long the playback predicate must hold before an edge counts.
 //
 // THE LATCH IS THE WHOLE REASON THIS IS A TYPE AND NOT AN `if`. `PlaybackSession`
@@ -172,10 +194,28 @@ struct HeraldConfig {
     //
     // THIS IS A SAFETY CLAMP AND IT HAS NO DEFAULT ON PURPOSE. Plex's slider is
     // 0..100 and eISCP's MVL is hex, so a naive pass-through sends `MVL64` for a
-    // slider at the top -- which on a theater amplifier is full output, into a
-    // room, possibly at night, from a phone in somebody's pocket. There is no
-    // value that is safe on every rack, so the honest options were to demand one
-    // or to guess one.
+    // slider at the top -- very loud on a theater amplifier, into a room,
+    // possibly at night, from a phone in somebody's pocket. There is no value
+    // that is safe on every rack, so the honest options were to demand one or to
+    // guess one.
+    //
+    // "RECEIVER'S OWN UNITS" IS LOAD-BEARING AND WAS READ AS DECORATIVE. On a
+    // receiver with half-step volume the protocol value is DOUBLE the number on
+    // the front panel: on the reference rack `volume_max = 140` tops out at a
+    // displayed 70, and `MVL64` is a displayed 50 rather than the maximum of 82.
+    //
+    // Issue 312 is what that cost. The owner set 40, watched the panel stop at
+    // 20, and the conclusion drawn -- by everyone, for a session -- was that his
+    // phone sent 50 instead of 100 at the top of its travel. It sends 100. The
+    // scaling below was correct the whole time. The two explanations are
+    // indistinguishable from the numbers alone and were separated only by
+    // capturing a drag command by command.
+    //
+    // NOTHING HERE CONVERTS TO PANEL UNITS, deliberately. The ratio belongs to
+    // the receiver rather than to eISCP -- units reporting `volstep = 1` are 1:1
+    // -- so halving it here would be right on this rack and wrong on the next.
+    // The player reports the MVL it sent and the panel is the authority on what
+    // that means.
     //
     // Demanding it. `on_volume` set with no `volume_max` reports the error and
     // forwards nothing, which is a feature that does not work until it is

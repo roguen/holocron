@@ -588,6 +588,19 @@ public:
     // thing that tells them apart.
     std::uint64_t timeline_polls() const;
 
+    // The closing line of the last finished run of slider commands, or empty
+    // when no run has finished.
+    //
+    // ISSUE 312. A drag is collapsed to one opening line and one closing line --
+    // see drag_log.hpp -- and the closing line is where the measurement lives:
+    // it carries the highest value the phone reached, which is the question the
+    // issue asks and the one thing the previous count could not answer.
+    //
+    // Exposed for the same reason last_path() is. The line is printed, and a
+    // test that asserted on printed output would be asserting on a captured
+    // stdout rather than on the decision that produced it.
+    std::string last_drag() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

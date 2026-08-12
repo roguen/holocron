@@ -120,10 +120,18 @@ gain response — and may not change what it *means*.
 
 ## Current status
 
-**It works.** Pick an album in Plexamp, cast it to Holocron, and it plays —
-bit-perfect, with the visuals coloured by the album's own cover.
+**`v1.0.0`, and all eight milestones are finished.** Pick an album in Plexamp,
+cast it to the theater, and it plays — bit-perfect, with the visuals coloured by
+the album's own cover and the receiver switched to the right input on the way.
 
-Confirmed on the target hardware, an RX 6800 into an Onkyo TX-RZ720 over HDMI
+`1.0.0` was never about finishing the milestone list. It was reserved for the
+first build that plays music and renders end to end, and it was taken on
+2026-08-12 when the **same build did that on both destinations**: the theater PC
+and the NVIDIA Shield, each cast to from Plexamp on the phone, each playing and
+drawing. Note what the number does not claim — not that the issue list is empty,
+and not that nothing is left to refine.
+
+Confirmed on the reference rack, an RX 6800 into an Onkyo TX-RZ720 over HDMI
 into a BenQ TK800, WASAPI **exclusive mode, bit-perfect**, 160 frames per period,
 no dropouts across a full track:
 
@@ -134,6 +142,8 @@ no dropouts across a full track:
   from the phone
 - Casting **from the middle of an album** starts on the track you tapped
 - The visuals take their colours from the **album art**
+- The **receiver wakes and switches to the right input** when playback starts
+- The phone's **volume slider reaches the amplifier**, without touching the samples
 
 That is milestone **M5**, and it is the milestone the project exists for: the
 owner is in Plexamp and casts to the theater. See the use case above.
@@ -147,20 +157,23 @@ cache stays in memory and the on-disk one ships unused on purpose. Genre and yea
 are on `TrackContext`. PNG art ([#116](https://github.com/roguen/holocron/issues/116))
 needs zlib and stays moot while Plex serves JPEG.
 
-**Seven of the eight milestones are finished.** M1's spine and M2's plumbing are
-complete underneath this, and only M8 is still open.
-
 ```bash
 scripts\build.cmd                                  # build and test, from a clean shell
 holocron.exe track.flac                            # play it, drawing every analysis field
 holocron.exe track.flac --crystal crystals/pulse   # draw a crystal instead
 holocron.exe track.flac --vault crystals           # the whole vault, arrows to move
 holocron.exe track.flac --calibrate                # measure the audio/video trim
+holocron.exe track.flac --debug-facet              # the instrument panel, every field as bars
 holocron.exe                                       # wait to be cast to from Plexamp
 holocron.exe --link                                # sign in to your Plex account
 holocron.exe --discover                            # announce only, headless, for diagnosis
+holocron.exe --notices                             # the third-party licence text
 holocron-analyze.exe track.flac --csv frames.csv   # the offline analysis harness
 ```
+
+`--help` prints the rest. The ones worth knowing about early are `--no-audio`
+(decode and draw without opening a device), `--frames N --shot out.bmp` (render
+exactly N frames and write the last), and `--projectm DIR` (MilkDrop presets).
 
 What exists:
 
@@ -170,21 +183,26 @@ What exists:
 | **Analysis** | Spectrum, 32 bands, levels, stereo, spectral descriptors, onsets, tempo, beat and bar phase, BS.1770-4 loudness, at a fixed 93.75 Hz. |
 | **Audio** | FFmpeg decode, a 48 kHz analysis tap, a lock-free PCM ring, and `WasapiSink` (exclusive, bit-perfect) behind an interface with `SdlSink` beside it. |
 | **Tap placement** | The frame on screen is the one the speakers are producing, selected **by position** against the device clock — a measured 51 ms of correction over newest-wins. |
-| **Render** | GL 4.5 core, a debug facet drawing every field, and `CrystalFacet` drawing authored crystals. |
+| **Render** | GL 4.5 core on the desktop and **ES 3.2** on the Shield from the same shaders, a compositor stacking `RGBA16F` layers, a debug facet drawing every field, and `CrystalFacet` drawing authored crystals. |
 | **Crystals** | `.frag` + `.toml`, uniforms bound to contract fields **by name** and validated at load. Hot reload, and a vault the arrow keys move through — **including crystals copied in while it is running**. |
 | **Plex** | GDM discovery, `--link` sign-in through the plex.tv PIN flow, automatic device registration and connection publishing, play queues built on the server, timeline reporting to both the controller and the media server, and every transport command a phone sends. |
 | **Playback** | `PlaybackSession` — decoder, analysis, ring, device and decode thread behind one object that can be started, **replaced** and **seeked**, which is what casting requires. |
 | **Track context** | `TrackContext` — what is playing, the album art as a texture, and a **palette** extracted from it: five swatches, a primary and a contrast accent, supplied to every crystal in linear RGB. |
-| **Tests** | **553 cases on Windows, 554 on Linux, green on both.** |
+| **Receiver** | The herald — errands sent when playback starts and stops, and the phone's volume slider forwarded to the amplifier. An errand is a URI, so replacing eISCP with a webhook is an edit to a value. |
+| **Diagnostics** | A run log that survives the relaunch performed to investigate a fault, `--frames N --shot` for checking the renderer without a monitor, and `holocron-analyze` for checking the analysis without either. |
+| **Tests** | **594 cases on Windows, 595 on Linux, green on both.** |
 
-**Seven of the eight milestones are finished.** What is left is M8 — Holocron on
-the NVIDIA Shield — and it now runs there: an ES 3.2 context on Tegra, the float
+**All eight milestones are finished, and the last to close was M8** — Holocron on
+the NVIDIA Shield. It runs there: an ES 3.2 context on Tegra, the float
 compositor layers, a crystal on screen and the licence panel legible. **It has
-now been cast to** as well — a FLAC streamed from the NAS over HTTPS, playing in
-real time with the crystal driven by it. It keeps playing and stays
-controllable from the phone while backgrounded, it takes a Wi-Fi multicast lock,
-and the vault ships inside the APK and unpacks itself on first run. What is left
-on that box is the audio criterion. See the milestone table below.
+been cast to** as well — a FLAC streamed from the NAS over HTTPS, playing in real
+time with the crystal driven by it. It keeps playing and stays controllable from
+the phone while backgrounded, it takes a Wi-Fi multicast lock, and the vault
+ships inside the APK and unpacks itself on first run.
+
+M8 closed when the audio criterion was settled the only way it could be — by
+measuring the trim on the Shield's own chain, where it comes out **positive**.
+See Platform support.
 
 **The `AudioFrame` contract is signed off** (2026-08-01). Section 9 of
 [`docs/audio-frame.md`](docs/audio-frame.md) records the decisions behind it — the
@@ -210,11 +228,27 @@ field may not change.
 | **M5** | **Plex playback target** | **The primary use case.** GDM discovery so Holocron appears in Plexamp's cast list, the Plex Companion control endpoints, timeline reporting, streaming the selected track, and metadata and album art into `TrackContext`. | **DONE — `v0.2.0`** |
 | **M6** | On-screen UI | Now-playing and facet control rendered in-app. **Not a library browser** — Plexamp is the browser, and building a second one would be duplicating the better tool. | **DONE — `v0.8.0`** |
 | **M7** | eISCP receiver control | Power, input, and volume control of the receiver over the network. | **DONE — `v0.7.0`** |
-| **M8** | **Android TV** | Holocron on the Shield, so the theater does not need the PC powered on. A new platform layer — NDK, OpenGL **ES**, a different audio backend — but the contract, the analysis stage, the crystals and all of M5's protocol work port unchanged. | **The only milestone still open.** Rendering, the platform layer, packaging and provisioning are all done; what remains is the audio criterion — see Platform support |
+| **M8** | **Android TV** | Holocron on the Shield, so the theater does not need the PC powered on. A new platform layer — NDK, OpenGL **ES**, a different audio backend — while the contract, the analysis stage, the crystals and M5's protocol work port unchanged. | **DONE — `v1.0.0`** |
 
 **The minor version counts milestones finished, not milestone numbers.** M5 was
-taken first on purpose, so `v0.2.0` is M5 and `v0.5.0` is M1. `1.0.0` is reserved
-for the first build that plays music and renders end to end.
+taken first on purpose, so `v0.2.0` is M5 and `v0.5.0` is M1.
+
+**`1.0.0` broke that rule deliberately.** It was reserved for the first build that
+plays music and renders end to end — not for finishing any particular milestone —
+and by the count M8 was the eighth finished milestone with `v0.10.0` due. The two
+pointed at different releases and the criterion won, which is what it was written
+to do.
+
+<!-- measured: trim_ms.shield -->
+<!-- measured: trim_ms.rack -->
+**One thing that was expected to port did not.** `trim_ms` is not a property of
+the code but of the whole chain, and the Shield's chain measures **+260 ms**
+against the rack's −30 — 290 ms apart and on opposite sides of zero. The
+prediction had been that it would mostly port, because both boxes reach the same
+projector through the same receiver. The display half of that was right and the
+audio half was wrong: `played_us` comes from SDL's frame counter, which sits
+*above* AudioFlinger's own buffering, so the sound arrives later than the clock
+claims and the picture reads as early.
 
 **M1's spine works end to end.** `holocron` decodes a file, analyses it, plays it
 bit-perfect through WASAPI in exclusive mode, and draws every `AudioFrame` field —
@@ -263,13 +297,15 @@ of crystals that all quietly look wrong.
 
 ## The vault
 
-Three crystals ship, and they are deliberately different kinds of thing:
+Three crystals and one archive ship, and the crystals are deliberately different
+kinds of thing:
 
 | | |
 |---|---|
 | **`pulse`** | The reference. Honest rather than pretty: a ring that breathes with the bass, a rotation on the beat, a spectrum ring, a flash on onsets. If the pipeline is broken, this is what you test against. |
 | **`drift`** | Weather. Every binding drives a *quality* rather than a quantity — nothing on screen has a length you could read a value off. The picture as a place rather than a readout. |
 | **`duel`** | Two stick figures fighting, and the clashes land on the beat. |
+| **`storm`** | The first **archive** — a facet stack rather than a shader, layering two crystals with a blend mode and an opacity bound to the music. |
 
 `duel` is worth reading even if you never run it, because of what it does *not*
 need. A fight looks like it requires animation state — poses carried frame to
@@ -423,6 +459,24 @@ in a controller's device list, overridable with `[plex] device_name` — while b
 still identify as the `Holocron` product, because the app is the same and the
 device is not.
 
+**Two things make the second tier usable rather than merely possible**, and both
+came out of running on it rather than reasoning about it:
+
+- **A crystal is compiled once per machine.** `duel` took **23.9 seconds** to
+  compile on Tegra — a freeze on the render thread, which is what "switching
+  crystals is sluggish" turned out to mean. A program-binary cache took it to
+  **170 ms**, and a frame drawn from a restored binary is byte-identical to one
+  drawn from a freshly compiled program.
+- **Render scale is per crystal.** The expensive crystals are drawn at a fraction
+  of the window and upscaled by the compositor's final pass. The now-playing card
+  and the lyrics are drawn *after* the upscale, so text stays sharp whatever the
+  scale is.
+
+`[render] frame_report_seconds` is how a crystal gets a frame time from the box
+it will actually run on. "It works" means it works on the destination it is for,
+and a crystal at 60 fps on the rack is not verified for the Shield until the
+Shield has reported a number.
+
 **The Shield will not be bit-perfect, and that is the device rather than the
 code.** Every mixer output on it is 48 kHz 16-bit, and every output that carries
 44.1 kHz is `AUDIO_OUTPUT_FLAG_DIRECT`, which the NDK does not expose — so a
@@ -524,7 +578,7 @@ Acquired through vcpkg manifest mode ([`vcpkg.json`](vcpkg.json)), pinned by a
 |---|---|---|
 | C++20 toolchain | everything | MSVC Build Tools on the target; GCC/clang on Linux CI |
 | CMake + Ninja | build | vcpkg manifest mode (D-023) |
-| FFmpeg | decode | **LGPL-2.1**, `default-features` off with an explicit feature list so `gpl` and `nonfree` are excluded |
+| FFmpeg | decode | **LGPL-2.1**, `default-features` off with an explicit feature list so `gpl` and `nonfree` are excluded. The list is `avcodec`, `avformat`, `swresample`, plus **`openssl` on non-Windows only** — Windows gets TLS from schannel, and every other platform got none at all until that platform expression was added (#239). Without it a cast on the Shield would have played silence. |
 | SDL3 | window, event loop, portable sink | Zlib AND MIT AND Apache-2.0 |
 | WASAPI | audio output | Win32 SDK, nothing to acquire. Behind `AudioSink`. |
 | glad | GL 4.5 function loader | MIT, pinned to `gl-api-45` so a 4.6-only call is a compile error |
@@ -539,7 +593,7 @@ Acquired through vcpkg manifest mode ([`vcpkg.json`](vcpkg.json)), pinned by a
 
 | Dependency | For | Notes |
 |---|---|---|
-| spdlog | logging | MIT. Diagnostics currently go through plain `stderr`. |
+| spdlog | logging | MIT. **Still not acquired at `v1.0.0`, and increasingly unlikely to be.** Diagnostics go to `stdout` and `stderr`, and the one thing a logging library was wanted for — output that survives the process — is what `run_log.hpp` does in about 150 lines, with the rotation that matters (the run that failed is the *previous* run by the time anyone looks). |
 
 Plex's play-queue and timeline responses are consumed as XML and parsed by hand
 ([`src/plex/plex_playback.cpp`](src/plex/plex_playback.cpp)), so no JSON library

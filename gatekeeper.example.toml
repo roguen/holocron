@@ -768,8 +768,11 @@ on_volume = ""
 #
 # REQUIRED whenever `on_volume` is set, and it has NO DEFAULT ON PURPOSE. Plex's
 # slider is 0..100 and MVL is hex, so a pass-through sends MVL64 at the top --
-# which on a theater amplifier is full output, into a room, possibly at night,
-# from a phone in somebody's pocket. No ceiling is safe on every rack, and the
+# very loud, into a room, possibly at night, from a phone in somebody's pocket.
+# (This used to say "full output". On the reference rack MVL 64 is panel 50
+# against a maximum of 82, so it is not the top -- it is simply far more than
+# anyone wants unannounced. The warning was right; the arithmetic behind it was
+# not, for the reason set out below.) No ceiling is safe on every rack, and the
 # obvious guess is the amplifier's own maximum, which is the worst one available.
 # So it is demanded instead: set `on_volume` without this and the player says so
 # and forwards nothing.
@@ -780,6 +783,49 @@ on_volume = ""
 # would have said so. Start low and raise it.
 #
 #   volume_max = 40
+#
+# MEASURED ON THE REFERENCE RACK, 2026-08-12, against an Onkyo TX-RZ720. With
+# `volume_max = 40` the mapping is exact and was read back off the unit with
+# `MVLQSTN` at every step: 10% -> MVL 4, 25% -> 10, 50% -> 20, 100% -> 40. A
+# deliberately fast burst of six values ending at 100 also landed on 40, so the
+# coalescing keeps the last value rather than dropping it.
+#
+# ------------------------------------------------------------------------
+# THIS NUMBER MAY NOT BE THE ONE ON THE FRONT OF YOUR RECEIVER. READ THIS.
+# ------------------------------------------------------------------------
+#
+# It is in the units the PROTOCOL uses, and on a receiver with half-step volume
+# that is DOUBLE the number on the display. On the reference rack:
+#
+#     volume_max = 60   ->  the phone's slider tops out at panel 30
+#     volume_max = 140  ->  the phone's slider tops out at panel 70
+#
+# Confirmed three ways on 2026-08-12: MVL 60 sent while the panel read 30, MVL 80
+# sent while it read 40, and the unit's own device-info document reporting
+# `volmax="82" volstep="0"` for zone 1 -- where `volmax` is in PANEL units and
+# `volstep = 0` is Onkyo's encoding for half-step volume.
+#
+# This cost issue 312 an entire session and a confident wrong answer. The owner
+# set 40, saw the panel top out at 20, and everyone concluded his phone was
+# sending 50 instead of 100. It was sending 100. The player was scaling it
+# correctly. The panel was simply showing half the protocol value, and the two
+# readings were indistinguishable until a drag was captured command by command.
+#
+# So: SET IT, THEN LOOK AT THE PANEL. Whatever ratio your receiver uses, one
+# glance at the display after one drag tells you which units you are in, and no
+# amount of reasoning from the numbers alone will.
+#
+# HOLOCRON DOES NOT CONVERT THIS FOR YOU, deliberately. The ratio is a property
+# of the receiver, not of the protocol -- `volstep = 1` units are 1:1 -- so
+# dividing by two here would be right on this rack and wrong on the next one.
+# The player prints the MVL it sent; the panel is the authority on what that
+# means.
+#
+# TEST IT WITH NOTHING PLAYING. That is what makes it safe: the endpoint needs no
+# session, so the whole path can be exercised in silence. The unit was sitting at
+# MVL 91 when this was first run -- panel 45, an ordinary listening level, though
+# it was recorded at the time as alarmingly loud because the units were not yet
+# understood.
 volume_max = -1
 
 # REPLACING eISCP ENTIRELY is an edit to a value, not a change of shape -- which

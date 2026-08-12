@@ -9,10 +9,58 @@ The point is that a **new instance with an empty context window** can carry on
 without re-deriving anything. Write it for a competent stranger who has the repo
 and nothing else.
 
-Output goes to **`C:\Users\rogue\Documents\Development\HOLOCRON-HANDOFF.md`** —
-outside the repo, because it is about the session rather than the code.
+## The agent folder — write this DURING the session, not at the end
 
-Overwrite the previous one. It is a snapshot, not a log.
+**`C:\Users\rogue\Documents\Development\holocron-agent\`**, outside the repo
+because it is about how the work is being done rather than about the code.
+
+| file | what it is | when it changes |
+|---|---|---|
+| `AGENTS.md` | **Stable.** How to operate here: guardrails, which skills to use, working rules, and pointers into the repo for everything else. | Rarely, and deliberately. |
+| `current.md` | **Live.** What is being attempted right now, the decisions made, what is done, what remains, and the next concrete action. | Continuously, at every checkpoint. |
+
+### Why this exists, and it is not filing
+
+In a long session the opening instructions get compressed or pushed deep into the
+history, where they compete with tool output and intermediate results. The
+constraint given in the first message is still binding and is no longer readable.
+**This session lost the fact that D-048 had already confirmed the herald**, and
+re-derived it wrongly from a handoff instead — three summaries and an issue
+carried the error before anyone opened the log.
+
+`current.md` is the fix, and only if it is maintained **as the work happens**. A
+handoff composed at the end is composed from the most compressed context of the
+whole session, which is precisely when recall is worst. That is why the verify
+step below exists at all — and a file kept current needs far less of it.
+
+### Update `current.md` at these checkpoints
+
+- a PR merges, or a release is tagged
+- a decision is made that a later session would otherwise re-litigate
+- the owner changes the priority or defers something
+- a measurement lands
+- **before doing anything that takes more than a few minutes** — so an interrupted
+  session leaves a usable state rather than a half-finished thought
+
+### Re-read both files at these checkpoints
+
+- starting a new task
+- after any long tool sequence — a build, a device session, a CI wait
+- **whenever about to state something as established**. If it is not in
+  `current.md`, the wiki, or `docs/`, it is recall and must be checked.
+
+### Do NOT duplicate `CLAUDE.md` into `AGENTS.md`
+
+This is the trap, and this project has the scar. The version number lives in five
+places and nothing checked they agreed (issue 38); `trim_ms` was quoted in eight
+documents and went stale in all of them for a day (issue 265, D-064). A second
+copy of the standing rules would go the same way and would be believed while it
+was wrong.
+
+`AGENTS.md` holds **operating** rules — how to work, what to re-read, what needs
+the owner. `CLAUDE.md` holds **project** knowledge — architecture, subsystems,
+history, the five standing rules. Where they touch, `AGENTS.md` **points** at
+`CLAUDE.md` and does not restate it.
 
 ## Verify state, do not recall it
 
@@ -32,6 +80,18 @@ scripts\build.cmd
 `gh` may not be on PATH — use `C:\Program Files\GitHub CLI\gh.exe`.
 
 Check the wiki clone at `Development\holocron-wiki` is clean and pushed too.
+
+## Which file gets what
+
+The two files and the handoff are not three copies of the same thing.
+
+| | |
+|---|---|
+| `AGENTS.md` | sections 1 and 6 below — the standing instruction and how the owner works. These barely change and do not belong in a per-session document. |
+| `current.md` | sections 3, 4 and 5 — state, what was discovered, what to do next. Kept live. |
+| `HOLOCRON-HANDOFF.md` | a **pointer** at the folder plus the opening phrase. It stays because the owner knows that path. |
+
+Anything that would go stale in an hour belongs in `current.md` and nowhere else.
 
 ## What the document must contain
 
