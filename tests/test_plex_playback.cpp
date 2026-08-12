@@ -842,3 +842,157 @@ TEST_CASE("continuous is read off the command", "[plex][playback][queue]")
                                     request, detail));
     CHECK(request.continuous);
 }
+
+// ---------------------------------------------------------------------------
+// ISSUE 280. Handing off a play queue Plexamp already owns.
+//
+// CAPTURED FROM THE FIRST REAL PLEXAMP CAST, 2026-08-11, to the Shield. The
+// owner tapped a track in an album that was already queued on his phone. What
+// arrived was ONE command:
+//
+//   GET /player/playback/playMedia?address=192-168-68-13.<hash>.plex.direct
+//       &commandID=15&containerKey=/playQueues/11603?own=1
+//       &includeExternalMedia=1&key=/library/metadata/63949
+//       &machineIdentifier=<server>&port=32400&protocol=https&type=music
+//
+// and no `createPlayQueue` after it. The player resolved the track and stopped
+// there, which produced all three symptoms at once: it played `key` -- the
+// queue's FIRST item, not the tapped one -- it reported a timeline with
+// `ratingKey`, `playQueueID`, `playQueueVersion` and `playQueueItemID` all
+// empty, which left Plexamp polling 339 times without ever drawing its
+// controls, and at the end of the track it logged `0 of 0 in the queue` and
+// stopped.
+//
+// These cases are the two pure pieces of the fix. The fetch itself is HTTPS to
+// the media server and is not reachable from a test.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a containerKey naming a play queue yields its id", "[plex][playback][queue]")
+{
+    // Verbatim from the capture above, unencoded query string and all.
+    CHECK(play_queue_id_from_container_key("/playQueues/11603?own=1") == "11603");
+
+    // The same key as it comes back out of a timeline, with nothing trailing.
+    CHECK(play_queue_id_from_container_key("/playQueues/11603") == "11603");
+}
+
+TEST_CASE("a containerKey naming anything else yields nothing", "[plex][playback][queue]")
+{
+    // A single library item. Playing it alone is right, and inventing a queue
+    // id from it would fetch somebody else's queue.
+    CHECK(play_queue_id_from_container_key("/library/metadata/63949").empty());
+    CHECK(play_queue_id_from_container_key("/library/sections/3/all").empty());
+    CHECK(play_queue_id_from_container_key("").empty());
+
+    // Truncations and near-misses. A FRAGMENT OF AN ID IS WORSE THAN NO ID:
+    // fetching queue 11 instead of 11603 succeeds and plays the wrong album.
+    CHECK(play_queue_id_from_container_key("/playQueues/").empty());
+    CHECK(play_queue_id_from_container_key("/playQueues/11603/items").empty());
+    CHECK(play_queue_id_from_container_key("/playQueues/abc").empty());
+    CHECK(play_queue_id_from_container_key("?own=1").empty());
+}
+
+namespace {
+
+// Three tracks, the second one selected -- the shape the handoff produces.
+PlexQueue queue_of_three(std::size_t selected)
+{
+    PlexQueue q;
+    q.id      = "11603";
+    q.version = "4";
+    for (int i = 1; i <= 3; ++i) {
+        PlexTrack t;
+        t.key                = "/library/metadata/6394" + std::to_string(i);
+        t.play_queue_item_id = std::to_string(1000 + i);
+        t.part_key           = "/library/parts/" + std::to_string(i);
+        q.tracks.push_back(t);
+    }
+    q.selected = selected;
+    return q;
+}
+
+}  // namespace
+
+TEST_CASE("with no start key the server's selection wins", "[plex][playback][queue]")
+{
+    // ISSUE 280 IN ONE ASSERTION. The handoff supplies no key on purpose,
+    // because the key in the playMedia is the queue's first item rather than
+    // the tapped one. `playQueueSelectedItemID` is the truth, and honouring it
+    // is what makes the right song play.
+    CHECK(queue_start_index(queue_of_three(1), "") == 1);
+    CHECK(queue_start_index(queue_of_three(2), "") == 2);
+}
+
+TEST_CASE("a start key beats the server's selection", "[plex][playback][queue]")
+{
+    // ISSUE 115, AND IT MUST NOT REGRESS WHILE 280 IS BEING FIXED. Casting an
+    // album sends a playMedia naming the tapped track and then a
+    // createPlayQueue whose queue is selected at 0 whatever was tapped.
+    CHECK(queue_start_index(queue_of_three(0), "/library/metadata/63943") == 2);
+}
+
+TEST_CASE("a start key that is not in the queue falls back", "[plex][playback][queue]")
+{
+    // Refusing to play would be the wrong answer to a stale key.
+    CHECK(queue_start_index(queue_of_three(1), "/library/metadata/999") == 1);
+}
+
+TEST_CASE("a selection past the end of the queue is not followed", "[plex][playback][queue]")
+{
+    // NOT HYPOTHETICAL, AND NOT COSMETIC. `parse_play_queue` assigns `selected`
+    // from the track count BEFORE pushing the track, and a Track with no Part is
+    // deliberately skipped -- so a selected last track with no playable Part
+    // leaves `selected == tracks.size()`. The caller indexes straight into
+    // `tracks` with it.
+    CHECK(queue_start_index(queue_of_three(3), "") == 0);
+    CHECK(queue_start_index(queue_of_three(99), "") == 0);
+
+    PlexQueue empty;
+    CHECK(queue_start_index(empty, "") == 0);
+    CHECK(queue_start_index(empty, "/library/metadata/1") == 0);
+}
+
+TEST_CASE("the selected item survives a track being skipped for having no Part",
+          "[plex][playback][queue]")
+{
+    // The parser's own path to the out-of-range case above, so the guard is
+    // pinned to the thing that produces it rather than to a hand-made number.
+    const std::string xml =
+        "<MediaContainer playQueueID=\"11603\" playQueueVersion=\"4\" "
+        "playQueueSelectedItemID=\"1002\">"
+        "<Track key=\"/library/metadata/1\" ratingKey=\"1\" playQueueItemID=\"1001\">"
+        "<Media audioCodec=\"flac\"><Part key=\"/library/parts/1\" container=\"flac\"/></Media>"
+        "</Track>"
+        "<Track key=\"/library/metadata/2\" ratingKey=\"2\" playQueueItemID=\"1002\">"
+        "</Track>"
+        "</MediaContainer>";
+
+    PlexQueue q;
+    REQUIRE(parse_play_queue(xml, q));
+    REQUIRE(q.tracks.size() == 1);
+    CHECK(q.selected == 1);   // one past the end, because track 2 had no Part
+    CHECK(queue_start_index(q, "") == 0);
+}
+
+TEST_CASE("the handoff's own key would select the wrong track", "[plex][playback][queue]")
+{
+    // THE MECHANISM OF ISSUE 280, PINNED.
+    //
+    // This is not a test of queue_start_index -- it already behaved this way and
+    // had to. It is a test of the DECISION that
+    // CastCommand::request_queue_handoff clears `last_play_key` rather than
+    // setting it from the command, and it exists because that line looks like an
+    // omission and is the entire fix for "it played the first song".
+    //
+    // On the capture, the queue was selected at item 2 and the playMedia's own
+    // key named item 1. Feed the key in and the wrong song plays:
+    const PlexQueue handed_over = queue_of_three(1);
+    const std::string key_in_the_command = "/library/metadata/63941";   // the queue's FIRST item
+
+    CHECK(queue_start_index(handed_over, key_in_the_command) == 0);   // what the owner saw
+    CHECK(queue_start_index(handed_over, {}) == 1);                   // what he asked for
+
+    // And the reason the key cannot simply be dropped everywhere: after a
+    // createPlayQueue it is the only record of the choice (issue 115).
+    CHECK(queue_start_index(queue_of_three(0), "/library/metadata/63943") == 2);
+}

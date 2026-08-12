@@ -999,6 +999,37 @@ struct CastCommand {
         // came before this and is the only thing that says where to start.
     }
 
+    // ISSUE 280. A queue the controller already owns, handed over by a playMedia
+    // and not preceded by anything.
+    //
+    // ONE MUTATION UNDER ONE LOCK, and that is the point of it being its own
+    // method rather than request_play() followed by request_queue(). Those two
+    // take the lock separately, so a take() landing between them would start the
+    // single track and then start the queue a frame later -- an audible restart.
+    //
+    // AND `last_play_key` IS CLEARED RATHER THAN SET. In this command the key
+    // names the queue's first item regardless of what the owner tapped, so
+    // carrying it would override the server's own selection with the wrong
+    // track. That is issue 280's "it played the first song of the album". Left
+    // empty, queue_start_index() falls through to `playQueueSelectedItemID`,
+    // which is the truth here. Clearing rather than leaving it alone also stops
+    // a key remembered from a previous cast reaching across into this one.
+    void request_queue_handoff(const PlayRequest& req, const PlexQueue& q)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        play       = true;
+        stop       = false;
+        have_queue = true;
+        queue      = q;
+        request    = req;
+
+        // Honoured, unlike the createPlayQueue path where it is always zero:
+        // handing off a queue mid-track carries where the phone had reached.
+        offset_ms = req.offset_ms;
+
+        last_play_key.clear();
+    }
+
     bool stop = false;
 
     // Tri-state on purpose: 0 means nothing asked, 1 pause, 2 resume. A plain
@@ -2685,6 +2716,12 @@ int main(int argc, char** argv)
     companion.set_pause_handler([&cast](bool paused) { cast.request_pause(paused); });
     companion.set_queue_handler(
         [&cast](const PlayRequest& request, const PlexQueue& q) { cast.request_queue(request, q); });
+    // ISSUE 280. A queue handed over by a playMedia, with no createPlayQueue
+    // behind it. Separate from the handler above because the two disagree about
+    // where playback starts -- see CastCommand::request_queue_handoff.
+    companion.set_queue_handoff_handler([&cast](const PlayRequest& request, const PlexQueue& q) {
+        cast.request_queue_handoff(request, q);
+    });
     companion.set_skip_handler(
         [&cast](int direction, const std::string& item, const std::string& key) {
             cast.request_skip(direction, item, key);
@@ -4065,34 +4102,30 @@ int main(int argc, char** argv)
                 PlexTrack art_of = taken.track;
 
                 if (!new_queue.empty()) {
-                    // A whole album. Take it over, start where the server says,
+                    // A whole album. Take it over, start where the rule says,
                     // and let the end-of-track path walk the rest.
+                    //
+                    // WHERE TO START IS ONE RULE IN ONE PLACE (issue 280). It
+                    // has been wrong twice in opposite directions -- track one
+                    // when a key was tapped, and the tapped key when the server's
+                    // own selection was the truth -- so it lives in
+                    // queue_start_index() beside the reasoning, and is tested.
+                    // The old inline version also indexed `tracks` with an
+                    // unchecked `selected`, which the parser can leave one past
+                    // the end.
                     queue         = new_queue;
                     queue_request = request;
-                    at_in_queue   = new_queue.selected;
-
-                    // EXCEPT THAT WHAT THE SERVER SAYS IS ALWAYS TRACK ONE.
-                    //
-                    // Casting from the middle of an album sends a playMedia
-                    // naming the track that was tapped and then a
-                    // createPlayQueue for the album; the queue comes back
-                    // selected at 0 either way, and no skipTo follows. Honouring
-                    // `selected` alone plays track one whatever was tapped --
-                    // which is what "it would not render progress unless I
-                    // started on the first song" was: the controller was
-                    // following a track the player was not playing.
-                    if (!start_key.empty()) {
-                        for (std::size_t i = 0; i < queue.tracks.size(); ++i) {
-                            if (queue.tracks[i].key == start_key) {
-                                at_in_queue = i;
-                                break;
-                            }
-                        }
-                    }
+                    at_in_queue   = queue_start_index(queue, start_key);
 
                     const PlexTrack& track = queue.tracks[at_in_queue];
-                    url    = stream_url(queue_request, track.part_key);
-                    offset = 0;
+                    url                    = stream_url(queue_request, track.part_key);
+
+                    // Was hardcoded to 0, which was right while the only way to
+                    // get a queue was createPlayQueue -- that path sets the
+                    // offset to zero itself. A handoff (issue 280) carries where
+                    // the phone had reached, and starting it from the beginning
+                    // would rewind the song the owner was listening to.
+                    offset = taken.offset_ms;
 
                     what             = NowPlaying{};
                     what.source      = url;
