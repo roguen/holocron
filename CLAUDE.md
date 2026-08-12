@@ -125,6 +125,26 @@ has somebody to dismiss it.
 device appears in the list, a play command resolves against the media server,
 and a `PlaybackSession` starts from the resulting URL.
 
+**AND A REAL PLEXAMP CAST NOW PLAYS A QUEUE CORRECTLY, 2026-08-11, on the
+SHIELD** -- which is the first time any cast came from the phone rather than a
+synthetic `playMedia` posted from the rack, and it broke immediately. Handing
+over a queue Plexamp ALREADY OWNS sends `playMedia` with
+`containerKey=/playQueues/N` and **no `createPlayQueue` after it**. The handler
+resolved the track and ignored the containerKey, so the player had a song and no
+queue: it played the queue's first item rather than the tapped one, reported a
+timeline with `ratingKey`, `playQueueID`, `playQueueVersion` and
+`playQueueItemID` all empty -- which left the phone polling 339 times and never
+drawing its controls -- and stopped at `0 of 0 in the queue`. **One missing
+call, three symptoms.** `git log -S fetch_play_queue` on that file is empty, so
+it had never worked; the verified path was `createPlayQueue`, whose own comment
+says *"No playMedia arrives at all -- observed against a real Plexamp"*, true
+for the case it was observed on and not for a handoff. Fixed in issue 280 and
+**confirmed by a cast**: all four identifiers populated and the queue walked to
+track four. **Where playback starts now lives in one tested function**,
+`queue_start_index`, because it has been wrong twice in opposite directions --
+the tapped key must win after a `createPlayQueue` (115) and must be ignored in a
+handoff (280).
+
 **What is NOT confirmed: audible output from a real cast.** The cast path was
 exercised with `--no-audio`; the file path is verified bit-perfect. That gap is
 the first thing to close.
@@ -501,7 +521,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v0.9.0`. `main` is stable and CI is green. Bump **in the same
+Current version `v0.9.1`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
