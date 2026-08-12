@@ -236,6 +236,25 @@ cp crystals/* "$out/staging/assets/crystals/"
 mkdir -p "$out/staging/assets/instruments"
 cp instruments/* "$out/staging/assets/instruments/"
 
+# THE LICENCE TEXT, and this is an obligation rather than a courtesy.
+#
+# The APK distributes a GPL-3.0-or-later program. Section 4 requires conveying a
+# copy of the Licence with it, and until 2026-08-12 the APK carried NONE: checked
+# by scanning libholocron.so, which holds the string "GPL-3.0-or-later" and the
+# whole of THIRD-PARTY-NOTICES.md, but NOT the GPL text itself. The colophon shows
+# Holocron's NOTICE -- the short paragraph -- which is not the same document.
+#
+# The Windows zip has always been able to ship these as ordinary files beside the
+# executable. On Android there is no "beside the executable", so they go in as
+# assets and land in the data directory with the vault on first run.
+#
+# `--notices` is not an answer here either: it needs a command line, and an
+# Android TV has none its owner can use. That was already the argument for the
+# on-screen colophon (M6); this is the same argument one level down.
+mkdir -p "$out/staging/assets/licenses"
+cp LICENSE "$out/staging/assets/licenses/LICENSE"
+cp THIRD-PARTY-NOTICES.md "$out/staging/assets/licenses/THIRD-PARTY-NOTICES.md"
+
 # `aapt add`, NOT `zip`. Git Bash on Windows ships no zip, and this is the tool
 # the Android SDK provides for the job -- aapt v1, not aapt2, which has no `add`.
 #
