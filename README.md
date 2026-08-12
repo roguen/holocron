@@ -140,15 +140,15 @@ owner is in Plexamp and casts to the theater. See the use case above.
 
 Shuffle, "play next" and staying paused across a skip all work as of `v0.2.1`.
 
-**What M5 still owes, none of it functional:** an artwork cache, so the same
-sleeve is not re-fetched for every track
-([#118](https://github.com/roguen/holocron/issues/118)); genre and year on
-`TrackContext`, which are not on a Plex `Track` element and would cost a second
-request each; and PNG album art, which needs zlib
-([#116](https://github.com/roguen/holocron/issues/116)) and is moot while Plex
-serves JPEG.
+**M5 owes nothing further.** The artwork cache
+([#118](https://github.com/roguen/holocron/issues/118)) was closed by *measuring*
+rather than building it — the NAS answers a repeated sleeve in **1 ms**, so the
+cache stays in memory and the on-disk one ships unused on purpose. Genre and year
+are on `TrackContext`. PNG art ([#116](https://github.com/roguen/holocron/issues/116))
+needs zlib and stays moot while Plex serves JPEG.
 
-M1's spine and M2's plumbing are complete underneath it.
+**Seven of the eight milestones are finished.** M1's spine and M2's plumbing are
+complete underneath this, and only M8 is still open.
 
 ```bash
 scripts\build.cmd                                  # build and test, from a clean shell
@@ -203,14 +203,14 @@ field may not change.
 
 | | Milestone | Scope | Status |
 |---|---|---|---|
-| **M1** | **Spine and audio** | CMake, SDL3 window, GL 4.5 core context, FFmpeg decode, `AudioSink` + `WasapiSink`, the analysis stage that fills `AudioFrame`, the lock-free triple buffer, and a debug facet that draws every field so the numbers can be trusted before anything is built on them. | **the spine is complete** |
+| **M1** | **Spine and audio** | CMake, SDL3 window, GL 4.5 core context, FFmpeg decode, `AudioSink` + `WasapiSink`, the analysis stage that fills `AudioFrame`, the lock-free triple buffer, and a debug facet that draws every field so the numbers can be trusted before anything is built on them. | **DONE — `v0.5.0`** |
 | **M2** | Crystals | Vault loading, the `.frag` + `.toml` crystal format, manifest uniform binding against the contract, hot reload. | **DONE — `v0.6.0`** |
 | **M3** | Compositor | The facet stack: layering, blend modes, transitions, archives. | **DONE — `v0.3.0`** |
 | **M4** | projectM | libprojectM 4.x driven as a facet source, reading MilkDrop presets from a user-supplied path. | **DONE — `v0.4.0`** |
 | **M5** | **Plex playback target** | **The primary use case.** GDM discovery so Holocron appears in Plexamp's cast list, the Plex Companion control endpoints, timeline reporting, streaming the selected track, and metadata and album art into `TrackContext`. | **DONE — `v0.2.0`** |
 | **M6** | On-screen UI | Now-playing and facet control rendered in-app. **Not a library browser** — Plexamp is the browser, and building a second one would be duplicating the better tool. | **DONE — `v0.8.0`** |
 | **M7** | eISCP receiver control | Power, input, and volume control of the receiver over the network. | **DONE — `v0.7.0`** |
-| **M8** | **Android TV** | Holocron on the Shield, so the theater does not need the PC powered on. A new platform layer — NDK, OpenGL **ES**, a different audio backend — but the contract, the analysis stage, the crystals and all of M5's protocol work port unchanged. | **IN PROGRESS. It runs there** — see Platform support |
+| **M8** | **Android TV** | Holocron on the Shield, so the theater does not need the PC powered on. A new platform layer — NDK, OpenGL **ES**, a different audio backend — but the contract, the analysis stage, the crystals and all of M5's protocol work port unchanged. | **The only milestone still open.** Rendering, the platform layer, packaging and provisioning are all done; what remains is the audio criterion — see Platform support |
 
 **The minor version counts milestones finished, not milestone numbers.** M5 was
 taken first on purpose, so `v0.2.0` is M5 and `v0.5.0` is M1. `1.0.0` is reserved
@@ -221,11 +221,6 @@ bit-perfect through WASAPI in exclusive mode, and draws every `AudioFrame` field
 showing the frame the speakers are producing rather than the newest one the
 decoder has reached. Measured on the target: OpenGL 4.5 core on a Radeon RX 6800,
 a 160-frame (~3.6 ms) device period, zero dropouts.
-
-**The version numbers track how many milestones are done, not which one.**
-`v0.2.0` is the first completed milestone and that milestone is M5, taken out of
-order deliberately because it is the one the project exists for. M2, M3 and M4 are
-not finished, which is why this is not `v0.6.0`.
 
 <!-- measured: trim_ms.rack -->
 `--trim-ms` compensates for latency *downstream* of the device clock — the DAC, the
@@ -367,9 +362,8 @@ scripts\make-calibration-tone.ps1
 holocron.exe calibration-tone.wav --calibrate --trim-ms 0
 ```
 
-`trim_ms` is a **difference, not a latency** — audio latency after the device
-clock, minus display latency — so a negative value is normal with any projector,
-and the number belongs to a whole rack rather than to any box in it. It cannot be
+`trim_ms` is a difference rather than a latency, and belongs to the whole rack —
+see the measured figure and what that means under Roadmap above. It cannot be
 derived from a spec sheet: a display's *rated* input lag is roughly half its real
 contribution.
 
@@ -410,7 +404,7 @@ pull requests are not.
 | Platform | Role | State today |
 |---|---|---|
 | **Windows x86-64 + discrete GPU** | The build and test target | **Runs everything.** Plays bit-perfect through `WasapiSink` in exclusive mode, is cast to from Plexamp, and draws the whole facet stack. |
-| **Android TV — NVIDIA Shield** | Where it is going | **Runs and draws.** An ES 3.2 context on Tegra, the `RGBA16F` compositor layers, crystals, hot reload and the licence panel. The Companion control page answers on it — **HTTP 200 in 2.5 ms**. **It has been cast to from Plexamp**, 2026-08-11 — the real thing from the phone, not a synthetic command from the rack. A 44.1 kHz FLAC streamed over HTTPS from the NAS, an album queue walked track by track with the phone's own controls live, `drift` drawing at 1920×1080 upscaled to the 4K signal and driven by the audio. The first such cast found a bug that had never been exercised ([#280](https://github.com/roguen/holocron/issues/280)). **Not bit-perfect there**, and that is the device rather than the code — see below. |
+| **Android TV — NVIDIA Shield** | Where it is going | **Runs, draws and has been cast to.** An ES 3.2 context on Tegra, the `RGBA16F` compositor layers, crystals, hot reload and the licence panel — and `holocron-analyze` has run there too, against the same tone as on Windows: 21,802 of 21,996 CSV cells bit-identical, 182 more inside the golden file's tolerance, and the last 12 differing by exactly one printed ULP. The Companion control page answers, but the port itself can move: on a Shield with the Plex mobile app installed, that app frequently already holds the usual port, and Holocron falls back to a free one and announces it. **It has been cast to from Plexamp**, 2026-08-11 — the real thing from the phone, not a synthetic command from the rack. A 44.1 kHz FLAC streamed over HTTPS from the NAS, an album queue walked track by track with the phone's own controls live, `drift` drawing at 1920×1080 upscaled to the 4K signal and driven by the audio. The first such cast found a bug that had never been exercised ([#280](https://github.com/roguen/holocron/issues/280)). **Not bit-perfect there**, and that is the device rather than the code — see below. |
 | **Linux** | CI only | Builds and hygiene checks run here. Not a deployment target. |
 | **macOS** | Not supported | Was the development host until 2026-08-01. No longer in the project. |
 
@@ -524,24 +518,25 @@ Acquired through vcpkg manifest mode ([`vcpkg.json`](vcpkg.json)), pinned by a
 | glm | vector and matrix types | MIT, required by `track_context.hpp` |
 | Catch2 | tests | BSL-1.0, test-only, never shipped |
 | cpp-httplib | the Plex Companion HTTP endpoints | M5. MIT, header-only. Optional OpenSSL, zlib and brotli features are all off — Companion is plain HTTP on the LAN |
+| toml++ | `gatekeeper.toml`, crystal manifests, archives | M2. MIT, header-only |
 
 **Not yet acquired:**
 
 | Dependency | For | Notes |
 |---|---|---|
-| toml++ | `gatekeeper.toml`, crystal manifests, archives | M2. MIT |
-| nlohmann/json | Plex API | M5. MIT |
-| spdlog | logging | MIT |
-| libprojectM 4.x | MilkDrop preset rendering | M4. LGPL-2.1, **must stay dynamically linked** through its C API (D-012) |
+| spdlog | logging | MIT. Diagnostics currently go through plain `stderr`. |
 
-An FFT and a loudness meter are still to be chosen ([#9](https://github.com/roguen/holocron/issues/9)).
-Because Holocron is GPL-3.0-or-later, **GPL dependencies are compatible** — FFTW
-(GPL-2.0+) and aubio (GPL-3.0) are both usable, so that choice comes down to
-technical merit rather than licence. Two constraints survive: AGPL-3.0 (Essentia)
-warrants care because of its network clause, and `--enable-nonfree` FFmpeg stays
-excluded because it is non-redistributable under any licence. Whichever library
-wins, onset detection is written in-tree regardless — `AudioFrame`'s counter
-semantics are not something an off-the-shelf library provides.
+Plex's play-queue and timeline responses are consumed as XML and parsed by hand
+([`src/plex/plex_playback.cpp`](src/plex/plex_playback.cpp)), so no JSON library
+was ever needed for M5. Onset detection is written in-tree rather than pulled
+from a library, regardless of which FFT or loudness dependency was chosen —
+`AudioFrame`'s counter semantics are not something an off-the-shelf library
+provides.
+
+**libprojectM appears in neither table on purpose.** M4 is done, and it is still
+never a vcpkg dependency: opened at runtime through its C API rather than linked,
+so a build without it compiles, links and runs one entry short in the vault. See
+[MilkDrop presets](#milkdrop-presets) below.
 
 ---
 
@@ -570,10 +565,10 @@ inline functions and templates making the calling object file a derivative work,
 and the C ABI is what makes the boundary hold across MSVC and clang, which is a
 present requirement on the Windows target rather than future-proofing.
 
-One thing to confirm at M4 rather than assume: whether the shipped `COPYING`
-says LGPL-2.1-**only** or LGPL-2.1-**or-later**. Combined with a GPL-3.0 work
-that distinction matters, because only the "or later" form upgrades cleanly into
-the GPL-3 family. Record the exact SPDX identifier when the dependency lands.
+**Confirmed rather than assumed, at M4:** the shipped 4.1.7 headers read
+LGPL-2.1-**or-later** — vcpkg's own port metadata says **-only**, and is wrong.
+Combined with a GPL-3.0 work that distinction matters, because only the "or
+later" form upgrades cleanly into the GPL-3 family.
 
 **MilkDrop preset packs are not vendored.** They run to tens of thousands of files
 by hundreds of authors, overwhelmingly with no licence statement at all — which
