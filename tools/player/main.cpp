@@ -1230,6 +1230,39 @@ struct CastCommand {
         return true;
     }
 
+    // Go to a specific trim rather than move by one. Issue 302.
+    //
+    // ABSOLUTE, NOT A DELTA, and that is the difference between this and the
+    // buttons above. Those send a delta on purpose -- a page rendered a moment
+    // before somebody else moved the trim still applies the right CHANGE. Reset
+    // is not a change, it is a destination: "whatever is in the config file". A
+    // delta computed on an HTTP worker from a value the render thread is moving
+    // would land somewhere neither of them meant.
+    bool         trim_absolute_asked = false;
+    double       trim_absolute       = 0.0;
+
+    void request_trim_absolute(double value_ms)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        trim_absolute_asked = true;
+        trim_absolute       = value_ms;
+
+        // A pending delta is discarded rather than applied on top. Reset means
+        // the saved value, not the saved value plus whatever was in flight.
+        trim_delta = 0.0;
+    }
+
+    bool take_trim_absolute(double& out_value)
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!trim_absolute_asked) {
+            return false;
+        }
+        out_value           = trim_absolute;
+        trim_absolute_asked = false;
+        return true;
+    }
+
     // How often the picture should move on by itself. Crosses to the render
     // thread like everything else here, though this one performs no GL work --
     // it is queued for consistency and because the render loop owns the clock it
@@ -2799,6 +2832,14 @@ int main(int argc, char** argv)
     std::atomic<double> saved_trim_ms{opt.trim_ms};
     const std::string   config_for_save = resolve_data_path(opt.config);
 
+    // WHAT IS IN THE FILE, as against the live trim above. Issue 302.
+    //
+    // Seeded from the value the config was loaded with, so a fresh start is
+    // already "saved" and Reset is a no-op rather than a jump to zero. Updated
+    // on a successful Save, because after that the file and the live value agree
+    // by definition.
+    std::atomic<double> config_trim_ms{opt.trim_ms};
+
     companion.set_trim_handler([&cast](double delta_ms) { cast.request_trim(delta_ms); });
     companion.set_sync_handler([&cast] { cast.request_sync(); });
 
@@ -2812,7 +2853,8 @@ int main(int argc, char** argv)
     // The write itself is a read-modify-write of the config file through
     // update_trim_ms(), which is a tested pure function precisely because THIS
     // FILE HOLDS THE PLEX TOKEN.
-    companion.set_save_tuning_handler([&saved_trim_ms, config_for_save]() -> bool {
+    companion.set_save_tuning_handler(
+        [&saved_trim_ms, &config_trim_ms, config_for_save]() -> bool {
         std::ifstream in(config_for_save, std::ios::binary);
         std::string   before;
         if (in.is_open()) {
@@ -2845,7 +2887,20 @@ int main(int argc, char** argv)
             std::filesystem::remove(temp, ec);
             return false;
         }
+
+        // The file and the live value now agree, so Reset has nothing to undo
+        // until the next button press. Updated only on SUCCESS -- a failed save
+        // that moved the baseline would make the page claim a value the file
+        // does not contain.
+        config_trim_ms.store(saved_trim_ms.load(std::memory_order_relaxed),
+                             std::memory_order_relaxed);
         return true;
+    });
+
+    // Issue 302. Reset goes to whatever the config says, which after a Save is
+    // what was just written and before one is what the player started with.
+    companion.set_reset_tuning_handler([&cast, &config_trim_ms] {
+        cast.request_trim_absolute(config_trim_ms.load(std::memory_order_relaxed));
     });
     companion.set_advance_handler([&cast](const std::string& mode) {
         cast.request_advance(mode);
@@ -3378,6 +3433,12 @@ int main(int argc, char** argv)
     // your place in the track is a different task from one you cannot.
     double       trim_ms = opt.trim_ms;
     std::int64_t trim_us = static_cast<std::int64_t>(trim_ms * 1000.0);
+
+    // What the last frame selection actually resolved to, so a trim change can
+    // say whether it MOVED the picture rather than only the number. See the note
+    // at the selection.
+    std::uint64_t last_selected_index = 0;
+    std::int64_t  last_target_us      = 0;
 
     // How far ahead of the speakers the newest analysis frame currently is.
     // Updated every frame while a device clock exists; see where it is assigned.
@@ -4736,13 +4797,23 @@ int main(int argc, char** argv)
                 // beside the value is what turns "nudging stopped helping" into
                 // "you have run out of lead", which are indistinguishable
                 // otherwise.
-                if (trim_ms < 0.0 && -trim_ms >= headroom_ms && headroom_ms > 0.0) {
+                // `headroom_ms > 0.0` USED TO BE PART OF THIS, and it suppressed the
+                // warning in the one case that needed it most: headroom of
+                // EXACTLY zero is a trim that is completely clamped, and the
+                // player reported it as `(lead available: 0 ms)` as though
+                // nothing were wrong. Observed on the Shield 2026-08-12 at
+                // trim_ms = -85, while the owner was trying to calibrate and
+                // could not work out why the picture would not move.
+                if (trim_ms < 0.0 && -trim_ms >= headroom_ms) {
                     std::printf("holocron: trim_ms = %.0f  -- AT THE FLOOR, only %.0f ms of lead "
                                 "exists; the picture cannot be advanced further\n",
                                 trim_ms, headroom_ms);
                 } else {
-                    std::printf("holocron: trim_ms = %.0f  (lead available: %.0f ms)\n", trim_ms,
-                                headroom_ms);
+                    std::printf("holocron: trim_ms = %.0f  (lead available: %.0f ms, showing "
+                            "analysis frame %llu at target %lld ms)\n", trim_ms,
+                                headroom_ms,
+                            static_cast<unsigned long long>(last_selected_index),
+                            static_cast<long long>(last_target_us / 1000));
                 }
                 std::fflush(stdout);
             }
@@ -4770,6 +4841,18 @@ int main(int argc, char** argv)
             const std::int64_t target    = played_us - trim_us;
             have_frame = session.select_frame(target > 0 ? static_cast<std::uint64_t>(target) : 0,
                                               tap.scratch());
+
+            // WHICH FRAME THE TRIM ACTUALLY LANDED ON. Kept so the next trim
+            // change can report it.
+            //
+            // The owner moved the trim across 140 ms on the Shield and the
+            // picture did not visibly follow. "The trim has no effect" and "the
+            // trim moved the selection and the eye could not see it" are
+            // completely different faults with identical symptoms, and nothing
+            // printed could tell them apart -- the trim line reported the value
+            // it had been SET to, which was never in doubt.
+            last_selected_index = tap.scratch().frame_index;
+            last_target_us      = target;
 
             // Measure what the OLD behaviour would have shown, so the fix is
             // quantified rather than asserted. The newest frame's position
@@ -4953,7 +5036,8 @@ int main(int argc, char** argv)
             // Published for the Save button, which runs on an HTTP worker and
             // must not read the live double this loop is writing. Issue 295.
             saved_trim_ms.store(trim_ms, std::memory_order_relaxed);
-            companion.set_control_tuning(trim_ms, headroom_ms, showing_sync, opt.config);
+            companion.set_control_tuning(trim_ms, headroom_ms, showing_sync, opt.config,
+                                         config_trim_ms.load(std::memory_order_relaxed));
 
             // WHETHER THE SECTION APPEARS AT ALL follows the LIVE stack rather
             // than the vault, so the controls are on the page exactly when they
@@ -5024,16 +5108,35 @@ int main(int argc, char** argv)
             std::fflush(stdout);
         }
 
+        // Reset first, so a delta arriving in the same frame moves from the value
+        // that was reset to rather than from the one it replaced.
+        if (double target = 0.0; cast.take_trim_absolute(target)) {
+            trim_ms = std::clamp(target, -2000.0, 2000.0);
+            trim_us = static_cast<std::int64_t>(trim_ms * 1000.0);
+            std::printf("holocron: trim_ms = %.0f  -- reset to the saved value\n", trim_ms);
+            std::fflush(stdout);
+        }
+
         if (double delta = 0.0; cast.take_trim(delta)) {
             trim_ms = std::clamp(trim_ms + delta, -2000.0, 2000.0);
             trim_us = static_cast<std::int64_t>(trim_ms * 1000.0);
-            if (trim_ms < 0.0 && -trim_ms >= headroom_ms && headroom_ms > 0.0) {
+            // `headroom_ms > 0.0` USED TO BE PART OF THIS, and it suppressed the
+                // warning in the one case that needed it most: headroom of
+                // EXACTLY zero is a trim that is completely clamped, and the
+                // player reported it as `(lead available: 0 ms)` as though
+                // nothing were wrong. Observed on the Shield 2026-08-12 at
+                // trim_ms = -85, while the owner was trying to calibrate and
+                // could not work out why the picture would not move.
+                if (trim_ms < 0.0 && -trim_ms >= headroom_ms) {
                 std::printf("holocron: trim_ms = %.0f  -- AT THE FLOOR, only %.0f ms of lead "
                             "exists; the picture cannot be advanced further\n",
                             trim_ms, headroom_ms);
             } else {
-                std::printf("holocron: trim_ms = %.0f  (lead available: %.0f ms)\n", trim_ms,
-                            headroom_ms);
+                std::printf("holocron: trim_ms = %.0f  (lead available: %.0f ms, showing "
+                            "analysis frame %llu at target %lld ms)\n", trim_ms,
+                            headroom_ms,
+                            static_cast<unsigned long long>(last_selected_index),
+                            static_cast<long long>(last_target_us / 1000));
             }
             std::fflush(stdout);
         }

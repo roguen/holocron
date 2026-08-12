@@ -744,10 +744,31 @@ right and it is exactly the obviously-harmless deviation that made the device
 vanish from Plexamp when `navigation` was dropped from the capability string.
 Match the reference; trim with evidence.
 
+<!-- measured: trim_ms.shield -->
 <!-- measured: trim_ms.rack -->
-**`trim_ms = -30` mostly DOES port**, and is the exception. It is a difference
-between the audio and display paths, not a latency, and both boxes reach the same
-projector through the same receiver. Re-measure to confirm rather than to discover.
-That re-measurement is issue 278, and when it exists it belongs in
-[`measurements.toml`](measurements.toml) as `trim_ms.shield`, with its own
-bracket and resolution — this paragraph then quotes that instead of the rack's.
+**`trim_ms` DOES NOT PORT, and the prediction that it mostly would was wrong.**
+Measured 2026-08-12, issue 278: **+260 ms on the Shield** against **-30 on the
+rack**, a difference of 290 ms — and a change of sign.
+
+<!-- measured: trim_ms.rack -->
+This paragraph used to read *"`trim_ms = -30` mostly DOES port, and is the
+exception"*, on the reasoning that a trim is a difference between the audio and
+display paths and both boxes reach the same projector through the same receiver.
+**The display half of that argument was right and the audio half was wrong.**
+
+`played_us` comes from SDL's frame counter, which sits **above** AudioFlinger's
+own buffering. There is output latency below it the player cannot see, so the
+sound arrives later than the clock claims and the picture reads as early —
+which needs a large POSITIVE trim, where every trim this project had ever
+recorded was negative because a projector is slower than a PC's audio path.
+
+<!-- measured: trim_ms.shield -->
+The bracket: clearly early at +220, clearly late at +295, midpoint +257.5, taken
+as **+260** on the 5 ms grid, so the resolution is about ±37.5 ms. Recorded with
+its conditions in [`measurements.toml`](measurements.toml).
+
+**It cost a false start worth remembering.** The first attempt swept −60 to +80
+in 25 ms steps, saw nothing move, and was reported as the trim having no effect.
+Measured afterwards, the trim was correct to the millisecond — `target = played −
+trim`, with the selected analysis frame tracking it exactly — and 140 ms of sweep
+was simply nowhere near far enough. The tool gained ±100 steps (issue 304).

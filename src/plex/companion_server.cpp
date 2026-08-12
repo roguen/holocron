@@ -456,7 +456,22 @@ std::string tuning_page(const CompanionServer::ControlState& state)
     // 5 ms is the step --calibrate uses, because the judgement itself resolves to
     // roughly 20 ms and a finer step would imply a precision the eye cannot
     // supply. 25 is there so a bracket can be swept without forty taps.
-    static const char* const kSteps[] = {"-25", "-5", "+5", "+25"};
+    // COARSE AND FINE, BECAUSE THE RANGE TURNED OUT TO BE MUCH WIDER THAN THE
+    // RACK'S. Issue 304.
+    //
+    // The owner swept the Shield from -60 to +80 in 25 ms steps, saw no change
+    // he could judge, and reported the tool as having no effect. Measured
+    // afterwards: the trim was working perfectly -- `target = played - trim` to
+    // the millisecond, and the selected analysis frame tracking it exactly. What
+    // was wrong is that 140 ms of sweep was nowhere near far enough on that
+    // device, and at 25 ms a press the distance is unreachable by hand.
+    //
+    // The Shield's clock is SDL's frame counter, which sits above AudioFlinger's
+    // own buffering -- so there is output latency below it that the clock cannot
+    // see, the sound arrives later than `played_us` says, and the picture reads
+    // as early. That wants a large POSITIVE trim, not the small negative one the
+    // rack needs.
+    static const char* const kSteps[] = {"-100", "-25", "-5", "+5", "+25", "+100"};
     out += "<div class=\"row\">";
     for (const char* step : kSteps) {
         out += "<form method=\"post\" action=\"/control/trim\">"
@@ -485,8 +500,35 @@ std::string tuning_page(const CompanionServer::ControlState& state)
     // THE BUTTON, not a block of text to retype. Issue 295: this page is used
     // standing in a dark room holding a phone, and the measurement it produces
     // is the one M8 has been waiting on.
-    out += "<form method=\"post\" action=\"/control/tuning/save\">"
-           "<button class=\"wide\" type=\"submit\">Save the trim to the config</button></form>";
+    // SAVE AND RESET SIDE BY SIDE. Issue 302: Save makes the live value the saved
+    // one, Reset makes the saved value live again, and neither is useful without
+    // the other.
+    out += "<div class=\"row\">"
+           "<form method=\"post\" action=\"/control/tuning/save\">"
+           "<button type=\"submit\">Save</button></form>"
+           "<form method=\"post\" action=\"/control/tuning/reset\">"
+           "<button type=\"submit\">Reset</button></form>"
+           "</div>";
+
+    // WHETHER THERE IS ANYTHING TO SAVE, said only when there is. A banner that
+    // is always present stops being read; a line that appears exactly when the
+    // live value has drifted from the file is the whole of the state somebody
+    // needs to know before deciding which of the two buttons to press.
+    {
+        char saved_line[192];
+        if (state.trim_ms != state.saved_trim_ms) {
+            std::snprintf(saved_line, sizeof(saved_line),
+                          "Unsaved. The config says %.0f ms; Reset goes back to that.",
+                          state.saved_trim_ms);
+        } else {
+            std::snprintf(saved_line, sizeof(saved_line),
+                          "Saved. The config says %.0f ms, which is what is in force.",
+                          state.saved_trim_ms);
+        }
+        out += "<div class=\"sub\" style=\"margin:8px 0\">";
+        out += html_escape(saved_line);
+        out += "</div>";
+    }
 
     if (state.save_result > 0) {
         out += "<div class=\"sub\" style=\"margin:8px 0\">Written to <b>";
@@ -599,6 +641,7 @@ struct CompanionServer::Impl {
     CompanionServer::NowPlayingHandler    now_playing_handler;
     CompanionServer::TrimHandler          trim_handler;
     CompanionServer::SaveTuningHandler save_tuning_handler;
+    CompanionServer::ResetTuningHandler reset_tuning_handler;
     CompanionServer::SyncHandler          sync_handler;
     CompanionServer::AdvanceHandler       advance_handler;
     CompanionServer::ProjectMStepHandler   projectm_step_handler;
@@ -1061,7 +1104,37 @@ void CompanionServer::Impl::install_routes()
         res.set_content("", "text/plain");
     };
 
-    self->server.Post("/control/trim", [self, redirect_to_tuning](const httplib::Request& req,
+    // WAIT FOR THE RENDER LOOP TO CATCH UP BEFORE REDIRECTING.
+    //
+    // ISSUE 307. Every button on this page was ONE PRESS BEHIND: the POST queues
+    // a change for the render thread and returns immediately, the browser
+    // follows the 303, and the page is rendered from state the render loop has
+    // not republished yet. So the first press appeared to do nothing and every
+    // press after it showed the result of the previous one.
+    //
+    // Reported from the projector as "I had to press twice the first time and
+    // then after when I pressed something it was from the previous."
+    //
+    // Bounded and short. The render loop publishes every frame, so this is
+    // normally one frame -- but `duel` on the Shield runs at 8 fps, which is
+    // 125 ms a frame, and the deadline has to clear that or the fix would work
+    // on cheap crystals and not on the expensive ones. On a timeout the page is
+    // served anyway, exactly as before.
+    const auto wait_for_publish = [self](double previous) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (std::chrono::steady_clock::now() < deadline) {
+            {
+                const std::lock_guard<std::mutex> lock(self->control_mutex);
+                if (self->control.trim_ms != previous) {
+                    return;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        }
+    };
+
+    self->server.Post("/control/trim", [self, redirect_to_tuning, wait_for_publish](
+                                          const httplib::Request& req,
                                                                   httplib::Response&      res) {
         self->decorate(res);
         const auto delta = req.get_param_value("delta");
@@ -1071,16 +1144,52 @@ void CompanionServer::Impl::install_routes()
             // a picture that has stopped following the music at all -- and the
             // page only ever offers 25.
             const std::int64_t ms = parse_int64(delta, 0);
+            // +/-200 covers the widest single step the page offers with room
+            // to spare. It is a guard against a hand-written request from
+            // anyone on the LAN, not a limit on the trim itself -- the trim
+            // clamps at +/-2000 in the render loop.
             if (ms != 0 && ms >= -200 && ms <= 200) {
                 std::printf("control: trim %+lld ms\n", static_cast<long long>(ms));
                 std::fflush(stdout);
                 if (self->trim_handler) {
+                    double before = 0.0;
+                    {
+                        const std::lock_guard<std::mutex> lock(self->control_mutex);
+                        before = self->control.trim_ms;
+                    }
                     self->trim_handler(static_cast<double>(ms));
+                    wait_for_publish(before);
                 }
             } else if (ms != 0) {
                 std::fprintf(stderr, "control: refusing a trim step of %lld ms\n",
                              static_cast<long long>(ms));
             }
+        }
+        redirect_to_tuning(res);
+    });
+
+    // ISSUE 302. Put the trim back to what is in the config.
+    //
+    // The other half of Save. A sweep that went somewhere wrong otherwise has no
+    // way back except sweeping out again by eye, which is exactly the judgement
+    // this page exists to avoid asking anyone to make twice.
+    self->server.Post("/control/tuning/reset", [self, redirect_to_tuning, wait_for_publish](
+                                                   const httplib::Request&, httplib::Response& res) {
+        self->decorate(res);
+        if (self->reset_tuning_handler) {
+            double before = 0.0;
+            {
+                const std::lock_guard<std::mutex> lock(self->control_mutex);
+                before = self->control.trim_ms;
+            }
+            self->reset_tuning_handler();
+            wait_for_publish(before);
+        }
+        std::printf("control: reset tuning to the saved value\n");
+        std::fflush(stdout);
+        {
+            const std::lock_guard<std::mutex> lock(self->control_mutex);
+            self->control.save_result = 0;   // the page is clean again
         }
         redirect_to_tuning(res);
     });
@@ -1736,6 +1845,11 @@ void CompanionServer::set_save_tuning_handler(SaveTuningHandler handler)
     impl_->save_tuning_handler = std::move(handler);
 }
 
+void CompanionServer::set_reset_tuning_handler(ResetTuningHandler handler)
+{
+    impl_->reset_tuning_handler = std::move(handler);
+}
+
 void CompanionServer::set_advance_handler(AdvanceHandler handler)
 {
     impl_->advance_handler = std::move(handler);
@@ -1764,9 +1878,10 @@ void CompanionServer::set_advance(const std::string& mode, int seconds)
 }
 
 void CompanionServer::set_control_tuning(double trim_ms, double headroom_ms, bool sync_showing,
-                                         const std::string& config_path)
+                                         const std::string& config_path, double saved_trim_ms)
 {
     const std::lock_guard<std::mutex> lock(impl_->control_mutex);
+    impl_->control.saved_trim_ms = saved_trim_ms;
     impl_->control.trim_ms      = trim_ms;
     impl_->control.headroom_ms  = headroom_ms;
     impl_->control.sync_showing = sync_showing;
