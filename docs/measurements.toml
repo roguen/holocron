@@ -89,8 +89,16 @@ rather than of whatever was playing. It was still correct. It is simply no \
 longer current, and every document that names it has to say so.\
 """
 
-# The Shield's own trim is issue 278 and is the owner's to measure -- it is the
-# last thing M8 needs. When it exists it belongs here as `trim_ms.shield`, with
-# its bracket and resolution, and docs/shield.md's paragraph on porting the trim
-# gets a marker for it. The rack's -30 does NOT carry over: different GPU,
-# different compositor, different audio stack.
+[[measurement]]
+key        = "trim_ms.shield"
+value      = "260"
+unit       = "ms"
+measured   = "2026-08-12"
+subject    = "the Shield"
+conditions = "NVIDIA Shield Android TV Pro -> Onkyo TX-RZ720 on STRM BOX (SLI11) -> BenQ TK800; 1920x1080 upscaled to a 4K 59.94 signal; SDL audio at 44.1 kHz, 882-frame period, AudioFlinger resampling to 48 kHz below the frame counter"
+bracket    = "clearly early at +220, clearly late at +295, midpoint +257.5, taken as +260 on the 5 ms grid"
+resolution = "about +/-37.5 ms"
+config     = "the Shield's gatekeeper.toml, [audio] trim_ms"
+issue      = 278
+note       = """
+POSITIVE, AND THAT IS THE WHOLE STORY OF THIS NUMBER. Every trim this project had recorded was negative -- the rack is -30 -- because a projector is slower than a PC's audio path and the picture has to be pulled earlier. The Shield is 290 ms the other way.The reason is where the clock is taken. `played_us` comes from SDL's frame counter, which sits ABOVE AudioFlinger's own buffering, so there is output latency below it that the player cannot see. The sound arrives later than the clock claims, the picture reads as early, and correcting it needs a large positive trim. Same room, same receiver, same projector as the rack: the display half of the subtraction is shared and the AUDIO half is not.It cost a false start. The first attempt swept -60 to +80 in 25 ms steps, saw nothing move, and was reported as the trim having no effect -- measured afterwards, the trim was correct to the millisecond and 140 ms of sweep was simply nowhere near far enough. The tool gained +/-100 steps (issue 304)."""
