@@ -5,6 +5,8 @@
 
 #include <holocron/window.hpp>
 
+#include <holocron/run_log.hpp>
+
 // BEFORE glad, and only on Windows. glad defines APIENTRY itself if nothing has,
 // and windows.h arriving afterwards would redefine it. WIN32_LEAN_AND_MEAN keeps
 // winsock and the shell headers out of a translation unit that only wants
@@ -393,12 +395,46 @@ bool Window::pump()
         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
             impl_->refresh_size();
             break;
+        // SCANCODES THROUGHOUT, NOT KEYCODES. Issue 298 added AC_BACK, which is a
+        // scancode with no sensible keycode, and a file that matched some keys one
+        // way and one key the other would be a file where the next person picks
+        // whichever they saw first. Every entry here is a physical button, which
+        // is what a scancode is; none of them is a character, which is what a
+        // keycode is for.
         case SDL_EVENT_KEY_DOWN:
-            if (e.key.key == SDLK_ESCAPE) {
+            switch (e.key.scancode) {
+            // ESCAPE AND BACK ARE THE SAME REQUEST. Issue 298: on a television
+            // there is no keyboard and BACK is the button that means "I am
+            // finished with this" -- it used to do nothing, because SDL was
+            // handing it to Android (see the TRAP_BACK_BUTTON hint in
+            // android_entry.cpp, without which this branch is dead code).
+            //
+            // NOT the same as HOME, which backgrounds the app and keeps it
+            // playing on purpose (D-062). Ending playback because somebody
+            // glanced at another app would be the opposite of what that decided.
+            //
+            // No #ifdef: a PC keyboard has no AC_BACK, so the branch simply never
+            // fires there, and a platform-conditional would make the two
+            // destinations diverge for no gain.
+            case SDL_SCANCODE_ESCAPE:
+            case SDL_SCANCODE_AC_BACK:
                 if (!e.key.repeat) {
+                    // WHICH BUTTON, because on the Shield this line is the only
+                    // evidence of why the app went away -- and "it closed by
+                    // itself" and "BACK closed it" are the same observation from
+                    // the couch.
+                    //
+                    // `say` RATHER THAN printf, because logcat is a ring buffer
+                    // and was measured to have already rolled by the time this
+                    // question was asked. The run log is a file (issue 281).
+                    const char* name = SDL_GetScancodeName(e.key.scancode);
+                    holocron::say("holocron: quit requested by %s\n",
+                                  (name != nullptr && *name != '\0') ? name : "a key");
                     impl_->quit.store(true, std::memory_order_relaxed);
                 }
-            } else if (e.key.key == SDLK_LEFT) {
+                break;
+
+            case SDL_SCANCODE_LEFT:
                 // AUTO-REPEAT FILTERED HERE AND ALLOWED BELOW, which is a real
                 // distinction rather than an inconsistency. Left and right switch
                 // crystal, and each switch recompiles a shader -- holding the key
@@ -406,24 +442,36 @@ bool Window::pump()
                 if (!e.key.repeat) {
                     impl_->keys[static_cast<std::size_t>(Key::kLeft)] = true;
                 }
-            } else if (e.key.key == SDLK_RIGHT) {
+                break;
+
+            case SDL_SCANCODE_RIGHT:
                 if (!e.key.repeat) {
                     impl_->keys[static_cast<std::size_t>(Key::kRight)] = true;
                 }
-            } else if (e.key.key == SDLK_UP) {
+                break;
+
+            case SDL_SCANCODE_UP:
                 // Up and down nudge a number, which is cheap, and sweeping to
                 // find a bracket is exactly what calibration asks for. Repeat is
                 // the feature here.
                 impl_->keys[static_cast<std::size_t>(Key::kUp)] = true;
-            } else if (e.key.key == SDLK_DOWN) {
+                break;
+
+            case SDL_SCANCODE_DOWN:
                 impl_->keys[static_cast<std::size_t>(Key::kDown)] = true;
-            } else if (e.key.key == SDLK_F1) {
+                break;
+
+            case SDL_SCANCODE_F1:
                 // Filtered like left and right rather than repeated like up and
                 // down: holding it would toggle the panel at the OS repeat rate,
                 // which reads as a flicker rather than as a control.
                 if (!e.key.repeat) {
                     impl_->keys[static_cast<std::size_t>(Key::kAbout)] = true;
                 }
+                break;
+
+            default:
+                break;
             }
             break;
         default:
