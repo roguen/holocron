@@ -968,10 +968,12 @@ bool play_queue_track(PlaybackSession& session, const PlexQueue& queue,
     timeline.protocol           = queue_request.protocol;
     timeline.state = was_paused ? TransportState::kPaused : TransportState::kPlaying;
 
-    std::printf("holocron: %s \"%s\" (%zu of %zu)%s%s\n", verb, track.title.c_str(), index + 1,
-                queue.tracks.size(), was_paused ? " [PAUSED]" : "",
-                session.bit_perfect() ? " [BIT-PERFECT]" : "");
-    std::fflush(stdout);
+    // ISSUE 338, STEP 0 -- `say`, not `printf`. This is the ONE path every queued
+    // track starts through, so on the Shield it is the only durable record that
+    // anything played at all: stdout there is logcat, which is a ring buffer.
+    say("holocron: %s \"%s\" (%zu of %zu)%s%s\n", verb, track.title.c_str(), index + 1,
+        queue.tracks.size(), was_paused ? " [PAUSED]" : "",
+        session.bit_perfect() ? " [BIT-PERFECT]" : "");
     return true;
 }
 
@@ -3279,19 +3281,23 @@ int main(int argc, char** argv)
     // read that way on the first real cast, where BIT-PERFECT was reported
     // correctly on the playing line and looked absent because of this one.
     if (session.active()) {
-        std::printf("holocron: audio %s, %u frames per period%s\n", session.backend_name(),
-                    session.period_frames(),
-                    session.bit_perfect() ? ", BIT-PERFECT" : ", not bit-perfect");
+        // ISSUE 338, STEP 0. The audio device is the third of the three lines
+        // step 0 names: which backend, what period, and whether the output is
+        // bit-perfect are the facts a fault report from the theatre needs, and
+        // on the Shield they were reaching a ring buffer only.
+        say("holocron: audio %s, %u frames per period%s\n", session.backend_name(),
+            session.period_frames(),
+            session.bit_perfect() ? ", BIT-PERFECT" : ", not bit-perfect");
         // THE REASON, not just the verdict. "not bit-perfect" on its own is a
         // fact with no next step, and the reasons lead different places: a
         // shared mixer is worth a settings change, and a platform whose every
         // output is 48 kHz 16-bit is worth accepting rather than chasing.
         if (!session.bit_perfect()) {
-            std::printf("holocron:   %s\n", session.bit_perfect_note());
+            say("holocron:   %s\n", session.bit_perfect_note());
         }
     } else {
-        std::printf("holocron: no track yet -- the audio device opens when one is cast,\n"
-                    "  because its format follows the track\n");
+        say("holocron: no track yet -- the audio device opens when one is cast,\n"
+            "  because its format follows the track\n");
     }
 
     DebugFacet facet;
@@ -4699,10 +4705,13 @@ int main(int argc, char** argv)
                         begin_track(request, art_of, what);
 
                         // The title, never the URL: the URL carries a token.
-                        std::printf("holocron: %s \"%s\" -- %s%s\n",
-                                    request.paused ? "loaded (paused)" : "playing",
-                                    what.title.c_str(), what.artist.c_str(),
-                                    session.bit_perfect() ? " [BIT-PERFECT]" : "");
+                        //
+                        // ISSUE 338, STEP 0 -- `say`, not `printf`. See the same
+                        // change in start_track and in companion_server.cpp.
+                        say("holocron: %s \"%s\" -- %s%s\n",
+                            request.paused ? "loaded (paused)" : "playing", what.title.c_str(),
+                            what.artist.c_str(),
+                            session.bit_perfect() ? " [BIT-PERFECT]" : "");
                         // THE DEVICE REPORT, and this is the only place a
                         // television ever sees it. The startup report is
                         // printed only when a track was named on the command
@@ -4710,13 +4719,12 @@ int main(int argc, char** argv)
                         // that early -- and an Activity launch has no track.
                         // So on the Shield the backend, the period and the
                         // bit-perfect verdict were never said at all.
-                        std::printf("holocron:   audio %s, %u frames per period, %s\n",
-                                    session.backend_name(), session.period_frames(),
-                                    session.bit_perfect() ? "BIT-PERFECT" : "not bit-perfect");
+                        say("holocron:   audio %s, %u frames per period, %s\n",
+                            session.backend_name(), session.period_frames(),
+                            session.bit_perfect() ? "BIT-PERFECT" : "not bit-perfect");
                         if (!session.bit_perfect()) {
-                            std::printf("holocron:   %s\n", session.bit_perfect_note());
+                            say("holocron:   %s\n", session.bit_perfect_note());
                         }
-                        std::fflush(stdout);
                     }
                 }
             }

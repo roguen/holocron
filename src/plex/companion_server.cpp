@@ -12,6 +12,7 @@
 #include <holocron/companion_server.hpp>
 
 #include <holocron/drag_log.hpp>
+#include <holocron/run_log.hpp>
 
 #include <httplib.h>
 
@@ -823,6 +824,13 @@ struct CompanionServer::Impl {
         // transcript is the deliverable's real output: the protocol is
         // community-documented, so what the phone actually asks for is the only
         // authority available for what to implement next.
+        //
+        // AND DELIBERATELY STILL `printf` WHILE THE PLAYBACK LINES BELOW ARE
+        // `say`. Issue 338's step 0 moved what the player DECIDED into the run
+        // log; this is one line per request from a phone that polls, and putting
+        // it there would bury the four or five lines the file exists to carry.
+        // run_log.hpp says it in the header: a log nobody can read to the end is
+        // a log nobody reads.
         std::printf("companion: %s %s\n", req.method.c_str(), path.c_str());
         std::fflush(stdout);
     }
@@ -986,8 +994,7 @@ void CompanionServer::Impl::install_routes()
         PlayRequest request;
         std::string detail;
         if (!parse_play_media(flatten(req.params), request, detail)) {
-            std::printf("companion: cannot play that -- %s\n", detail.c_str());
-            std::fflush(stdout);
+            say("companion: cannot play that -- %s\n", detail.c_str());
             // Answered as an error rather than a bare 200: the controller is
             // entitled to know the command did not take, and a success envelope
             // for something that will never play is a lie it cannot detect.
@@ -998,20 +1005,24 @@ void CompanionServer::Impl::install_routes()
         PlexTrack       track;
         const HttpError err = resolve_track(request, track, detail);
         if (err != HttpError::kOk) {
-            std::printf("companion: cannot resolve %s -- %s\n  %s\n", request.key.c_str(),
-                        to_string(err), detail.c_str());
-            std::fflush(stdout);
+            say("companion: cannot resolve %s -- %s\n  %s\n", request.key.c_str(),
+                    to_string(err), detail.c_str());
             res.set_content(response_xml(500, "Internal Server Error"), "text/xml");
             return;
         }
 
         // The TITLE, never the URL. The URL carries the playback token in its
         // query string, and this log is pasted into issues and chat windows.
-        std::printf("companion: play \"%s\" -- %s, %s (%s %s, %lld ms in%s)\n",
-                    track.title.c_str(), track.artist.c_str(), track.album.c_str(),
-                    track.codec.c_str(), track.container.c_str(),
-                    static_cast<long long>(request.offset_ms), request.paused ? ", paused" : "");
-        std::fflush(stdout);
+        //
+        // ISSUE 338, STEP 0. This is `say` rather than `printf` because on the
+        // Shield stdout is logcat and logcat is a ring buffer, so the durable
+        // file could say what the player STARTED WITH and nothing about what it
+        // was asked to play. A cast to a sleeping Shield was read as dropped on
+        // exactly that silence, and it had not been dropped.
+        say("companion: play \"%s\" -- %s, %s (%s %s, %lld ms in%s)\n", track.title.c_str(),
+            track.artist.c_str(), track.album.c_str(), track.codec.c_str(),
+            track.container.c_str(), static_cast<long long>(request.offset_ms),
+            request.paused ? ", paused" : "");
 
         // ISSUE 280. A `playMedia` whose containerKey names a play queue is a
         // HANDOFF of a queue the controller already owns, not a request for one
@@ -1030,10 +1041,9 @@ void CompanionServer::Impl::install_routes()
                 fetch_play_queue(request, queue_id, self->device.machine_identifier, queue,
                                  queue_detail);
             if (qerr == HttpError::kOk) {
-                std::printf("companion: queue %s handed over -- %zu track(s), on %zu (\"%s\")\n",
-                            queue.id.c_str(), queue.tracks.size(), queue.selected,
-                            queue.tracks[queue_start_index(queue, {})].title.c_str());
-                std::fflush(stdout);
+                say("companion: queue %s handed over -- %zu track(s), on %zu (\"%s\")\n",
+                    queue.id.c_str(), queue.tracks.size(), queue.selected,
+                    queue.tracks[queue_start_index(queue, {})].title.c_str());
 
                 // The queue handler ONLY. Calling the play handler as well would
                 // set the "what was tapped" key from this command, and in a
@@ -1049,10 +1059,9 @@ void CompanionServer::Impl::install_routes()
             // single-track path below. Said out loud because the difference is
             // otherwise invisible: playback starts either way, and only the
             // advance at the end of the track goes missing.
-            std::fprintf(stderr,
-                         "holocron: could not read play queue %s -- %s\n  %s\n"
-                         "  playing the one track instead; it will not advance\n",
-                         queue_id.c_str(), to_string(qerr), queue_detail.c_str());
+            say_err("holocron: could not read play queue %s -- %s\n  %s\n"
+                    "  playing the one track instead; it will not advance\n",
+                    queue_id.c_str(), to_string(qerr), queue_detail.c_str());
         }
 
         if (self->play_handler) {
@@ -1074,8 +1083,7 @@ void CompanionServer::Impl::install_routes()
         PlayRequest request;
         std::string detail;
         if (!parse_create_play_queue(flatten(req.params), request, detail)) {
-            std::printf("companion: cannot build a queue -- %s\n", detail.c_str());
-            std::fflush(stdout);
+            say("companion: cannot build a queue -- %s\n", detail.c_str());
             res.set_content(response_xml(400, "Bad Request"), "text/xml");
             return;
         }
@@ -1084,17 +1092,14 @@ void CompanionServer::Impl::install_routes()
         const HttpError err =
             create_play_queue(request, self->device.machine_identifier, queue, detail);
         if (err != HttpError::kOk) {
-            std::printf("companion: cannot build a queue -- %s\n  %s\n", to_string(err),
-                        detail.c_str());
-            std::fflush(stdout);
+            say("companion: cannot build a queue -- %s\n  %s\n", to_string(err),
+                    detail.c_str());
             res.set_content(response_xml(500, "Internal Server Error"), "text/xml");
             return;
         }
 
-        std::printf("companion: queue %s -- %zu track(s), starting at %zu (\"%s\")\n",
-                    queue.id.c_str(), queue.tracks.size(), queue.selected,
-                    queue.tracks[queue.selected].title.c_str());
-        std::fflush(stdout);
+        say("companion: queue %s -- %zu track(s), starting at %zu (\"%s\")\n", queue.id.c_str(),
+            queue.tracks.size(), queue.selected, queue.tracks[queue.selected].title.c_str());
 
         if (self->queue_handler) {
             self->queue_handler(request, queue);
@@ -1122,10 +1127,9 @@ void CompanionServer::Impl::install_routes()
         const auto item = req.params.find("playQueueItemID");
         const auto key  = req.params.find("key");
 
-        std::printf("companion: %s\n", direction == 1    ? "skip next"
-                                       : direction == -1 ? "skip previous"
-                                                         : "skip to a chosen track");
-        std::fflush(stdout);
+        say("companion: %s\n", direction == 1    ? "skip next"
+                               : direction == -1 ? "skip previous"
+                                                 : "skip to a chosen track");
 
         if (self->skip_handler) {
             self->skip_handler(direction,
@@ -1296,7 +1300,7 @@ void CompanionServer::Impl::install_routes()
         if (self->save_tuning_handler) {
             saved = self->save_tuning_handler();
         }
-        std::printf("control: save tuning -- %s' + NL + '", saved ? "written" : "FAILED");
+        std::printf("control: save tuning -- %s\n", saved ? "written" : "FAILED");
         std::fflush(stdout);
         {
             const std::lock_guard<std::mutex> lock(self->control_mutex);
@@ -1587,8 +1591,7 @@ void CompanionServer::Impl::install_routes()
 
                          const auto id = req.params.find("playQueueID");
                          if (id != req.params.end() && self->refresh_queue_handler) {
-                             std::printf("companion: refresh play queue %s\n", id->second.c_str());
-                             std::fflush(stdout);
+                             say("companion: refresh play queue %s\n", id->second.c_str());
                              self->refresh_queue_handler(id->second);
                          }
                          res.set_content(response_xml(200, "OK"), "text/xml");
@@ -1609,9 +1612,8 @@ void CompanionServer::Impl::install_routes()
                          if (offset != req.params.end() && self->seek_handler) {
                              const std::int64_t position = parse_int64(offset->second, -1);
                              if (position >= 0) {
-                                 std::printf("companion: seek to %lld ms\n",
-                                             static_cast<long long>(position));
-                                 std::fflush(stdout);
+                                 say("companion: seek to %lld ms\n",
+                                     static_cast<long long>(position));
                                  self->seek_handler(position);
                              }
                          }
@@ -1665,8 +1667,7 @@ void CompanionServer::Impl::install_routes()
                            (req.path.find("/playPause") != std::string::npos &&
                             self->last_reported_playing());
 
-        std::printf("companion: %s\n", pause ? "pause" : "play");
-        std::fflush(stdout);
+        say("companion: %s\n", pause ? "pause" : "play");
 
         if (self->pause_handler) {
             self->pause_handler(pause);
@@ -1681,8 +1682,7 @@ void CompanionServer::Impl::install_routes()
                                                      httplib::Response& res) {
         self->note(req);
         self->decorate(res);
-        std::printf("companion: stop\n");
-        std::fflush(stdout);
+        say("companion: stop\n");
         if (self->stop_handler) {
             self->stop_handler();
         }
