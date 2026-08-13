@@ -120,7 +120,7 @@ gain response — and may not change what it *means*.
 
 ## Current status
 
-**`v1.0.1`, and all eight milestones are finished.** Pick an album in Plexamp,
+**`v1.0.2`, and all eight milestones are finished.** Pick an album in Plexamp,
 cast it to the theater, and it plays — bit-perfect, with the visuals coloured by
 the album's own cover and the receiver switched to the right input on the way.
 
@@ -128,6 +128,16 @@ The phone's volume slider drives the amplifier from either destination, and it
 opens where the receiver actually is rather than asserting a level at it — which
 is what `v1.0.1` fixed, along with the units mismatch that made a ceiling of 40
 top out at a displayed 20.
+
+`v1.0.2` is the first release **built and signed by CI** rather than by hand on
+one machine. That is not housekeeping: the Windows download published with
+`v1.0.0` was a debug build and **would not have launched on any computer without
+Visual Studio installed**, which nobody could have known, because the only machine
+that ever ran it was the one that built it. The build now fails outright on a
+debug runtime import. It also fixes album art — Plex's photo transcoder does not
+transcode, so a sleeve stored as a PNG arrived as PNG and silently took the whole
+palette down with it, on 157 of 2,450 albums in the library it was measured
+against.
 
 `1.0.0` was never about finishing the milestone list. It was reserved for the
 first build that plays music and renders end to end, and it was taken on
