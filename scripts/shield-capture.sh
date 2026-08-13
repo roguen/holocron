@@ -75,6 +75,21 @@ note() { echo; echo "=== $1"; }
     adb shell date -u
     note "uptime"
     adb shell uptime
+
+    # THE DISPLAY STATE, AND IT IS NOT A CURIOSITY -- IT IS A KNOWN CAUSE.
+    #
+    # Measured 2026-08-13: launching Holocron while the display is OFF gives
+    # onCreate -> onStart -> onResume -> onPause -> onStop in about 15 ms. SDL's
+    # gate for creating its native thread needs a ready surface AND
+    # mIsResumedCalled, and onStop clears the latter -- so SDL_main is never
+    # entered. The result is a live process with no SDLThread, no sockets, no run
+    # log and no GDM: exactly issue 281's 2026-08-12 shape.
+    #
+    # So read this BEFORE concluding anything from an absent SDLThread. Asleep
+    # plus no SDLThread is the known cause; awake plus no SDLThread is not.
+    note "display and wakefulness -- READ THIS BEFORE JUDGING A MISSING SDLThread"
+    adb shell dumpsys power | grep -i -E "mWakefulness=|Display Power"
+    adb shell dumpsys display | grep -i -E "mGlobalDisplayState|mScreenState"
     note "build"
     adb shell getprop ro.build.version.release
     adb shell getprop ro.build.version.sdk
@@ -82,16 +97,51 @@ note() { echo; echo "=== $1"; }
     adb shell dumpsys package "$package" | grep -E "versionCode|versionName|firstInstallTime|lastUpdateTime"
 } > "$out/00-device.txt" 2>&1
 
-# --- 1. the process and its THREADS ---------------------------------------
+# --- 1. the process and its THREADS BY NAME -------------------------------
 #
-# `-T` is the whole point: the presence or absence of `SDLThread` is what says
-# whether SDL's native main was ever entered, and that is the one fact that
-# separates the two known occurrences. A bare `ps` cannot answer it.
+# THE PRESENCE OR ABSENCE OF `SDLThread` IS THE ONE FACT THIS WHOLE SCRIPT EXISTS
+# TO ESTABLISH. It says whether SDL's native main was ever entered, which is what
+# separates the two known occurrences from each other.
+#
+# `ps -A -T -o ...,ARGS` DOES NOT ANSWER IT, and the first version of this script
+# used exactly that. `ARGS` is the process command line, so every thread prints
+# `io.github.roguen.holocron` and the thread NAMES are nowhere in the output. The
+# script ran, produced a plausible-looking table, and could not answer its own
+# question -- found by using it on a real occurrence.
+#
+# `/proc/<pid>/task/*/comm` is the thread name. Read directly, because `ps -o CMD`
+# on this device's toybox prints the process name there too.
+pid=$(adb shell pidof "$package" 2>/dev/null | tr -d '\r' | awk '{print $1}')
+
 {
-    note "processes and threads"
-    adb shell ps -A -T -o PID,TID,ETIME,S,ARGS | grep -E "holocron|PID" || echo "NO holocron PROCESS AT ALL"
-    note "just the pid"
-    adb shell pidof "$package" || echo "no pid"
+    note "pid"
+    if [ -n "$pid" ]; then
+        echo "$pid"
+    else
+        echo "NO holocron PROCESS AT ALL"
+    fi
+
+    note "thread names -- look for SDLThread"
+    if [ -n "$pid" ]; then
+        MSYS_NO_PATHCONV=1 adb shell "for t in /proc/$pid/task/*; do echo \"\$(basename \$t) \$(cat \$t/comm)\"; done"
+    else
+        echo "(no process)"
+    fi
+
+    note "the verdict on that"
+    if [ -z "$pid" ]; then
+        echo "NO PROCESS -- neither known occurrence; the app is simply not running"
+    elif MSYS_NO_PATHCONV=1 adb shell "cat /proc/$pid/task/*/comm" 2>/dev/null | tr -d '\r' | grep -qx "SDLThread"; then
+        echo "SDLThread PRESENT -- native code ran. If there are also no sockets,"
+        echo "this is the 2026-08-11 shape, which is the one still unexplained."
+    else
+        echo "NO SDLThread -- SDL_main was never entered, so no native code ran at all."
+        echo "Check the display state in 00-device.txt FIRST: a launch with the display"
+        echo "OFF produces exactly this, and that cause is known (see issue 281)."
+    fi
+
+    note "elapsed times, for how long ago it started"
+    adb shell ps -A -o PID,ETIME,ARGS | grep -E "holocron|PID" || echo "(no process)"
 } > "$out/01-process.txt" 2>&1
 
 uid=$(adb shell dumpsys package "$package" 2>/dev/null | sed -n 's/.*userId=\([0-9]*\).*/\1/p' | head -1 | tr -d '\r')
@@ -161,14 +211,22 @@ done
 
 # --- the one line to read first ------------------------------------------
 {
+    note "was the native side ever running"
+    sed -n '/the verdict on that/,/^$/p' "$out/01-process.txt" | grep -v "the verdict on that" | grep -v '^===' | grep -v '^$'
+
+    note "display state at capture time"
+    grep -i -E "mWakefulness=|Display Power" "$out/00-device.txt" || echo "(not captured)"
+
     note "the startup summary from each log, if there is one"
     grep -h "startup --" "$out"/holocron*.log 2>/dev/null || echo "no startup line -- either an older build, or it never got that far"
+
     note "anything about the listener going"
     grep -h -i "listener is GONE\|listener is back\|not registering" "$out"/holocron*.log 2>/dev/null || echo "nothing"
 } > "$out/06-verdict.txt" 2>&1
 
 echo
 echo "captured into $out"
-echo "read $out/06-verdict.txt first, then 01-process.txt for whether SDLThread exists."
+echo "read $out/06-verdict.txt first -- it answers, in order: did native code run,"
+echo "was the display on, and what did the last complete startup manage to bind."
 echo
 echo "THE APP HAS NOT BEEN TOUCHED. Recover it however you like now."
