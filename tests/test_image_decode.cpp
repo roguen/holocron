@@ -18,6 +18,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <iterator>
@@ -81,9 +82,17 @@ TEST_CASE("the fixtures are actually there", "[image]")
 TEST_CASE("a PNG is refused cleanly, because this FFmpeg has no zlib", "[image]")
 {
     // NOT AN ASPIRATION -- A PIN ON REAL BEHAVIOUR. PNG is DEFLATE-compressed, so
-    // its decoder needs zlib, and vcpkg.json takes FFmpeg with default-features
-    // off, which drops it. Holocron fetches art through Plex's photo transcoder
-    // and gets JPEG, so this is a limitation rather than a defect.
+    // its decoder needs zlib and this FFmpeg is built `--disable-zlib`. NOT
+    // because `default-features: false` dropped it, which is what this comment
+    // said until 2026-08-13: zlib is not among the vcpkg ffmpeg port's defaults
+    // either, so turning them back on would change nothing here.
+    //
+    // AND THIS WAS NOT HYPOTHETICAL. Plex's photo transcoder passes the source
+    // format through unless asked otherwise, so 157 of 2,450 real album thumbs
+    // arrived as PNG and lost their palette. The fix is `format=jpeg` on the
+    // request (see test_plex_playback.cpp), which is why this stays a limitation
+    // rather than a defect -- but it is a limitation something has to steer
+    // around, not one the server was ever going to avoid on its own.
     //
     // What is asserted is the property that MATTERS: a clean, named refusal with
     // `out` untouched, rather than a misdecode. A sleeve of noise feeding the
@@ -92,11 +101,82 @@ TEST_CASE("a PNG is refused cleanly, because this FFmpeg has no zlib", "[image]"
     // If zlib ever arrives this test will fail, and the correct response is to
     // replace it with the exact-colour assertions the fixture was built for --
     // sleeve.png is lossless RGBA, left half (220, 30, 30), right half
-    // (30, 60, 200).
+    // (30, 60, 200). Note that zlib alone would not finish the job: pngdec can
+    // emit ten pixel layouts and packed_to_rgba handles four.
     ImageRgba8  out;
     std::string detail;
     REQUIRE(decode_image(read_fixture("sleeve.png"), out, detail) == ImageError::kNoDecoder);
     REQUIRE(out.empty());
+
+    // THE ASSERTION THAT FAILS BEFORE THIS CHANGE AND PASSES AFTER. The refusal
+    // used to be entirely silent, and a silent refusal is what made issue 116
+    // present as "the visuals went grey" for as long as it did. The detail has to
+    // name the format, or the log line cannot tell a missing PNG decoder from any
+    // other reason art did not appear.
+    REQUIRE_FALSE(detail.empty());
+
+    std::string lowered = detail;
+    for (char& c : lowered) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    // Case-insensitive on purpose: `avcodec_get_name` answers lowercase "png" and
+    // the hand-written branch says "PNG", so a test pinned to either spelling
+    // would fail the day the two are unified -- for no behavioural reason.
+    REQUIRE(lowered.find("png") != std::string::npos);
+}
+
+TEST_CASE("every refusal says why", "[image]")
+{
+    // THE GENERALISATION OF THE CASE BELOW, from the enum's NAMES to the
+    // function's BEHAVIOUR. `decode_image` has seven non-kOk exits and three of
+    // them used to return without filling `out_detail`, so whether a failure could
+    // be diagnosed depended on which one you hit. This is what stops the next
+    // early return being added without a reason attached.
+    struct Case {
+        const char*               what;
+        std::vector<std::uint8_t> bytes;
+        ImageError                expect;
+    };
+
+    const std::string html = "<!DOCTYPE html><html><body>404</body></html>";
+
+    std::vector<std::uint8_t> truncated = read_fixture("sleeve.jpg");
+    truncated.resize(120);   // header intact, scan data gone: reaches the decoder
+
+    const Case cases[] = {
+        {"no bytes at all", {}, ImageError::kEmpty},
+        {"an HTML error page", std::vector<std::uint8_t>(html.begin(), html.end()),
+         ImageError::kUnknownFormat},
+        {"a PNG with no PNG decoder", read_fixture("sleeve.png"), ImageError::kNoDecoder},
+        {"a JPEG truncated past its header", truncated, ImageError::kBadImage},
+    };
+
+    for (const Case& c : cases) {
+        ImageRgba8  out;
+        std::string detail = "a stale reason from the previous track";
+
+        const ImageError e = decode_image(c.bytes, out, detail);
+        INFO(c.what);
+        REQUIRE(e == c.expect);
+        REQUIRE_FALSE(detail.empty());
+
+        // And it is THIS failure's reason, not the one the caller came in with.
+        REQUIRE(detail.find("stale") == std::string::npos);
+    }
+}
+
+TEST_CASE("a success leaves no reason behind", "[image]")
+{
+    // A REGRESSION GUARD, AND IT PASSES AGAINST THE UNFIXED CODE -- said plainly
+    // so nobody counts it as evidence the rest of this change works. What it
+    // protects is real: ArtworkLoader reuses one `detail` string across the fetch
+    // and the decode, so a kOk that left the previous reason in place would have
+    // the caller log a failure that did not happen.
+    ImageRgba8  out;
+    std::string detail = "a stale reason from the previous track";
+
+    REQUIRE(decode_image(read_fixture("sleeve.jpg"), out, detail) == ImageError::kOk);
+    REQUIRE(detail.empty());
 }
 
 TEST_CASE("channels are not swapped", "[image]")

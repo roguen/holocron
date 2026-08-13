@@ -1616,12 +1616,36 @@ public:
             std::vector<std::uint8_t> bytes;
             std::string               detail;
 
-            if (fetch_artwork(server, track, kArtworkSize, bytes, detail) != HttpError::kOk) {
+            // BOTH FAILURES SPEAK NOW, AND ISSUE 116 IS WHY. Losing the sleeve
+            // also loses the palette, so the whole picture goes grey -- and until
+            // this line existed that was the only symptom, with nothing printed
+            // and nothing in the run log. A silent branch cannot be diagnosed.
+            //
+            // ALWAYS, unlike the lyric loader below, which stays quiet on a
+            // missing lyric because a quarter of a real library has none. There is
+            // no equivalent ordinary case here: a track that names no artwork is
+            // already filtered by the `key.empty()` check above, so anything
+            // reaching these branches is a server that advertised a sleeve and
+            // then did not serve one, or served something undecodable. One line
+            // per track at the very worst.
+            //
+            // `say()` rather than fprintf(stderr, ...): on the Shield stderr goes
+            // to logcat, which is a ring buffer that had already thrown away the
+            // evidence once (see run_log.hpp). This lands in holocron.log.
+            const HttpError fetched = fetch_artwork(server, track, kArtworkSize, bytes, detail);
+            if (fetched != HttpError::kOk) {
+                say("holocron: no sleeve for \"%s\" -- %s (%s)\n", track.title.c_str(),
+                    to_string(fetched), detail.c_str());
                 return;   // no art is not an error worth interrupting anything for
             }
 
-            ImageRgba8 image;
-            if (decode_image(bytes, image, detail) != ImageError::kOk) {
+            ImageRgba8      image;
+            const ImageError decoded = decode_image(bytes, image, detail);
+            if (decoded != ImageError::kOk) {
+                // The enum names the class of failure, the detail names this
+                // instance. Both, in that order.
+                say("holocron: the sleeve for \"%s\" would not decode -- %s (%s)\n",
+                    track.title.c_str(), to_string(decoded), detail.c_str());
                 return;
             }
             const Palette palette = extract_palette(image);

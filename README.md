@@ -159,8 +159,19 @@ Shuffle, "play next" and staying paused across a skip all work as of `v0.2.1`.
 ([#118](https://github.com/roguen/holocron/issues/118)) was closed by *measuring*
 rather than building it — the NAS answers a repeated sleeve in **1 ms**, so the
 cache stays in memory and the on-disk one ships unused on purpose. Genre and year
-are on `TrackContext`. PNG art ([#116](https://github.com/roguen/holocron/issues/116))
-needs zlib and stays moot while Plex serves JPEG.
+are on `TrackContext`.
+
+<!-- measured: artwork_png.count -->
+<!-- measured: artwork_png.rate -->
+**Album art asks Plex for JPEG, and has to.** This line used to say PNG art
+([#116](https://github.com/roguen/holocron/issues/116)) was moot because Plex
+serves JPEG. It does not: `/photo/:/transcode` resizes and hands back whatever
+format the sleeve was stored in, labelled `image/jpeg` either way. Measured across
+every album on the reference library, **157 of 2,450 thumbs — 6.4% — came back as
+PNG**, and this FFmpeg has no PNG decoder, so those albums silently lost their
+artwork *and* the palette drawn from it. The request now asks for `&format=jpeg`,
+which takes it to none of them. 116 stays open only for the day art is read from a
+local file, where there is nothing to ask.
 
 ```bash
 scripts\build.cmd                                  # build and test, from a clean shell
