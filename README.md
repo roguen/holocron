@@ -180,6 +180,19 @@ holocron-analyze.exe track.flac --csv frames.csv   # the offline analysis harnes
 (decode and draw without opening a device), `--frames N --shot out.bmp` (render
 exactly N frames and write the last), and `--projectm DIR` (MilkDrop presets).
 
+**Run it from the directory holding your `gatekeeper.toml`.** Started anywhere
+else it finds no config, has no token, and is therefore discoverable on the LAN
+but never offered as a cast target. It says so as the last line of startup —
+`ready` or `NOT A CAST TARGET` with what to do about it — because the facts were
+always printed and were being lost eight lines above the prompt
+([#308](https://github.com/roguen/holocron/issues/308)).
+
+**`scripts\build.cmd` configures a Debug build**, which is right for developing
+and wrong for anything you hand to somebody: a Debug binary imports the
+non-redistributable debug CRT and will not launch on a machine without Visual
+Studio. Release artifacts are built from a separate tree — see
+[`docs/shield.md`](docs/shield.md) §5a for the Android half of the same story.
+
 What exists:
 
 | | |
@@ -190,6 +203,7 @@ What exists:
 | **Tap placement** | The frame on screen is the one the speakers are producing, selected **by position** against the device clock — a measured 51 ms of correction over newest-wins. |
 | **Render** | GL 4.5 core on the desktop and **ES 3.2** on the Shield from the same shaders, a compositor stacking `RGBA16F` layers, a debug facet drawing every field, and `CrystalFacet` drawing authored crystals. |
 | **Crystals** | `.frag` + `.toml`, uniforms bound to contract fields **by name** and validated at load. Hot reload, and a vault the arrow keys move through — **including crystals copied in while it is running**. |
+| **Controls** | Arrow keys move through the vault and nudge the trim, F1 shows the licence panel, Escape quits — and on Android TV, **BACK quits** while **HOME leaves it playing**. Those two are deliberately different: a glance at another app is not an instruction to stop the music. |
 | **Plex** | GDM discovery, `--link` sign-in through the plex.tv PIN flow, automatic device registration and connection publishing, play queues built on the server, timeline reporting to both the controller and the media server, and every transport command a phone sends. |
 | **Playback** | `PlaybackSession` — decoder, analysis, ring, device and decode thread behind one object that can be started, **replaced** and **seeked**, which is what casting requires. |
 | **Track context** | `TrackContext` — what is playing, the album art as a texture, and a **palette** extracted from it: five swatches, a primary and a contrast accent, supplied to every crystal in linear RGB. |
