@@ -120,9 +120,14 @@ gain response — and may not change what it *means*.
 
 ## Current status
 
-**`v1.0.0`, and all eight milestones are finished.** Pick an album in Plexamp,
+**`v1.0.1`, and all eight milestones are finished.** Pick an album in Plexamp,
 cast it to the theater, and it plays — bit-perfect, with the visuals coloured by
 the album's own cover and the receiver switched to the right input on the way.
+
+The phone's volume slider drives the amplifier from either destination, and it
+opens where the receiver actually is rather than asserting a level at it — which
+is what `v1.0.1` fixed, along with the units mismatch that made a ceiling of 40
+top out at a displayed 20.
 
 `1.0.0` was never about finishing the milestone list. It was reserved for the
 first build that plays music and renders end to end, and it was taken on
