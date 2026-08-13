@@ -852,3 +852,112 @@ in 25 ms steps, saw nothing move, and was reported as the trim having no effect.
 Measured afterwards, the trim was correct to the millisecond — `target = played −
 trim`, with the selected analysis frame tracking it exactly — and 140 ms of sweep
 was simply nowhere near far enough. The tool gained ±100 steps (issue 304).
+
+---
+
+## 8. Casting to a dark theater
+
+**Issue 338, built and confirmed on the device 2026-08-13.** Pick an album in
+Plexamp with the theater off, cast it, and the Shield wakes and plays.
+
+Most of it already worked and had been measured before anything was built. With
+the display OFF, a **running** Holocron keeps its Companion socket in `LISTEN`,
+keeps UDP 32412 bound, and answers a `playMedia` with `HTTP 200`. The device is
+genuinely reachable with the room dark. The single missing piece was that nothing
+asked the screen to come on.
+
+`wake_screen()` (`src/platform/screen_wake.cpp`) is that piece, on the same shape
+as `acquire_multicast_lock` beside it: compiled on every platform, returning
+`kUnsupported` off Android so the player writes one line and asks the result what
+happened rather than testing `__ANDROID__`.
+
+**`android.permission.WAKE_LOCK` is the FOURTH load-bearing entry in the
+manifest.** Without it `PowerManager.newWakeLock` throws `SecurityException`, and
+because this reports that as a value rather than aborting, the symptom of
+forgetting it is a cast that plays with no picture.
+
+### The thread it is called from is the design
+
+It is called from the Companion server's play, queue and queue-handoff handlers,
+which run on the server's worker threads. **Not from the render loop**, which is
+where every other instinct in this codebase would put a "playback started" hook.
+
+SDL parks the thread running `SDL_main` while the Activity is paused
+(`SDL_HINT_ANDROID_BLOCK_ON_PAUSE`, on by default, and correct — a render loop
+with no surface has nothing to draw into). With the display off the Activity IS
+paused, so a command handed to the render thread would not be looked at **until
+something else woke the screen**. The wake would have been waiting on the thing it
+exists to cause.
+
+The Companion threads are not parked, which is exactly why the cast is answered at
+all. See D-075.
+
+### The lock is acquired with a timeout and never released
+
+`SCREEN_BRIGHT_WAKE_LOCK | ACQUIRE_CAUSES_WAKEUP | ON_AFTER_RELEASE`, held for
+3000 ms. `ACQUIRE_CAUSES_WAKEUP` has already done the work by the time `acquire`
+returns; the three seconds only carry the display until the Activity resumes and
+SDL disables the screensaver, which holds it on from then on.
+
+Letting the timeout do the releasing means a fault in that file costs three
+seconds of screen rather than **a projector lamp left burning overnight**, and it
+is why the interface hands back no handle a caller could hold. `SCREEN_BRIGHT`
+rather than `FULL_WAKE_LOCK`: the extra thing FULL does is light a keyboard
+backlight, which a television does not have.
+
+### The run log can now say what played
+
+`companion: play`, `holocron: playing` and the audio-device line were
+`std::printf`, so on this device they reached logcat — a ring buffer — and the
+durable file could say what the player *started with* and nothing about what it
+*did*. That silence produced a wrong answer once: a cast to a sleeping Shield was
+read as having been dropped, and it had not been.
+
+They are `say()` now, along with the queue lines, the refusals either side of
+them, and every transport command. **`companion: GET /path` is deliberately still
+`printf`** — one line per request from a controller that polls would bury the four
+or five lines the run log exists to carry, and there is a test asserting it stays
+out.
+
+### How it was confirmed
+
+Display measured off first, which is the only way this means anything:
+
+```
+$ adb shell input keyevent KEYCODE_SLEEP
+$ adb shell dumpsys power | grep -E "mWakefulness=|Display Power"
+  mWakefulness=Asleep
+Display Power: state=OFF
+```
+
+Then a `playMedia` at `192.168.68.38:32550`, after which all three of
+`mWakefulness`, `Display Power` and `mScreenState` read on, and the run log
+carried:
+
+```
+18:10:01.107  companion: play "Holiday" -- Madonna, The Immaculate Collection (mp3 mp3, 0 ms in)
+18:10:01.125  holocron: the display was asked to come on
+18:10:01.588  holocron: playing "Holiday" -- Madonna
+18:10:01.588  holocron:   audio sdl3, 882 frames per period, not bit-perfect
+```
+
+**Blank `[herald] on_start` before running this.** A cast starts playback, and
+playback fires the errands, which on the Shield selects the receiver's input
+underneath whoever is in the room. Restore it afterwards and confirm with the
+`herald armed -- N errand(s)` line.
+
+### What this does NOT cover
+
+**The cold case — issue 333.** If Holocron is not running there is nothing
+listening to cast to, and a launch into a display that is off never starts SDL's
+thread at all: `onCreate → onStart → onResume → onPause → onStop` in about 15 ms,
+no `SDLThread`, no sockets, no run log. Nothing in this section helps with that,
+and closing it means moving the network half into a Service with a lifecycle
+independent of the Activity.
+
+Section 8 is the feature in **normal use**, where the Shield is left running. The
+cold case is a reboot, a force-stop, or Android reclaiming the process.
+
+**Whether playback begins while the Shield is asleep** is still open as a fact.
+The run above cannot answer it: the wake fired 463 ms before playback started, so
+the two are no longer separable.

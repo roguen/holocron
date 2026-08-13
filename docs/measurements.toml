@@ -152,3 +152,66 @@ config     = "the Shield's gatekeeper.toml, [audio] trim_ms"
 issue      = 278
 note       = """
 POSITIVE, AND THAT IS THE WHOLE STORY OF THIS NUMBER. Every trim this project had recorded was negative -- the rack is -30 -- because a projector is slower than a PC's audio path and the picture has to be pulled earlier. The Shield is 290 ms the other way.The reason is where the clock is taken. `played_us` comes from SDL's frame counter, which sits ABOVE AudioFlinger's own buffering, so there is output latency below it that the player cannot see. The sound arrives later than the clock claims, the picture reads as early, and correcting it needs a large positive trim. Same room, same receiver, same projector as the rack: the display half of the subtraction is shared and the AUDIO half is not.It cost a false start. The first attempt swept -60 to +80 in 25 ms steps, saw nothing move, and was reported as the trim having no effect -- measured afterwards, the trim was correct to the millisecond and 140 ms of sweep was simply nowhere near far enough. The tool gained +/-100 steps (issue 304)."""
+
+# --------------------------------------------------------------------------
+# How often extract_palette called a sleeve black. Issue 297.
+#
+# TWO KEYS FOR ONE MEASUREMENT, on the same reasoning as artwork_png above:
+# prose quotes the before and the after separately and often only one of them,
+# so a single key would leave the other spelling unguarded.
+#
+# BOTH VALUES CARRY THEIR DENOMINATOR, AND THAT IS NOT STYLE. The scanner looks
+# for the value as text anywhere in a document, so a bare "4" or "12" matches an
+# issue number, a port, a version and a list item -- the first attempt at these
+# two keys flagged nineteen innocent lines across shield.md and
+# gatekeeper.example.toml. A measured quantity whose value is a small integer
+# has to be written so that quoting it is unambiguous, which is a real
+# constraint on this record and worth knowing before adding the next one.
+# --------------------------------------------------------------------------
+
+[[measurement]]
+key        = "palette_black.before"
+value      = "12 of 18"
+unit       = "sleeves whose primary is effectively black"
+measured   = "2026-08-13"
+subject    = "extract_palette at v1.0.2, before the weighting was corrected"
+conditions = "eighteen real album thumbs pulled from the reference Plex library and kept on disk; decoded through the real decode_image and passed to the real extract_palette; a primary counted as black when its relative luminance is below 0.05, which is where pulse's ring stops being visible against its own ground"
+bracket    = "a census of the eighteen, not a sample of a library"
+resolution = "exact, for these eighteen sleeves"
+issue      = 297
+note       = """
+THE POINT OF THIS NUMBER IS THAT THE BRIGHT SLEEVES ARE IN IT. Abbey Road -- four \
+men crossing a sunlit street -- came back at 0.007, and Unknown Pleasures and \
+twenty one pilots at 0.000. So the defect was never the dark-cover case issue 297 \
+was filed about, and the issue's own three-way list ruled out fixing the \
+extraction on the premise that the extraction was honest.The cause is the \
+LIGHTNESS FLOOR rather than the parabola it floors. The bare parabola returns 0.36 \
+at a tenth of full lightness and the 0.15 additive floor took that to 0.456, so a \
+near-black region needed to be only about 2.2x more populous to be called the \
+record's dominant colour. A border or a surround is routinely twenty times its \
+subject.RE-MEASURE ONLY against these same eighteen files. A different set of \
+sleeves is a different measurement and must get a different key.\
+"""
+
+[[measurement]]
+key        = "palette_black.after"
+value      = "4 of 18"
+unit       = "sleeves whose primary is effectively black"
+measured   = "2026-08-13"
+subject    = "extract_palette with light_term = 0.001 + 0.999 * parabola^4"
+conditions = "the same eighteen sleeves and the same 0.05 threshold as palette_black.before -- see that entry for the method"
+bracket    = "a census of the eighteen"
+resolution = "exact, for these eighteen sleeves"
+issue      = 297
+note       = """
+THE FOUR THAT REMAIN ARE THE CORRECT ANSWER AND NOT A RESIDUE. They are records \
+that really are almost entirely dark; the Metallica sleeve has 89% of its pixels \
+in the darkest tenth of the lightness range. Promoting a stray highlight to "the \
+colour of this record" would be a worse bug than the one being fixed and a \
+quieter one, and there is a test asserting a black record still comes back \
+black.THE FLOOR IS NOT CARRYING THIS. 0.0, 1e-4, 5e-4, 1e-3 and 3e-3 all give the \
+identical primary on all eighteen; the fourth power is what moves the number. The \
+floor is there for the degenerate image only -- the parabola is exactly zero at \
+pure black and pure white, so without one a single stray dark pixel outranks an \
+entire sheet of paper.\
+"""
