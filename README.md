@@ -124,6 +124,22 @@ gain response — and may not change what it *means*.
 cast it to the theater, and it plays — bit-perfect, with the visuals coloured by
 the album's own cover and the receiver switched to the right input on the way.
 
+**On the Shield the screen no longer has to be on first.** A cast to a sleeping
+box is answered, wakes the display, and plays. This holds while Holocron is
+already running, which on a device left in a rack it is; if the process is gone —
+a reboot, a force-stop — there is nothing listening yet and that is
+[#333](https://github.com/roguen/holocron/issues/333).
+
+<!-- measured: palette_black.before -->
+<!-- measured: palette_black.after -->
+**Album colours no longer collapse to black on records that are not dark.** The
+palette weighted a colour's population by how mid-toned it was, and the floor
+under that weighting was generous enough that a black border could outvote the
+subject inside it on almost any sleeve. Measured over eighteen real covers, the
+dominant colour came back effectively black on **12 of 18** — including *Abbey
+Road*, which is four men crossing a sunlit street. Now **4 of 18**, and those four
+are records that really are almost entirely dark.
+
 The phone's volume slider drives the amplifier from either destination, and it
 opens where the receiver actually is rather than asserting a level at it — which
 is what `v1.0.1` fixed, along with the units mismatch that made a ceiling of 40
