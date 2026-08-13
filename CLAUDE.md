@@ -214,7 +214,7 @@ tested:
 | Playback | `PlaybackSession` owns the decoder, analysis, ring, device and decode thread, and can be **started and replaced**. A cast starts one; `stop` stops it. `holocron` with no track opens the window and waits to be cast to. |
 | Track context | `TrackContext` is populated at last — title, artist, album, transport, and the **palette**. Fetch and JPEG decode run on a worker with a **generation counter**, because skipping an album starts a fetch per track and they do not finish in order; without it the sleeve of a track skipped past seconds ago wins and colours the visuals from the wrong record. |
 | Palette | `extract_palette` — five swatches, a primary and a contrast accent, in **linear** RGB. "Dominant" is deliberately *not* "most common": the most common colour on a sleeve is the border, so population is weighted towards saturated mid-luminance colour, with a floor so a monochrome sleeve still yields something. Buckets in sRGB, answers in linear. |
-| Album art | `decode_image` — JPEG via `avcodec`, colour conversion **hand-rolled** because `vcpkg.json` deliberately excludes `swscale`. PNG is refused cleanly: it needs zlib, which the same `default-features: false` line excludes ([#116](https://github.com/roguen/holocron/issues/116)). Plex serves JPEG through its photo transcoder, so nothing is blocked. |
+| Album art | `decode_image` — JPEG via `avcodec`, colour conversion **hand-rolled** because `vcpkg.json` deliberately excludes `swscale`. PNG is refused cleanly, because this FFmpeg is built `--disable-zlib` ([#116](https://github.com/roguen/holocron/issues/116)) — **not** because `default-features: false` drops it, which is what four files claimed until 2026-08-13. **The photo transcoder does not transcode**: it resizes and passes the source format through, labelled `image/jpeg` either way, so PNG sleeves were silently losing their palette until `artwork_path()` started asking for `&format=jpeg`. See the paragraph below the M5 table. |
 | Executables | `holocron` — the player. `holocron-analyze` — the offline harness. |
 
 ### M3 has started, and four things about the compositor are worth knowing
@@ -289,8 +289,26 @@ art.
 **M5 owes nothing further as of 2026-08-10.** The artwork cache
 ([#118](https://github.com/roguen/holocron/issues/118)) is **closed by
 measurement, not by building it** — D-044. Genre and year are on `TrackContext`.
-PNG art ([#116](https://github.com/roguen/holocron/issues/116)) stays open and
-stays moot while Plex serves JPEG.
+
+<!-- measured: artwork_png.count -->
+<!-- measured: artwork_png.rate -->
+**PNG art ([#116](https://github.com/roguen/holocron/issues/116)) was NOT moot,
+and every document that said so was wrong.** It read "stays moot while Plex serves
+JPEG" in four places until 2026-08-13, when somebody finally looked at the bytes:
+`/photo/:/transcode` **resizes and passes the source format through**, so a sleeve
+stored as a PNG arrived as PNG, hit `kNoDecoder`, and took the album's palette
+down with it. Measured over every album on the reference library — **157 of 2,450
+thumbs, 6.4%** — with the rate very uneven, 1.6% in Music and 28.2% in
+AudioBooks. Every one of them was labelled `image/jpeg` regardless, which is why
+`sniff()` reads bytes rather than the header and is the only reason this failed
+cleanly instead of feeding the palette noise. **The fix was one URL parameter,
+`&format=jpeg`, and no dependency** — and the spelling is load-bearing, because
+`format=jpg` and `format=JPEG` are both accepted, ignored and answered with the
+source format. **zlib was NOT the fix**, and 116's filed cause —
+`default-features: false` — was wrong twice over: zlib is not in the vcpkg
+ffmpeg port's defaults either, so flipping that back would pull in avdevice,
+avfilter and swscale and still leave PNG refused. What remains open is the day
+art is read from a local file, where there is no request to add a parameter to.
 
 **Three things about the Plex protocol that cost a session each and are not
 guessable:**

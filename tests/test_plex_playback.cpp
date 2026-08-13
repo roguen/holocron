@@ -660,9 +660,9 @@ TEST_CASE("artwork goes through the photo transcoder", "[plex][playback][art]")
 
     const std::string path = artwork_path(track, "tok", 512);
 
-    // THROUGH THE TRANSCODER, which is what makes the format predictable. A raw
-    // thumb is whatever was uploaded, occasionally a PNG this build cannot
-    // decode (issue 116).
+    // THROUGH THE TRANSCODER, because a raw thumb is whatever was uploaded and
+    // this build cannot decode a PNG (issue 116). Going through it is necessary
+    // and, on its own, NOT sufficient -- see the next case.
     REQUIRE(path.find("/photo/:/transcode") == 0);
     REQUIRE(path.find("width=512") != std::string::npos);
     REQUIRE(path.find("height=512") != std::string::npos);
@@ -671,6 +671,35 @@ TEST_CASE("artwork goes through the photo transcoder", "[plex][playback][art]")
     // gives the palette almost nothing to work with.
     REQUIRE(path.find("minSize=1") != std::string::npos);
     REQUIRE(path.find("upscale=1") != std::string::npos);
+}
+
+TEST_CASE("the transcoder is asked for JPEG, in the one spelling it honours",
+          "[plex][playback][art]")
+{
+    // ISSUE 116, AND THE COMMENT ABOVE USED TO SAY THE TRANSCODER MADE THE FORMAT
+    // PREDICTABLE. It does not. `/photo/:/transcode` resizes and hands back the
+    // SOURCE format unless asked otherwise, and labels the result `image/jpeg`
+    // either way -- so a PNG sleeve arrived as undecodable PNG bytes under a JPEG
+    // content type, and the album's palette was lost with it. Measured over every
+    // album on the reference library: 157 of 2,450 thumbs, and none once this
+    // parameter was added.
+    //
+    // ASSERTED CHARACTER BY CHARACTER, WHICH IS NOT PEDANTRY. `format=jpg` and
+    // `format=JPEG` are both accepted by the server, ignored, and answered with
+    // the source format -- no error and no warning. A silently-ignored parameter
+    // is indistinguishable from a working one, so the spelling that was actually
+    // measured is the one that gets pinned.
+    PlexTrack track;
+    track.thumb = "/library/metadata/56398/thumb/1234";
+
+    const std::string path = artwork_path(track, "tok", 512);
+
+    REQUIRE(path.find("&format=jpeg&") != std::string::npos);
+    REQUIRE(path.find("format=jpg&") == std::string::npos);
+    REQUIRE(path.find("format=JPEG") == std::string::npos);
+
+    // Before `url=`, so it cannot be mistaken for part of the nested path.
+    REQUIRE(path.find("format=jpeg") < path.find("url="));
 }
 
 TEST_CASE("the nested artwork url is percent-encoded", "[plex][playback][art]")
