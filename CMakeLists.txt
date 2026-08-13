@@ -146,6 +146,7 @@ add_library(holocron_platform STATIC
     src/platform/multicast_lock.cpp
     src/platform/platform_paths.cpp
     src/platform/run_log.cpp
+    src/platform/screen_wake.cpp
 )
 add_library(holocron::platform ALIAS holocron_platform)
 

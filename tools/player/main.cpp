@@ -59,6 +59,7 @@
 #include <holocron/palette.hpp>
 #include <holocron/platform_paths.hpp>
 #include <holocron/run_log.hpp>
+#include <holocron/screen_wake.hpp>
 #include <holocron/shader_cache.hpp>
 #include <holocron/text_render.hpp>
 #include <holocron/track_context.hpp>
@@ -2899,10 +2900,41 @@ int main(int argc, char** argv)
     CompanionServer companion;
     CastCommand     cast;
 
+    // ISSUE 338. Turn the television on, because something was just cast to it.
+    //
+    // CALLED FROM THESE HANDLERS RATHER THAN FROM THE RENDER LOOP, and that is
+    // the whole design rather than a convenience. These run on the Companion
+    // server's worker thread, which keeps running while the Shield's display is
+    // off -- which is exactly why a cast to a sleeping Shield gets answered at
+    // all. The render thread does NOT: SDL parks the thread running SDL_main
+    // while the Activity is paused, so a command handed over there would not be
+    // looked at until something else woke the screen. See screen_wake.hpp.
+    //
+    // Every path that starts playback goes through one of the three handlers
+    // below, so this is called once per cast and not once per track.
+    const auto wake_for_cast = [] {
+        const ScreenWakeState woke = wake_screen();
+        switch (woke) {
+        case ScreenWakeState::kUnsupported:
+            break;  // a desktop; nothing to report on every cast
+        case ScreenWakeState::kWoken:
+            say("holocron: %s\n", to_string(woke));
+            break;
+        case ScreenWakeState::kUnavailable:
+        case ScreenWakeState::kFailed:
+            // NOT FATAL. The music plays either way, and a theater whose picture
+            // did not come on is a better outcome than a cast that was refused.
+            say_err("holocron: could not wake the display -- %s\n", to_string(woke));
+            break;
+        }
+    };
+
     // Handlers are set BEFORE the server starts, so a command cannot arrive at a
     // server that has no handler and be silently acknowledged.
     companion.set_play_handler(
-        [&cast](const PlayRequest& request, const PlexTrack& track, const std::string& url) {
+        [&cast, &wake_for_cast](const PlayRequest& request, const PlexTrack& track,
+                                const std::string& url) {
+            wake_for_cast();
             NowPlaying what;
             what.source      = url;
             what.title       = track.title;
@@ -2914,13 +2946,18 @@ int main(int argc, char** argv)
     companion.set_stop_handler([&cast] { cast.request_stop(); });
     companion.set_pause_handler([&cast](bool paused) { cast.request_pause(paused); });
     companion.set_queue_handler(
-        [&cast](const PlayRequest& request, const PlexQueue& q) { cast.request_queue(request, q); });
+        [&cast, &wake_for_cast](const PlayRequest& request, const PlexQueue& q) {
+            wake_for_cast();
+            cast.request_queue(request, q);
+        });
     // ISSUE 280. A queue handed over by a playMedia, with no createPlayQueue
     // behind it. Separate from the handler above because the two disagree about
     // where playback starts -- see CastCommand::request_queue_handoff.
-    companion.set_queue_handoff_handler([&cast](const PlayRequest& request, const PlexQueue& q) {
-        cast.request_queue_handoff(request, q);
-    });
+    companion.set_queue_handoff_handler(
+        [&cast, &wake_for_cast](const PlayRequest& request, const PlexQueue& q) {
+            wake_for_cast();
+            cast.request_queue_handoff(request, q);
+        });
     companion.set_skip_handler(
         [&cast](int direction, const std::string& item, const std::string& key) {
             cast.request_skip(direction, item, key);
