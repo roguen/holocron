@@ -760,7 +760,16 @@ jobs:
 
           $stage = "staging/holocron-$version-windows-x64"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item build/windows-release/bin/* $stage -Recurse -Force
+
+          # NOT `bin/*`. The `windows-release` preset is RelWithDebInfo, so the
+          # output directory also holds .pdb symbol files and .ilk incremental
+          # link files -- and copying the lot took the first rehearsal's zip to
+          # 21 MB against the 9.46 MB that shipped as v1.0.1. The .ilk is a build
+          # intermediate with no value to anybody; the .pdb is real but belongs
+          # with whoever is debugging a crash rather than in every download.
+          Get-ChildItem build/windows-release/bin -File |
+              Where-Object { $_.Extension -notin '.ilk', '.pdb' } |
+              Copy-Item -Destination $stage -Force
 
           # The vault travels with the binary or there is nothing to draw. The
           # licence texts are an OBLIGATION rather than a courtesy -- and they
