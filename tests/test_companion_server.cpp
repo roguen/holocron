@@ -25,8 +25,13 @@
 
 #include <holocron/companion_server.hpp>
 #include <holocron/plex_device.hpp>
+#include <holocron/run_log.hpp>
 
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <sstream>
 
 #include <httplib.h>
 
@@ -1530,4 +1535,90 @@ TEST_CASE("a save that fails says so rather than claiming success",
     auto page = s.client().Get("/control/tuning");
     REQUIRE(page);
     CHECK(page->body.find("Could not write") != std::string::npos);
+}
+
+
+// ---------------------------------------------------------------------------
+// Issue 338, step 0 -- the playback lines reach the DURABLE file
+//
+// On the Shield stdout is logcat, which is a ring buffer, so the run log is the
+// only instrument that survives. It recorded what the player started with and
+// nothing about what it played, and during the 338 investigation that silence
+// was read as a cast having been dropped. It had not been.
+//
+// These two assert the distinction the conversion actually drew, in both
+// directions. The second is the one worth having: a later session tidying up the
+// remaining printf calls in this file would bury the four or five lines the run
+// log exists to carry under one line per poll, and nothing else would complain.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct RunLogScratch {
+    std::filesystem::path dir;
+
+    RunLogScratch()
+    {
+        dir = std::filesystem::temp_directory_path() /
+              ("holocron-companion-log-" + std::to_string(std::rand()));
+        std::filesystem::create_directories(dir);
+        close_run_log();
+        open_run_log(dir.string());
+    }
+    ~RunLogScratch()
+    {
+        close_run_log();
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+
+    std::string text() const
+    {
+        std::ifstream in(dir / "holocron.log", std::ios::binary);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        return buf.str();
+    }
+};
+
+}  // namespace
+
+TEST_CASE("a playback command lands in the run log, not only on stdout",
+          "[companion][338]")
+{
+    RunLogScratch log;
+    // The seek route logs only when a handler is installed, which is right: a
+    // seek nothing can act on is not a thing the player did.
+    RunningServer s(fixture(), [](CompanionServer& srv) {
+        srv.set_seek_handler([](std::int64_t) {});
+    });
+    REQUIRE(s.error == CompanionError::kOk);
+
+    REQUIRE(s.client().Get("/player/playback/stop?commandID=1"));
+    REQUIRE(s.client().Get("/player/playback/seekTo?offset=91000&commandID=2"));
+
+    close_run_log();
+    const std::string text = log.text();
+    CHECK(text.find("companion: stop") != std::string::npos);
+    CHECK(text.find("companion: seek to 91000 ms") != std::string::npos);
+}
+
+TEST_CASE("the per-request transcript stays out of the run log", "[companion][338]")
+{
+    // DELIBERATE, not an omission. `companion: GET /path` is one line per request
+    // from a controller that polls, and run_log.hpp is explicit that this file is
+    // a diagnostic rather than a transcript: a log nobody can read to the end is
+    // a log nobody reads. The transcript is still printed, and stdout is still
+    // where it belongs.
+    RunLogScratch log;
+    RunningServer s(fixture());
+    REQUIRE(s.error == CompanionError::kOk);
+
+    REQUIRE(s.client().Get("/resources"));
+    REQUIRE(s.client().Get("/player/playback/stop?commandID=1"));
+
+    close_run_log();
+    const std::string text = log.text();
+    CHECK(text.find("companion: stop") != std::string::npos);
+    CHECK(text.find("/resources") == std::string::npos);
 }
