@@ -159,7 +159,7 @@ while IFS= read -r file; do
         # trailing CR makes a perfectly good marker invisible and the file
         # silently reports nothing. Doing it in awk covers every line the
         # program sees, including the quotation lines, not just the markers.
-        { sub(/$/, "") }
+        { sub(/\r$/, "") }
         function fail(line, msg) {
             printf "::error file=%s,line=%d::%s\n", FILE, line, msg
             bad = 1
