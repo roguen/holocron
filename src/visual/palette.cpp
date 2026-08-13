@@ -83,16 +83,55 @@ float lightness_of(const glm::vec3& srgb)
     return 0.2126f * srgb.r + 0.7152f * srgb.g + 0.0722f * srgb.b;
 }
 
+// The smallest share of a mid-lightness colour's weight that a pure black or
+// pure white one keeps.
+//
+// IT IS A GUARD, NOT A SUBSIDY, and the difference is the whole of issue 297 --
+// see kLightnessNarrowing. Without something here the lightness term is exactly
+// zero at both ends, and then a single stray dark pixel outranks an entire sheet
+// of pure white paper: 16000 x 0 loses to 1 x anything. With it, white needs to
+// be beaten 16 times over, which no stray can manage and a real subject can.
+//
+// Small enough that it changes no answer on any real sleeve -- measured, 0.0,
+// 1e-4, 5e-4, 1e-3 and 3e-3 all give the identical primary on all eighteen of
+// the sleeves 297 was measured against.
+constexpr float kLightnessFloor = 0.001f;
+
+// How sharply the lightness term falls away from mid-grey, as the power the
+// parabola is raised to.
+//
+// THIS NUMBER IS ISSUE 297. The parabola alone is far too flat to do the job its
+// own comment claims: at 10% lightness it still returns 0.36, and with the old
+// 0.15 additive floor on top of that, 0.456 -- so a near-black area only had to
+// be 2.2x more populous than a mid-tone one to be called the record's dominant
+// colour. A sleeve's border, shadow or black surround is routinely twenty times
+// more populous than its subject, so the weighting lost every time it mattered.
+//
+// Measured: the primary came back with a relative luminance under 0.05 on TWELVE
+// of eighteen real sleeves, including Abbey Road, which is four men crossing a
+// sunlit street. `pulse` mixes primary towards accent by spectral centroid, so
+// that reads as the picture blacking out on bassy content -- reported as 297.
+//
+// Raised to the fourth, 10% lightness returns 0.0168, so a near-black area must
+// now be 60x more populous to win, and at 5% lightness 250x. That is chosen
+// against what a border can actually be rather than to fit the eighteen: a
+// surround can be 90% of a thumb against a 3% subject, which is 30x, and 60x
+// clears it with room. It takes the twelve down to four, and those four are
+// sleeves that really are almost entirely dark -- there the answer is honest and
+// what a crystal should do about a dark record is the crystal's question.
+constexpr int kLightnessNarrowing = 4;
+
 // How much a colour's population should count towards being called dominant.
 //
-// Two factors, both with floors so nothing is ever excluded outright:
+// Two factors:
 //
 //   SATURATION, because the background is usually the greyest thing on a sleeve
-//   and the subject is usually not.
+//   and the subject is usually not. Floored at 0.25 so a monochrome sleeve still
+//   ranks its greys against each other rather than scoring zero throughout.
 //
 //   LIGHTNESS, peaking in the middle, because near-black and near-white are
-//   where borders, paper and shadow live. The parabola reaches its floor rather
-//   than zero at both ends, so a black-on-black sleeve still ranks its blacks.
+//   where borders, paper and shadow live. Narrowed hard -- see the two constants
+//   above, which are where 297 was actually fixed.
 float vibrancy_weight(const glm::vec3& srgb)
 {
     const float s = saturation_of(srgb);
@@ -100,8 +139,15 @@ float vibrancy_weight(const glm::vec3& srgb)
 
     const float sat_term = 0.25f + 0.75f * s;
 
-    const float from_mid   = std::fabs(2.0f * l - 1.0f);          // 0 mid, 1 at both ends
-    const float light_term = 0.15f + 0.85f * (1.0f - from_mid * from_mid);
+    const float from_mid  = std::fabs(2.0f * l - 1.0f);           // 0 mid, 1 at both ends
+    const float parabola  = 1.0f - from_mid * from_mid;
+
+    // Written out rather than std::pow: this feeds a sort whose result is
+    // asserted on, and the two compilers CI runs are not required to agree on
+    // pow's last bit. Four multiplies are exact on both.
+    static_assert(kLightnessNarrowing == 4, "the squaring below spells the exponent out");
+    const float narrowed   = (parabola * parabola) * (parabola * parabola);
+    const float light_term = kLightnessFloor + (1.0f - kLightnessFloor) * narrowed;
 
     return sat_term * light_term;
 }
