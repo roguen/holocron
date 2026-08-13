@@ -98,6 +98,38 @@ echo
 # exists to prevent.
 git ls-files '*.md' '*.toml' | grep -v -F -x "$record" > "$tmp/files" || true
 
+# AN EXTRA DIRECTORY, FOR THE WIKI. Issue 316.
+#
+# The wiki is a SEPARATE GIT REPOSITORY and `git ls-files` cannot see it, so
+# every measured value it quotes -- both trims, the Shield's frame times, the
+# compile figures, across four pages -- was unguarded. That is issue 265's
+# failure mode one repository over: `trim_ms` moved, was correctly recorded, and
+# eight published documents went on quoting the old figure because nothing could
+# fail.
+#
+# A DIRECTORY WALK RATHER THAN ls-files, deliberately, because the caller may
+# hand us a fresh clone or a working tree and neither is guaranteed to be a
+# repository we can query. Everything else -- the markers, the normalisation, the
+# awk -- is shared, so the wiki is held to exactly the same rule as `docs/` with
+# no second implementation to drift.
+if [ -n "${1:-}" ]; then
+    if [ ! -d "$1" ]; then
+        echo "::error::extra scan directory does not exist: $1"
+        exit 1
+    fi
+    # TWO PAGES ARE EXEMPT, AND THE REASON IS WHAT THEY ARE RATHER THAN THEIR
+    # SIZE. Time-Log and Decision-Log are append-only records of what was
+    # believed or decided at a dated moment. A trim quoted in session 12's entry
+    # is not a claim about today and must not start failing when today's figure
+    # moves -- the entry would become false if it were edited to agree. The
+    # superseded `@date` keys exist for the handful of places that deliberately
+    # quote an old reading in a LIVING page.
+    #
+    # Everything else on the wiki asserts current truth and is held to the rule.
+    find "$1" -type f \( -name '*.md' -o -name '*.toml' \) -not -path '*/.git/*'         -not -name 'Time-Log.md' -not -name 'Decision-Log.md'         >> "$tmp/files"
+    echo "also scanning $1 (Time-Log and Decision-Log exempt -- append-only history)"
+fi
+
 count=$(wc -l < "$tmp/files" | tr -d ' ')
 if [ "$count" -eq 0 ]; then
     echo "::error::no tracked documents to scan -- the check would pass on anything"
@@ -121,6 +153,13 @@ while IFS= read -r file; do
     esac
 
     awk -v FILE="$file" -v MARKER_RE="$marker_re" -v RECORD="$record" '
+        # CRLF, STRIPPED HERE RATHER THAN IN THE sed ABOVE. Issue 316: the wiki
+        # is a separate repository with no .gitattributes and mixed line
+        # endings, and every marker regex below is anchored with $ -- so a
+        # trailing CR makes a perfectly good marker invisible and the file
+        # silently reports nothing. Doing it in awk covers every line the
+        # program sees, including the quotation lines, not just the markers.
+        { sub(/$/, "") }
         function fail(line, msg) {
             printf "::error file=%s,line=%d::%s\n", FILE, line, msg
             bad = 1

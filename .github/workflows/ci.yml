@@ -589,3 +589,37 @@ jobs:
       # reason scripts/android-check.sh is a script.
       - name: Documents agree with the measured values on record
         run: scripts/check-measurements.sh
+
+
+      # THE WIKI IS A SEPARATE REPOSITORY AND WAS ENTIRELY UNGUARDED. Issue 316.
+      #
+      # It quotes both trims, the Shield's frame times and the compile figures
+      # across four living pages, and `git ls-files` cannot see any of it -- so
+      # issue 265's failure mode was reproduced one repository over, with nothing
+      # able to fail.
+      #
+      # CLONED READ-ONLY AND NEVER PUSHED. This job checks; correcting the wiki
+      # stays a human act, because a wiki edit is the sort of thing that should be
+      # read before it lands.
+      #
+      # continue-on-error IS ON THE CLONE ONLY, NOT ON THE CHECK. A wiki that is
+      # unreachable must not fail an unrelated pull request -- that is how a check
+      # starts crying wolf and ends up ignored, which is the failure this script
+      # exists to prevent. A wiki that IS reachable and disagrees is a real
+      # failure and is reported as one.
+      #
+      # Time-Log and Decision-Log are exempt inside the script: they are
+      # append-only records of what was believed at a dated moment, and a figure
+      # in session 12's entry is not a claim about today.
+      - name: Clone the wiki
+        id: wiki
+        continue-on-error: true
+        run: git clone --depth 1 https://github.com/roguen/holocron.wiki.git "$RUNNER_TEMP/wiki"
+
+      - name: The wiki agrees with the measured values on record
+        if: steps.wiki.outcome == 'success'
+        run: scripts/check-measurements.sh "$RUNNER_TEMP/wiki"
+
+      - name: Say so if the wiki could not be reached
+        if: steps.wiki.outcome != 'success'
+        run: echo "::warning::the wiki could not be cloned, so its quotations were NOT checked"
