@@ -155,6 +155,23 @@ struct Options {
     // Where projectM-4 and its playlist module live. Empty lets the OS loader
     // search, which is what a system-installed libprojectM wants.
     const char* projectm_lib = nullptr;
+    // A sleeve to pretend was cast, so the album-art half of the crystal contract
+    // can be reached without a Plex server.
+    //
+    // ISSUE 297, AND IT IS AN INSTRUMENT RATHER THAN A FEATURE. `has_art` was true
+    // in exactly ONE place -- the cast poll -- so `holocron track.flac` and every
+    // `--frames N --shot` ever taken had always drawn the no-art branch. Half of
+    // what a crystal is handed could not be seen on the desk at all, which is how
+    // `pulse` came to substitute a raw palette colour for a hand-normalised
+    // constant and stay that way: nobody editing it under hot reload had ever
+    // rendered the broken path. `duel` got its own fix because it happened to be
+    // looked at during a cast.
+    //
+    // Local files do NOT grow artwork from this. Nothing decodes an attached
+    // picture out of a FLAC or an MP3, and this does not start -- it reads a
+    // standalone image file and nothing else, so the honest description is "as
+    // if this had been cast".
+    const char* art      = nullptr;
     int         frames   = 0;      // 0 = run until the window closes
     int         width    = 1280;
     int         height   = 720;
@@ -306,6 +323,7 @@ const char* const kValueOptions[] = {
     "--shot", "--frames", "--width", "--height", "--crystal",
     "--vault", "--config", "--trim-ms", "--sink",
     "--projectm", "--projectm-lib", "--overlay", "--colophon-page",
+    "--art",
 };
 
 bool takes_a_value(const char* a)
@@ -343,6 +361,8 @@ Options parse(int argc, char** argv)
             o.given.projectm = true;
         } else if (std::strcmp(a, "--projectm-lib") == 0 && i + 1 < argc) {
             o.projectm_lib = argv[++i];
+        } else if (std::strcmp(a, "--art") == 0 && i + 1 < argc) {
+            o.art = argv[++i];
         } else if (std::strcmp(a, "--config") == 0 && i + 1 < argc) {
             o.config = argv[++i];
         } else if (std::strcmp(a, "--calibrate") == 0) {
@@ -484,9 +504,14 @@ void usage()
         "  --shot PATH    write the last rendered frame to PATH as a BMP\n"
         "  --width W      window width in pixels (default 1280)\n"
         "  --height H     window height in pixels (default 720)\n"
+        "  --art PATH     load a JPEG sleeve as if it had been cast, so the\n"
+        "                 palette and u_has_art reach the crystal with no Plex\n"
+        "                 server. Half of what a crystal is handed was otherwise\n"
+        "                 unreachable on the desk -- see issue 297\n"
         "\n"
         "--frames with --shot is how the renderer is checked without a monitor,\n"
-        "the same way holocron-analyze checks the analysis without a renderer.\n");
+        "the same way holocron-analyze checks the analysis without a renderer.\n"
+        "--art is what makes that cover the album-art half as well.\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -4340,6 +4365,70 @@ int main(int argc, char** argv)
         track_context.palette_accent  = p.accent;
     };
     apply_palette(neutral_palette());
+
+    // -- --art PATH: a sleeve, as if this had been cast ------------------------
+    //
+    // ISSUE 297. `has_art` used to become true in exactly one place, the cast
+    // poll, so `holocron track.flac` and every `--frames N --shot` ever taken drew
+    // the no-art branch. That made half of the crystal contract -- the palette
+    // and `u_has_art` -- unreachable without a Plex server and a phone, which is
+    // how `pulse` came to substitute a raw palette colour for a hand-normalised
+    // constant and stay that way for two sessions.
+    //
+    // THE SAME THREE CALLS THE CAST PATH MAKES, in the same order, so this
+    // exercises the real code rather than a parallel one: decode_image,
+    // upload_art, extract_palette. `has_art` is derived from the TEXTURE and not
+    // from the flag, because crystal_facet gates the uniform on
+    // `has_art && album_art_texture != 0` -- setting the flag without a texture
+    // would leave the shader on the fallback branch and the whole experiment would
+    // silently measure nothing.
+    //
+    // LOUD ON FAILURE, unlike the cast path where a missing sleeve is cosmetic.
+    // Here the sleeve IS the experiment, so a run that quietly drew the no-art
+    // branch would be a measurement of the wrong thing. That includes PNG: this
+    // FFmpeg has no PNG decoder (issue 116), and `--art cover.png` has to say so
+    // rather than look like nothing happened.
+    if (opt.art != nullptr) {
+        std::vector<std::uint8_t> bytes;
+        {
+            std::ifstream in(opt.art, std::ios::binary);
+            if (in) {
+                bytes.assign(std::istreambuf_iterator<char>(in),
+                             std::istreambuf_iterator<char>());
+            }
+        }
+        if (bytes.empty()) {
+            say_err("holocron: --art %s could not be read, or is empty\n", opt.art);
+        } else {
+            ImageRgba8  sleeve;
+            std::string detail;
+            const ImageError e = decode_image(bytes, sleeve, detail);
+            if (e != ImageError::kOk) {
+                say_err("holocron: --art %s would not decode -- %s (%s)\n", opt.art,
+                        to_string(e), detail.c_str());
+            } else {
+                track_context.album_art_texture = upload_art(sleeve);
+                track_context.has_art           = track_context.album_art_texture != 0;
+                if (!track_context.has_art) {
+                    say_err("holocron: --art %s decoded but would not upload as a"
+                            " texture\n", opt.art);
+                } else {
+                    const Palette p = extract_palette(sleeve);
+                    apply_palette(p);
+                    // The palette read back, because the whole point of this flag
+                    // is judging what the crystal was handed -- and a sleeve that
+                    // decoded to something unexpected looks identical to one that
+                    // did not, from outside.
+                    say("holocron: --art %s -- %dx%d, primary (%.3f %.3f %.3f),"
+                        " accent (%.3f %.3f %.3f) in linear\n",
+                        opt.art, sleeve.width, sleeve.height,
+                        static_cast<double>(p.primary.r), static_cast<double>(p.primary.g),
+                        static_cast<double>(p.primary.b), static_cast<double>(p.accent.r),
+                        static_cast<double>(p.accent.g), static_cast<double>(p.accent.b));
+                }
+            }
+        }
+    }
 
     // Starting a track: name it, drop the previous sleeve, and go and get the
     // new one.

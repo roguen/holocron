@@ -245,9 +245,14 @@ ImageError decode_image(const std::vector<std::uint8_t>& bytes, ImageRgba8& out,
         // the person who can act on it -- and for a PNG the remedy is not zlib but
         // `format=jpeg` on the request. See artwork_path() in plex_playback.cpp.
         if (id == AV_CODEC_ID_PNG) {
-            out_detail = "this is a PNG, and this FFmpeg was built without zlib so it has no "
-                         "PNG decoder -- the artwork request should be asking the Plex photo "
-                         "transcoder for format=jpeg (issue 116)";
+            // NAMED IN A FORM THAT FITS BOTH CALLERS. Plex art is fetched, so its
+            // remedy is a request parameter; --art reads a file off disk and has no
+            // request to change, so the sentence has to state the cause first and
+            // offer the Plex remedy as the Plex remedy rather than as the only one.
+            out_detail = "this is a PNG, and this FFmpeg is built without zlib so it has no "
+                         "PNG decoder (issue 116). Plex art avoids this by asking the photo "
+                         "transcoder for format=jpeg; a PNG from anywhere else cannot be "
+                         "decoded at all";
         } else {
             const char* name = avcodec_get_name(id);
             out_detail = std::string("this FFmpeg has no decoder for ") +
