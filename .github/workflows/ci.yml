@@ -815,12 +815,36 @@ jobs:
             # The annotation may be absent if the checkout did not bring the tag
             # object down. Degraded rather than fatal: a release with a thin note
             # and the right artifacts beats no release at all.
-            notes=$(git tag -l "${GITHUB_REF_NAME}" --format='%(contents)' 2>/dev/null || true)
-            if [ -z "$notes" ]; then
-              notes="Artifacts attached by CI. See the tag annotation for what changed."
+            git tag -l "${GITHUB_REF_NAME}" --format='%(contents)' > "${RUNNER_TEMP}/notes.md" 2>/dev/null || true
+            if [ ! -s "${RUNNER_TEMP}/notes.md" ]; then
+              echo "Artifacts attached by CI. See the tag annotation for what changed." \
+                  > "${RUNNER_TEMP}/notes.md"
             fi
-            gh release create "${GITHUB_REF_NAME}" --verify-tag \
-                --title "${GITHUB_REF_NAME}" --notes "$notes" || true
+
+            # --notes-file, NEVER --notes. An annotation is prose and grows;
+            # v1.0.3's was 3.5 KB and BOTH packaging jobs died on
+            # `gh: Argument list too long`, on Windows and on Linux alike, having
+            # worked on v1.0.2. Whatever the exact threshold is on each runner,
+            # a multi-kilobyte argument does not belong on a command line and a
+            # file removes the question rather than moving it.
+            #
+            # AND THE FAILURE ARRIVED WEARING THE WRONG FACE, which is the part
+            # worth keeping: `|| true` swallowed it, so the job reported
+            # `release not found` from the upload on the next line -- a message
+            # that describes a missing release rather than a create that was
+            # never allowed to run. The retry below is narrow for that reason.
+            if ! gh release create "${GITHUB_REF_NAME}" --verify-tag \
+                --title "${GITHUB_REF_NAME}" --notes-file "${RUNNER_TEMP}/notes.md"; then
+              # THE ONLY ACCEPTABLE REASON TO CARRY ON is the other packaging job
+              # having created it in the meantime -- both run this and only one
+              # can win. Anything else is a real failure and must stop the job
+              # rather than reappearing as a confusing error one line later.
+              if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+                echo "::error::could not create the release for ${GITHUB_REF_NAME}"
+                exit 1
+              fi
+              echo "the other packaging job created it first -- carrying on"
+            fi
           fi
           gh release upload "${GITHUB_REF_NAME}" "${ASSET}" --clobber
 
@@ -993,11 +1017,35 @@ jobs:
             # The annotation may be absent if the checkout did not bring the tag
             # object down. Degraded rather than fatal: a release with a thin note
             # and the right artifacts beats no release at all.
-            notes=$(git tag -l "${GITHUB_REF_NAME}" --format='%(contents)' 2>/dev/null || true)
-            if [ -z "$notes" ]; then
-              notes="Artifacts attached by CI. See the tag annotation for what changed."
+            git tag -l "${GITHUB_REF_NAME}" --format='%(contents)' > "${RUNNER_TEMP}/notes.md" 2>/dev/null || true
+            if [ ! -s "${RUNNER_TEMP}/notes.md" ]; then
+              echo "Artifacts attached by CI. See the tag annotation for what changed." \
+                  > "${RUNNER_TEMP}/notes.md"
             fi
-            gh release create "${GITHUB_REF_NAME}" --verify-tag \
-                --title "${GITHUB_REF_NAME}" --notes "$notes" || true
+
+            # --notes-file, NEVER --notes. An annotation is prose and grows;
+            # v1.0.3's was 3.5 KB and BOTH packaging jobs died on
+            # `gh: Argument list too long`, on Windows and on Linux alike, having
+            # worked on v1.0.2. Whatever the exact threshold is on each runner,
+            # a multi-kilobyte argument does not belong on a command line and a
+            # file removes the question rather than moving it.
+            #
+            # AND THE FAILURE ARRIVED WEARING THE WRONG FACE, which is the part
+            # worth keeping: `|| true` swallowed it, so the job reported
+            # `release not found` from the upload on the next line -- a message
+            # that describes a missing release rather than a create that was
+            # never allowed to run. The retry below is narrow for that reason.
+            if ! gh release create "${GITHUB_REF_NAME}" --verify-tag \
+                --title "${GITHUB_REF_NAME}" --notes-file "${RUNNER_TEMP}/notes.md"; then
+              # THE ONLY ACCEPTABLE REASON TO CARRY ON is the other packaging job
+              # having created it in the meantime -- both run this and only one
+              # can win. Anything else is a real failure and must stop the job
+              # rather than reappearing as a confusing error one line later.
+              if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+                echo "::error::could not create the release for ${GITHUB_REF_NAME}"
+                exit 1
+              fi
+              echo "the other packaging job created it first -- carrying on"
+            fi
           fi
           gh release upload "${GITHUB_REF_NAME}" "${ASSET}" --clobber
