@@ -2396,7 +2396,7 @@ bool start_discovery(PlexDevice& device, GdmResponder& gdm, CompanionServer& com
 
     const CompanionError cerr = companion.start(device, detail);
     if (cerr != CompanionError::kOk) {
-        std::fprintf(stderr, "holocron: %s\n  %s\n", to_string(cerr), detail.c_str());
+        say_err("holocron: %s\n  %s\n", to_string(cerr), detail.c_str());
         return false;
     }
 
@@ -2417,20 +2417,25 @@ bool start_discovery(PlexDevice& device, GdmResponder& gdm, CompanionServer& com
     // than retrying.
     const GdmError gerr = gdm.start(device, detail);
     if (gerr != GdmError::kOk) {
-        std::fprintf(stderr, "holocron: %s\n  %s\n", to_string(gerr), detail.c_str());
+        say_err("holocron: %s\n  %s\n", to_string(gerr), detail.c_str());
         if (gerr == GdmError::kBindFailed) {
-            std::fprintf(stderr,
-                         "  UDP %u is held by another Plex player -- Plex Media Player, a\n"
-                         "  Plex HTPC, or another copy of Holocron. Only one can be\n"
-                         "  discoverable on this machine at a time.\n",
-                         static_cast<unsigned>(kGdmClientUpdatePort));
+            say_err("  UDP %u is held by another Plex player -- Plex Media Player, a\n"
+                    "  Plex HTPC, or another copy of Holocron. Only one can be\n"
+                    "  discoverable on this machine at a time.\n",
+                    static_cast<unsigned>(kGdmClientUpdatePort));
         }
+        // AND THE HTTP PORT GOES WITH IT, which is why the summary line in the
+        // caller reads NONE for both. Said out loud because a Companion server
+        // that started and was then closed by a GDM failure is the least
+        // guessable of the four outcomes.
+        say_err("  the Companion HTTP port is being given up too, so this run is not"
+                " castable\n");
         companion.stop();
         return false;
     }
     if (!detail.empty()) {
         // start() reports a failed HELLO this way without failing outright.
-        std::fprintf(stderr, "holocron: %s\n", detail.c_str());
+        say_err("holocron: %s\n", detail.c_str());
     }
 
     std::printf("holocron: announcing as \"%s\" (%s)\n", device.name.c_str(),
@@ -2470,8 +2475,8 @@ void register_with_account(const Gatekeeper& cfg, const PlexDevice& device)
     // the right side of every interface this machine has.
     const std::string local = local_address_towards("192.168.1.1");
     if (local.empty()) {
-        std::fprintf(stderr, "holocron: cannot work out this machine's LAN address; not\n"
-                             "  registering with the account\n");
+        say_err("holocron: cannot work out this machine's LAN address; not\n"
+                "  registering with the account\n");
         return;
     }
 
@@ -2482,8 +2487,8 @@ void register_with_account(const Gatekeeper& cfg, const PlexDevice& device)
     const LinkError err = register_player(cfg.plex_token, device.machine_identifier, device.name,
                                           device.product, device.version, uri, detail);
     if (err != LinkError::kOk) {
-        std::fprintf(stderr, "holocron: could not register with your Plex account -- %s\n  %s\n",
-                     to_string(err), detail.c_str());
+        say_err("holocron: could not register with your Plex account -- %s\n  %s\n",
+                to_string(err), detail.c_str());
         return;
     }
     say("holocron: registered with your Plex account at %s\n", uri.c_str());
@@ -2706,6 +2711,27 @@ int main(int argc, char** argv)
     if (opt.discover && opt.no_discover) {
         std::fprintf(stderr, "holocron: --discover and --no-discover contradict each other\n");
         return 2;
+    }
+
+    // THE RUN LOG ON THE DESKTOP TOO. Issue 281, and standing rule 5.
+    //
+    // `open_run_log` had exactly one caller in the tree -- android_entry.cpp --
+    // so on Windows there was no file at all and `say()` was a bare printf. That
+    // makes every diagnostic added for 281 worth nothing on the rack, which is not
+    // a trade-off, just an absence. The same fault is reachable there: another
+    // Plex player holding UDP 32412 produces the same dead plex.tv entry.
+    //
+    // The working directory, because `data_directory()` is empty by design on
+    // every desktop build (platform_paths.hpp) and the cwd is already where
+    // `gatekeeper.toml` is read from and where `shader-cache/` is written. Issue
+    // 308 established that the working directory is load-bearing here anyway.
+    //
+    // Idempotent, so on Android this is a no-op: android_entry.cpp opened it
+    // before anything that can fail, which is earlier than this and deliberately
+    // so.
+    {
+        const std::string& data = data_directory();
+        open_run_log(data.empty() ? std::string(".") : data);
     }
 
     // -- gatekeeper.toml -------------------------------------------------------
@@ -3008,9 +3034,33 @@ int main(int argc, char** argv)
             // Only fatal when discovery is the whole point of the run.
             return 1;
         }
-        // After the HTTP port is listening, so the address being published is
-        // one that already answers.
-        register_with_account(cfg, device);
+
+        // ONLY IF THERE IS SOMETHING TO REGISTER. Issue 281.
+        //
+        // This comment used to read "After the HTTP port is listening, so the
+        // address being published is one that already answers", and in the
+        // failure case that was false. `start_discovery` returning false leaves
+        // nothing bound -- a Companion failure returns before the port is read
+        // back, and a GDM failure closes the Companion socket on its way out --
+        // and the call went ahead regardless, publishing
+        // `http://<lan>:<configured port>` to plex.tv for an address nothing
+        // answers on. The `return 1` above cannot save it: `--discover` is
+        // argv-only and there is no argv on Android, which is the destination
+        // where this was found.
+        //
+        // WHAT THIS DOES NOT FIX, so nobody reads more into it. `register_player`
+        // is an upsert and nothing anywhere WITHDRAWS a published connection, so
+        // a stale entry from an earlier successful run stays on the account. And
+        // the 2026-08-12 occurrence had no native code running at all, so this
+        // call was definitionally not the source of that advert. This stops a
+        // FAILED RUN from refreshing the entry. It does not stop plex.tv
+        // advertising a dead address.
+        if (companion.bound_port() != 0) {
+            register_with_account(cfg, device);
+        } else {
+            say_err("holocron: not registering with your Plex account -- nothing is"
+                    " listening,\n  so the address would be one that answers nothing\n");
+        }
     } else {
         // NOT ANNOUNCING IS NOT THE SAME AS NOT LISTENING.
         //
@@ -3026,8 +3076,7 @@ int main(int argc, char** argv)
         std::string          detail;
         const CompanionError cerr = companion.start(device, detail);
         if (cerr != CompanionError::kOk) {
-            std::fprintf(stderr, "holocron: no control page -- %s\n  %s\n", to_string(cerr),
-                         detail.c_str());
+            say_err("holocron: no control page -- %s\n  %s\n", to_string(cerr), detail.c_str());
         } else {
             if (!detail.empty()) {
                 say("holocron: the Companion HTTP port had to move\n  %s\n",
@@ -3035,6 +3084,37 @@ int main(int argc, char** argv)
             }
             device.port = companion.bound_port();
         }
+    }
+
+    // ONE GREPPABLE LINE FOR THE WHOLE NETWORK SURFACE. Issue 281.
+    //
+    // Unconditional, whatever happened, and in this order because that is the
+    // order they depend on each other. It is the line you want to find in
+    // `holocron.prev.log` when the device is in the cast list and selecting it
+    // does nothing -- previously that required reading a dozen scattered lines
+    // and noticing which ones were ABSENT, which is the hardest kind of evidence
+    // to read.
+    //
+    // IT SAYS "startup", NOT "reachable". All it knows is what bound. A socket
+    // listening on 0.0.0.0 on a machine whose route has gone reads identically
+    // here, and claiming reachability would be the kind of confident wrong
+    // instrument this project has been bitten by before.
+    {
+        const std::uint16_t tcp = companion.bound_port();
+        char                tcp_text[16];
+        char                udp_text[16];
+        if (tcp != 0) {
+            std::snprintf(tcp_text, sizeof(tcp_text), "%u", static_cast<unsigned>(tcp));
+        } else {
+            std::snprintf(tcp_text, sizeof(tcp_text), "NONE");
+        }
+        if (gdm.running()) {
+            std::snprintf(udp_text, sizeof(udp_text), "%u",
+                          static_cast<unsigned>(kGdmClientUpdatePort));
+        } else {
+            std::snprintf(udp_text, sizeof(udp_text), "NONE");
+        }
+        say("holocron: startup -- companion tcp %s, gdm udp %s\n", tcp_text, udp_text);
     }
 
     if (companion.bound_port() != 0) {
@@ -4378,6 +4458,13 @@ int main(int argc, char** argv)
     // /status/sessions, where any user of that server can read it. Verified on
     // the rack before this existed.
     const std::string session_identity = make_machine_identifier();
+
+    // ISSUE 281. Seeded from the truth at loop entry rather than from `true`: on a
+    // run where discovery never started there is no listener to lose, and starting
+    // this at true would announce a loss on the first frame of every `--no-audio`
+    // or `--no-discover` run. A false alarm in the one instrument built to catch
+    // this fault would be worse than no instrument.
+    bool companion_was_alive = companion.listener_alive();
 
     while (window.pump()) {
         // -- what the phone asked for -----------------------------------------
@@ -5778,6 +5865,43 @@ int main(int argc, char** argv)
             }
         }
         const bool fading = fade > 0.0f;
+
+        // -- has the Companion listener gone? ------------------------------------
+        //
+        // ISSUE 281. EDGE-TRIGGERED, not on a cadence and not behind a knob.
+        //
+        // httplib closes its listening socket and returns from the accept loop on
+        // any accept() error it does not recognise, and nothing in Holocron
+        // notices: `running()` is Holocron's own flag and `bound_port()` keeps
+        // reporting the number that used to work. The process stays alive,
+        // believes it is discoverable, and answers nothing -- which is one of the
+        // shapes the 281 symptom has taken.
+        //
+        // ONE LINE AT THE TRANSITION, zero while healthy. A periodic report was
+        // the obvious alternative and is wrong twice over: riding
+        // `[render] frame_report_seconds` means the instrument is OFF by default,
+        // so it would not have been running on either occasion this happened; and
+        // a line per second on a player that runs for weeks pushes the startup
+        // lines past the run log's cap, which is exactly the evidence the cap
+        // exists to keep.
+        //
+        // ABOVE the visibility split on purpose, so it still fires while the app
+        // is backgrounded -- which on a television is most of the time.
+        if (companion_was_alive && !companion.listener_alive()) {
+            companion_was_alive = false;
+            say_err("holocron: the Companion listener is GONE -- nothing is answering on"
+                    " TCP %u\n  The process is alive and Plex may still be offering this"
+                    " device. Issue 281.\n",
+                    static_cast<unsigned>(companion.bound_port()));
+        } else if (!companion_was_alive && companion.listener_alive()) {
+            // Only reachable once something restarts it, which nothing does yet.
+            // Here so that if a retry is ever built, the recovery is as loud as
+            // the loss -- "it came back on the fourth try" is a measurement about
+            // the trigger, not a success to be quiet about.
+            companion_was_alive = true;
+            say("holocron: the Companion listener is back on TCP %u\n",
+                static_cast<unsigned>(companion.bound_port()));
+        }
 
         // -- backgrounded: keep playing, stop drawing ----------------------------
         //

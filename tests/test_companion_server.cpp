@@ -407,6 +407,84 @@ TEST_CASE("stop is idempotent and leaves the server restartable", "[plex][compan
     server.stop();
 }
 
+TEST_CASE("a live listener is reported live, and a stopped one is not",
+          "[plex][companion][281]")
+{
+    // ISSUE 281. `running()` is Holocron's own flag; `listener_alive()` asks
+    // httplib whether its accept loop is still there. They differ exactly when the
+    // loop has died underneath us -- the state that let the Shield sit alive,
+    // believing it was discoverable, answering nothing.
+    //
+    // WHAT THIS COVERS AND WHAT IT DOES NOT, said plainly rather than implied.
+    // Forcing the accept loop to die mid-run is not reachable from a portable test
+    // -- it needs an accept() error httplib does not recognise -- so this pins the
+    // ordinary transitions and nothing more. An earlier draft of this test asserted
+    // that the two predicates AGREE after stop(), to guard against a refactor
+    // aliasing them; that assertion is SATISFIED BY aliasing them and could never
+    // have failed on the thing it named. The pin below is weaker and true.
+    CompanionServer server;
+    std::string     detail;
+
+    CHECK_FALSE(server.listener_alive());   // nothing started yet
+
+    REQUIRE(server.start(fixture(), detail) == CompanionError::kOk);
+    CHECK(server.running());
+    CHECK(server.listener_alive());
+
+    server.stop();
+    CHECK_FALSE(server.running());
+    CHECK_FALSE(server.listener_alive());
+}
+
+TEST_CASE("a bind that fails does not brick the server for ever",
+          "[plex][companion][281]")
+{
+    // THE LATCH. httplib sets `is_decommissioned` when a bind fails and
+    // `bind_internal` short-circuits on it ever after, so one failed bind makes the
+    // object permanently unbindable. Only `Server::stop()` clears it, and
+    // `CompanionServer::stop()` early-returns while `running` is false -- which is
+    // precisely the state a failed start leaves behind. Every kBindFailed path in
+    // start() therefore unlatches on the way out.
+    //
+    // THIS TEST CANNOT REACH kBindFailed, AND THAT IS WORTH KNOWING RATHER THAN
+    // WORKING AROUND. A held port takes the MOVE path and returns kOk -- see "a
+    // port another server holds cannot be taken, and is moved away from" below,
+    // which asserts exactly that. Getting a kBindFailed needs `bind_to_any_port`
+    // to fail as well, i.e. the machine out of ephemeral ports, which a test must
+    // not arrange.
+    //
+    // So what is asserted here is the reachable half: that a server which has
+    // moved once can still be stopped and started again, and reports a real port
+    // each time. The unlatching itself is defence for the day a retry loop exists
+    // to trip over it, and it is deliberately NOT claimed as covered.
+    PlexDevice first_device         = fixture();
+    first_device.machine_identifier = "11111111-2222-4333-8444-555555555555";
+    RunningServer holder(first_device);
+    REQUIRE(holder.error == CompanionError::kOk);
+    const std::uint16_t taken = holder.server.bound_port();
+    REQUIRE(taken != 0);
+
+    CompanionServer server;
+    std::string     detail;
+
+    PlexDevice wants_taken         = fixture();
+    wants_taken.port               = taken;
+    wants_taken.machine_identifier = "66666666-7777-4888-8999-aaaaaaaaaaaa";
+
+    REQUIRE(server.start(wants_taken, detail) == CompanionError::kOk);
+    const std::uint16_t moved_to = server.bound_port();
+    REQUIRE(moved_to != 0);
+    REQUIRE(moved_to != taken);
+    server.stop();
+
+    // And again on the same object, which is what a retry would do.
+    REQUIRE(server.start(wants_taken, detail) == CompanionError::kOk);
+    CHECK(server.bound_port() != 0);
+    CHECK(server.bound_port() != taken);
+    CHECK(server.listener_alive());
+    server.stop();
+}
+
 // ---------------------------------------------------------------------------
 // refreshPlayQueue -- the "play next" mechanism
 //

@@ -1742,10 +1742,33 @@ CompanionError CompanionServer::start(const PlexDevice& device, std::string& out
     // makes the object permanently unbindable and a fallback attempted on it
     // fails for a reason that has nothing to do with the port. Asking first is
     // what makes recovery possible at all.
+    //
+    // AND IF THE BIND FAILS ANYWAY, UNLATCH IT. Every kBindFailed below calls
+    // `undecommission()` on the way out, because "asking first" only avoids
+    // setting the latch -- it cannot clear one that is set, and the only thing
+    // that clears it is httplib's own `Server::stop()`, which
+    // CompanionServer::stop() never reaches after a failed start because it
+    // early-returns while `running` is false. Without this the object is a brick
+    // and every later start() reports a port fight that is not happening.
+    //
+    // NOT REACHABLE TODAY, and said plainly rather than covered by a test that
+    // cannot be written. A held port takes the MOVE path below and returns kOk --
+    // `tests/test_companion_server.cpp` asserts exactly that. Getting here needs
+    // `bind_to_any_port` to fail as well, which means the machine is out of
+    // ephemeral ports. This is defence for the day a retry loop exists to trip
+    // over it, not a fix for an observed fault.
+    const auto undecommission = [impl] {
+        // Safe on a server that never bound: httplib's stop() only touches the
+        // socket when its own is_running_ is set, and otherwise does nothing but
+        // clear the latch.
+        impl->server.stop();
+    };
+
     if (device.port == 0) {
         const int got = impl->server.bind_to_any_port("0.0.0.0");
         if (got <= 0) {
             out_detail = "no free port could be bound";
+            undecommission();
             return CompanionError::kBindFailed;
         }
         impl->bound_port.store(static_cast<std::uint16_t>(got), std::memory_order_relaxed);
@@ -1762,6 +1785,7 @@ CompanionError CompanionServer::start(const PlexDevice& device, std::string& out
                 out_detail = "port " + std::to_string(device.port) +
                              " was free a moment ago and was taken before Holocron"
                              " could bind it";
+                undecommission();
                 return CompanionError::kBindFailed;
             }
             impl->bound_port.store(device.port, std::memory_order_relaxed);
@@ -1778,6 +1802,7 @@ CompanionError CompanionServer::start(const PlexDevice& device, std::string& out
             if (got <= 0) {
                 out_detail = "port " + std::to_string(device.port) + " -- " + probe.text +
                              "; and no free port could be bound either";
+                undecommission();
                 return CompanionError::kBindFailed;
             }
             impl->bound_port.store(static_cast<std::uint16_t>(got), std::memory_order_relaxed);
@@ -1841,6 +1866,17 @@ std::uint16_t CompanionServer::bound_port() const
 bool CompanionServer::running() const
 {
     return impl_ && impl_->running.load(std::memory_order_acquire);
+}
+
+bool CompanionServer::listener_alive() const
+{
+    // BOTH HALVES, AND THE SECOND IS THE POINT. httplib's `is_running()` reads
+    // the flag its own listen loop clears on the way out, so this disagrees with
+    // running() exactly when the accept loop has died underneath us -- which is
+    // the state nothing could see before. Deriving it from `running` alone would
+    // make it an alias and this predicate worthless.
+    return impl_ && impl_->running.load(std::memory_order_acquire) &&
+           impl_->server.is_running();
 }
 
 std::uint64_t CompanionServer::requests() const
