@@ -718,13 +718,37 @@ jobs:
           # rather than trusted: the preset above is one edit away from being
           # wrong again, and the symptom only ever appears on somebody else's
           # computer.
-          $bad = Select-String -Path imports.txt -Pattern 'ucrtbased\.dll|VCRUNTIME140D\.dll|MSVCP140D\.dll'
+          #
+          # THE PATTERN COVERS FOUR NAMES, NOT THREE. A real Debug build of this
+          # project imports ucrtbased.dll, MSVCP140D.dll, VCRUNTIME140D.dll AND
+          # VCRUNTIME140_1D.dll -- measured on 2026-08-13. An earlier draft listed
+          # the first three, so a build importing only the fourth would have
+          # passed. Matched by shape rather than by a list.
+          $bad = Select-String -Path imports.txt -Pattern 'ucrtbased\.dll|VCRUNTIME140[^.]*D\.dll|MSVCP140[^.]*D\.dll|CONCRT140D\.dll'
           if ($bad) {
             Write-Host "::error::This build imports the non-redistributable debug CRT and would not launch for anyone else."
             $bad
             exit 1
           }
-          Write-Host "no debug CRT imports -- this binary can run without Visual Studio installed"
+
+          # AND THE CHECK MUST HAVE ACTUALLY LOOKED AT SOMETHING.
+          #
+          # "no matches" and "no output at all" are the same result to the test
+          # above, and the second is reachable: while writing this, the identical
+          # check run locally reported a clean Debug binary because Git Bash had
+          # rewritten `/IMPORTS` into a path and dumpbin never dumped anything.
+          # The wrong answer was confident and looked exactly like the right one.
+          #
+          # So require the RELEASE runtime to be present. A holocron.exe that
+          # imports neither the debug CRT nor the redistributable one is not a
+          # clean build, it is a check that read an empty file.
+          $good = Select-String -Path imports.txt -Pattern 'VCRUNTIME140\.dll|MSVCP140\.dll|api-ms-win-crt-runtime'
+          if (-not $good) {
+            Write-Host "::error::dumpbin produced no recognisable CRT imports at all, so the debug-CRT check proved nothing. Look at imports.txt."
+            Get-Content imports.txt -TotalCount 20
+            exit 1
+          }
+          Write-Host "no debug CRT imports, and the redistributable runtime is present -- this binary can run without Visual Studio installed"
 
       - name: Stage the zip
         shell: pwsh
