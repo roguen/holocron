@@ -49,6 +49,7 @@
 #include <holocron/compositor.hpp>
 #include <holocron/crystal.hpp>
 #include <holocron/final_pass.hpp>
+#include <holocron/identity_policy.hpp>
 #include <holocron/image_decode.hpp>
 #include <holocron/last_good.hpp>
 #include <holocron/lyrics.hpp>
@@ -154,6 +155,23 @@ struct Options {
     // Where projectM-4 and its playlist module live. Empty lets the OS loader
     // search, which is what a system-installed libprojectM wants.
     const char* projectm_lib = nullptr;
+    // A sleeve to pretend was cast, so the album-art half of the crystal contract
+    // can be reached without a Plex server.
+    //
+    // ISSUE 297, AND IT IS AN INSTRUMENT RATHER THAN A FEATURE. `has_art` was true
+    // in exactly ONE place -- the cast poll -- so `holocron track.flac` and every
+    // `--frames N --shot` ever taken had always drawn the no-art branch. Half of
+    // what a crystal is handed could not be seen on the desk at all, which is how
+    // `pulse` came to substitute a raw palette colour for a hand-normalised
+    // constant and stay that way: nobody editing it under hot reload had ever
+    // rendered the broken path. `duel` got its own fix because it happened to be
+    // looked at during a cast.
+    //
+    // Local files do NOT grow artwork from this. Nothing decodes an attached
+    // picture out of a FLAC or an MP3, and this does not start -- it reads a
+    // standalone image file and nothing else, so the honest description is "as
+    // if this had been cast".
+    const char* art      = nullptr;
     int         frames   = 0;      // 0 = run until the window closes
     int         width    = 1280;
     int         height   = 720;
@@ -305,6 +323,7 @@ const char* const kValueOptions[] = {
     "--shot", "--frames", "--width", "--height", "--crystal",
     "--vault", "--config", "--trim-ms", "--sink",
     "--projectm", "--projectm-lib", "--overlay", "--colophon-page",
+    "--art",
 };
 
 bool takes_a_value(const char* a)
@@ -342,6 +361,8 @@ Options parse(int argc, char** argv)
             o.given.projectm = true;
         } else if (std::strcmp(a, "--projectm-lib") == 0 && i + 1 < argc) {
             o.projectm_lib = argv[++i];
+        } else if (std::strcmp(a, "--art") == 0 && i + 1 < argc) {
+            o.art = argv[++i];
         } else if (std::strcmp(a, "--config") == 0 && i + 1 < argc) {
             o.config = argv[++i];
         } else if (std::strcmp(a, "--calibrate") == 0) {
@@ -483,9 +504,14 @@ void usage()
         "  --shot PATH    write the last rendered frame to PATH as a BMP\n"
         "  --width W      window width in pixels (default 1280)\n"
         "  --height H     window height in pixels (default 720)\n"
+        "  --art PATH     load a JPEG sleeve as if it had been cast, so the\n"
+        "                 palette and u_has_art reach the crystal with no Plex\n"
+        "                 server. Half of what a crystal is handed was otherwise\n"
+        "                 unreachable on the desk -- see issue 297\n"
         "\n"
         "--frames with --shot is how the renderer is checked without a monitor,\n"
-        "the same way holocron-analyze checks the analysis without a renderer.\n");
+        "the same way holocron-analyze checks the analysis without a renderer.\n"
+        "--art is what makes that cover the album-art half as well.\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -1615,12 +1641,36 @@ public:
             std::vector<std::uint8_t> bytes;
             std::string               detail;
 
-            if (fetch_artwork(server, track, kArtworkSize, bytes, detail) != HttpError::kOk) {
+            // BOTH FAILURES SPEAK NOW, AND ISSUE 116 IS WHY. Losing the sleeve
+            // also loses the palette, so the whole picture goes grey -- and until
+            // this line existed that was the only symptom, with nothing printed
+            // and nothing in the run log. A silent branch cannot be diagnosed.
+            //
+            // ALWAYS, unlike the lyric loader below, which stays quiet on a
+            // missing lyric because a quarter of a real library has none. There is
+            // no equivalent ordinary case here: a track that names no artwork is
+            // already filtered by the `key.empty()` check above, so anything
+            // reaching these branches is a server that advertised a sleeve and
+            // then did not serve one, or served something undecodable. One line
+            // per track at the very worst.
+            //
+            // `say()` rather than fprintf(stderr, ...): on the Shield stderr goes
+            // to logcat, which is a ring buffer that had already thrown away the
+            // evidence once (see run_log.hpp). This lands in holocron.log.
+            const HttpError fetched = fetch_artwork(server, track, kArtworkSize, bytes, detail);
+            if (fetched != HttpError::kOk) {
+                say("holocron: no sleeve for \"%s\" -- %s (%s)\n", track.title.c_str(),
+                    to_string(fetched), detail.c_str());
                 return;   // no art is not an error worth interrupting anything for
             }
 
-            ImageRgba8 image;
-            if (decode_image(bytes, image, detail) != ImageError::kOk) {
+            ImageRgba8      image;
+            const ImageError decoded = decode_image(bytes, image, detail);
+            if (decoded != ImageError::kOk) {
+                // The enum names the class of failure, the detail names this
+                // instance. Both, in that order.
+                say("holocron: the sleeve for \"%s\" would not decode -- %s (%s)\n",
+                    track.title.c_str(), to_string(decoded), detail.c_str());
                 return;
             }
             const Palette palette = extract_palette(image);
@@ -2247,7 +2297,11 @@ bool save_machine_identifier(const char* config_path, const std::string& id)
 // another, and printed two "paste this into gatekeeper.toml" blocks with two
 // different values. Issue 248. Saving the generated value is what makes repeat
 // calls agree, but the calls were also reduced to one.
-PlexDevice device_from(const Gatekeeper& cfg, const char* config_path = nullptr)
+// `config_found` and `for_link` exist for issue 308 -- see the throwaway branch
+// below. Both default to the behaviour that was there before, so a caller that
+// does not care is unaffected.
+PlexDevice device_from(const Gatekeeper& cfg, const char* config_path = nullptr,
+                       bool config_found = true, bool for_link = false)
 {
     PlexDevice d;
     d.name    = cfg.plex_device_name;
@@ -2284,6 +2338,43 @@ PlexDevice device_from(const Gatekeeper& cfg, const char* config_path = nullptr)
 
     // Generated rather than refused, so a first run works with no config at all.
     d.machine_identifier = make_machine_identifier();
+
+    // ISSUE 308. AN IDENTITY THAT BELONGS TO NOTHING IS NOT WORTH KEEPING.
+    //
+    // Launched from a directory with no `gatekeeper.toml` -- which is what
+    // double-clicking the executable, or running it by path out of the build
+    // tree, actually does -- the player has no token either. So it invents an
+    // identifier, saves it beside the binary, and becomes a device that CAN
+    // NEVER APPEAR: per D-059 a `provides=player` record is created only by the
+    // PIN exchange bound to a specific identifier, and this one has never been
+    // through one.
+    //
+    // The saving is what made that permanent. Restarting did not clear it,
+    // because the sidecar was found and reused, so the mistake survived every
+    // attempt to fix it by trying again.
+    //
+    // ONLY ON A DESKTOP WITH NO CONFIG. Android is left exactly as it was and
+    // this is the whole reason the condition is not simply "no config": there,
+    // a first run legitimately has no `gatekeeper.toml`, the identifier it
+    // generates is the one `--link` will be run against from another machine,
+    // and it MUST survive the relaunch in between (D-057, issue 248). The
+    // discriminator is `data_directory()`, which is non-empty only on a platform
+    // that has one.
+    //
+    // `--link` is the deliberate act of establishing an identity, so it saves
+    // regardless -- see the call site.
+    const holocron::IdentityContext identity{config_found,
+                                             !holocron::data_directory().empty(), for_link};
+    const bool throwaway = !holocron::should_persist_identity(identity);
+    if (throwaway) {
+        std::printf("holocron: NO CONFIG, so this identity is temporary and is NOT being saved.\n"
+                    "  A player with no `gatekeeper.toml` has no token either, and a Plex\n"
+                    "  device is bound to the identifier it was linked with -- so this one\n"
+                    "  cannot appear in Plexamp however many times it is restarted.\n"
+                    "  Start it from the directory holding your gatekeeper.toml.\n");
+        std::fflush(stdout);
+        return d;
+    }
 
     // SAVED, NOT PRINTED FOR SOMEBODY TO PASTE. The old message told the reader
     // to paste the value into gatekeeper.toml, which is an instruction nobody can
@@ -2330,7 +2421,7 @@ bool start_discovery(PlexDevice& device, GdmResponder& gdm, CompanionServer& com
 
     const CompanionError cerr = companion.start(device, detail);
     if (cerr != CompanionError::kOk) {
-        std::fprintf(stderr, "holocron: %s\n  %s\n", to_string(cerr), detail.c_str());
+        say_err("holocron: %s\n  %s\n", to_string(cerr), detail.c_str());
         return false;
     }
 
@@ -2351,20 +2442,25 @@ bool start_discovery(PlexDevice& device, GdmResponder& gdm, CompanionServer& com
     // than retrying.
     const GdmError gerr = gdm.start(device, detail);
     if (gerr != GdmError::kOk) {
-        std::fprintf(stderr, "holocron: %s\n  %s\n", to_string(gerr), detail.c_str());
+        say_err("holocron: %s\n  %s\n", to_string(gerr), detail.c_str());
         if (gerr == GdmError::kBindFailed) {
-            std::fprintf(stderr,
-                         "  UDP %u is held by another Plex player -- Plex Media Player, a\n"
-                         "  Plex HTPC, or another copy of Holocron. Only one can be\n"
-                         "  discoverable on this machine at a time.\n",
-                         static_cast<unsigned>(kGdmClientUpdatePort));
+            say_err("  UDP %u is held by another Plex player -- Plex Media Player, a\n"
+                    "  Plex HTPC, or another copy of Holocron. Only one can be\n"
+                    "  discoverable on this machine at a time.\n",
+                    static_cast<unsigned>(kGdmClientUpdatePort));
         }
+        // AND THE HTTP PORT GOES WITH IT, which is why the summary line in the
+        // caller reads NONE for both. Said out loud because a Companion server
+        // that started and was then closed by a GDM failure is the least
+        // guessable of the four outcomes.
+        say_err("  the Companion HTTP port is being given up too, so this run is not"
+                " castable\n");
         companion.stop();
         return false;
     }
     if (!detail.empty()) {
         // start() reports a failed HELLO this way without failing outright.
-        std::fprintf(stderr, "holocron: %s\n", detail.c_str());
+        say_err("holocron: %s\n", detail.c_str());
     }
 
     std::printf("holocron: announcing as \"%s\" (%s)\n", device.name.c_str(),
@@ -2404,8 +2500,8 @@ void register_with_account(const Gatekeeper& cfg, const PlexDevice& device)
     // the right side of every interface this machine has.
     const std::string local = local_address_towards("192.168.1.1");
     if (local.empty()) {
-        std::fprintf(stderr, "holocron: cannot work out this machine's LAN address; not\n"
-                             "  registering with the account\n");
+        say_err("holocron: cannot work out this machine's LAN address; not\n"
+                "  registering with the account\n");
         return;
     }
 
@@ -2416,8 +2512,8 @@ void register_with_account(const Gatekeeper& cfg, const PlexDevice& device)
     const LinkError err = register_player(cfg.plex_token, device.machine_identifier, device.name,
                                           device.product, device.version, uri, detail);
     if (err != LinkError::kOk) {
-        std::fprintf(stderr, "holocron: could not register with your Plex account -- %s\n  %s\n",
-                     to_string(err), detail.c_str());
+        say_err("holocron: could not register with your Plex account -- %s\n  %s\n",
+                to_string(err), detail.c_str());
         return;
     }
     say("holocron: registered with your Plex account at %s\n", uri.c_str());
@@ -2642,6 +2738,27 @@ int main(int argc, char** argv)
         return 2;
     }
 
+    // THE RUN LOG ON THE DESKTOP TOO. Issue 281, and standing rule 5.
+    //
+    // `open_run_log` had exactly one caller in the tree -- android_entry.cpp --
+    // so on Windows there was no file at all and `say()` was a bare printf. That
+    // makes every diagnostic added for 281 worth nothing on the rack, which is not
+    // a trade-off, just an absence. The same fault is reachable there: another
+    // Plex player holding UDP 32412 produces the same dead plex.tv entry.
+    //
+    // The working directory, because `data_directory()` is empty by design on
+    // every desktop build (platform_paths.hpp) and the cwd is already where
+    // `gatekeeper.toml` is read from and where `shader-cache/` is written. Issue
+    // 308 established that the working directory is load-bearing here anyway.
+    //
+    // Idempotent, so on Android this is a no-op: android_entry.cpp opened it
+    // before anything that can fail, which is earlier than this and deliberately
+    // so.
+    {
+        const std::string& data = data_directory();
+        open_run_log(data.empty() ? std::string(".") : data);
+    }
+
     // -- gatekeeper.toml -------------------------------------------------------
     //
     // File overrides the built-in defaults; anything actually typed on the
@@ -2657,6 +2774,13 @@ int main(int argc, char** argv)
     // into cfg.vault, so the config has to outlive every use of opt.
     Gatekeeper  cfg;
     std::string cfg_detail;
+
+    // Whether a `gatekeeper.toml` was actually found. Issue 308: with no config
+    // there is no token either, so the identity the player invents can never be
+    // a cast target -- and it used to save that identity, which made the mistake
+    // survive every restart. Declared out here because device_from needs it far
+    // below.
+    bool config_found = false;
 
     // Backing store for the resolved vault and crystal paths. Declared out here
     // for the same reason cfg is: opt.vault ends up pointing into one of them.
@@ -2680,6 +2804,7 @@ int main(int argc, char** argv)
         if (gerr == GatekeeperError::kNotFound) {
             std::printf("holocron: %s\n", cfg_detail.c_str());
         } else {
+            config_found = true;
             say("holocron: config %s\n", config_path.c_str());
 
             if (!opt.given.trim_ms) {
@@ -2916,7 +3041,10 @@ int main(int argc, char** argv)
     // nothing else, and a run that is signing in has no business also
     // announcing itself.
     if (opt.link) {
-        return run_link(device_from(cfg, opt.config), opt.config);
+        // for_link: establishing an identity IS the deliberate act, so --link saves
+        // one even with no config. That is the entire point of running it.
+        return run_link(device_from(cfg, opt.config, config_found, /*for_link=*/true),
+                        opt.config);
     }
 
     // --discover always wins here: it cannot be combined with --no-discover
@@ -2924,16 +3052,40 @@ int main(int argc, char** argv)
     // is wanted regardless of what the config says.
     // NOT const: start_discovery writes the port actually bound back into it,
     // and register_with_account below publishes that port to the account.
-    PlexDevice device = device_from(cfg, opt.config);
+    PlexDevice device = device_from(cfg, opt.config, config_found);
 
     if ((cfg.plex_discovery || opt.discover) && !opt.no_discover) {
         if (!start_discovery(device, gdm, companion) && opt.discover) {
             // Only fatal when discovery is the whole point of the run.
             return 1;
         }
-        // After the HTTP port is listening, so the address being published is
-        // one that already answers.
-        register_with_account(cfg, device);
+
+        // ONLY IF THERE IS SOMETHING TO REGISTER. Issue 281.
+        //
+        // This comment used to read "After the HTTP port is listening, so the
+        // address being published is one that already answers", and in the
+        // failure case that was false. `start_discovery` returning false leaves
+        // nothing bound -- a Companion failure returns before the port is read
+        // back, and a GDM failure closes the Companion socket on its way out --
+        // and the call went ahead regardless, publishing
+        // `http://<lan>:<configured port>` to plex.tv for an address nothing
+        // answers on. The `return 1` above cannot save it: `--discover` is
+        // argv-only and there is no argv on Android, which is the destination
+        // where this was found.
+        //
+        // WHAT THIS DOES NOT FIX, so nobody reads more into it. `register_player`
+        // is an upsert and nothing anywhere WITHDRAWS a published connection, so
+        // a stale entry from an earlier successful run stays on the account. And
+        // the 2026-08-12 occurrence had no native code running at all, so this
+        // call was definitionally not the source of that advert. This stops a
+        // FAILED RUN from refreshing the entry. It does not stop plex.tv
+        // advertising a dead address.
+        if (companion.bound_port() != 0) {
+            register_with_account(cfg, device);
+        } else {
+            say_err("holocron: not registering with your Plex account -- nothing is"
+                    " listening,\n  so the address would be one that answers nothing\n");
+        }
     } else {
         // NOT ANNOUNCING IS NOT THE SAME AS NOT LISTENING.
         //
@@ -2949,8 +3101,7 @@ int main(int argc, char** argv)
         std::string          detail;
         const CompanionError cerr = companion.start(device, detail);
         if (cerr != CompanionError::kOk) {
-            std::fprintf(stderr, "holocron: no control page -- %s\n  %s\n", to_string(cerr),
-                         detail.c_str());
+            say_err("holocron: no control page -- %s\n  %s\n", to_string(cerr), detail.c_str());
         } else {
             if (!detail.empty()) {
                 say("holocron: the Companion HTTP port had to move\n  %s\n",
@@ -2958,6 +3109,37 @@ int main(int argc, char** argv)
             }
             device.port = companion.bound_port();
         }
+    }
+
+    // ONE GREPPABLE LINE FOR THE WHOLE NETWORK SURFACE. Issue 281.
+    //
+    // Unconditional, whatever happened, and in this order because that is the
+    // order they depend on each other. It is the line you want to find in
+    // `holocron.prev.log` when the device is in the cast list and selecting it
+    // does nothing -- previously that required reading a dozen scattered lines
+    // and noticing which ones were ABSENT, which is the hardest kind of evidence
+    // to read.
+    //
+    // IT SAYS "startup", NOT "reachable". All it knows is what bound. A socket
+    // listening on 0.0.0.0 on a machine whose route has gone reads identically
+    // here, and claiming reachability would be the kind of confident wrong
+    // instrument this project has been bitten by before.
+    {
+        const std::uint16_t tcp = companion.bound_port();
+        char                tcp_text[16];
+        char                udp_text[16];
+        if (tcp != 0) {
+            std::snprintf(tcp_text, sizeof(tcp_text), "%u", static_cast<unsigned>(tcp));
+        } else {
+            std::snprintf(tcp_text, sizeof(tcp_text), "NONE");
+        }
+        if (gdm.running()) {
+            std::snprintf(udp_text, sizeof(udp_text), "%u",
+                          static_cast<unsigned>(kGdmClientUpdatePort));
+        } else {
+            std::snprintf(udp_text, sizeof(udp_text), "NONE");
+        }
+        say("holocron: startup -- companion tcp %s, gdm udp %s\n", tcp_text, udp_text);
     }
 
     if (companion.bound_port() != 0) {
@@ -4146,6 +4328,35 @@ int main(int argc, char** argv)
         }
     }
 
+    // -- THE VERDICT, AND IT IS LAST ON PURPOSE. Issue 308. -------------------
+    //
+    // Every fact below was already printed. The owner still lost an evening to
+    // this, twice, because startup is fourteen lines and the one that mattered
+    // was the sixth -- `no Plex token`, correct, accurate, and eight lines above
+    // the prompt by the time he read it.
+    //
+    // So the last thing said is the only thing most people need: can this be
+    // cast to, and if not, what to do. A summary at the end of a log is not
+    // redundancy, it is the difference between information being present and
+    // being received.
+    //
+    // NOT gated on `--no-discover`: a player that is deliberately not announcing
+    // is still worth an honest line about what it is.
+    if (cfg.plex_token.empty()) {
+        std::printf("holocron: NOT A CAST TARGET. This player will not appear in Plexamp.\n");
+        if (!config_found) {
+            std::printf("  No gatekeeper.toml was found, so it has no token and an identity it\n"
+                        "  invented. If you meant to run your configured player, start it from\n"
+                        "  the directory holding gatekeeper.toml.\n");
+        } else {
+            std::printf("  The config has no `plex.token`. Run `holocron --link` once.\n");
+        }
+    } else {
+        std::printf("holocron: ready -- \"%s\" is offered as a cast target.\n",
+                    device.name.c_str());
+    }
+    std::fflush(stdout);
+
     // The neutral ramp until a sleeve arrives, and after one fails. A crystal
     // must never see a palette of zeroes -- see neutral_palette().
     const auto apply_palette = [&track_context](const Palette& p) {
@@ -4154,6 +4365,70 @@ int main(int argc, char** argv)
         track_context.palette_accent  = p.accent;
     };
     apply_palette(neutral_palette());
+
+    // -- --art PATH: a sleeve, as if this had been cast ------------------------
+    //
+    // ISSUE 297. `has_art` used to become true in exactly one place, the cast
+    // poll, so `holocron track.flac` and every `--frames N --shot` ever taken drew
+    // the no-art branch. That made half of the crystal contract -- the palette
+    // and `u_has_art` -- unreachable without a Plex server and a phone, which is
+    // how `pulse` came to substitute a raw palette colour for a hand-normalised
+    // constant and stay that way for two sessions.
+    //
+    // THE SAME THREE CALLS THE CAST PATH MAKES, in the same order, so this
+    // exercises the real code rather than a parallel one: decode_image,
+    // upload_art, extract_palette. `has_art` is derived from the TEXTURE and not
+    // from the flag, because crystal_facet gates the uniform on
+    // `has_art && album_art_texture != 0` -- setting the flag without a texture
+    // would leave the shader on the fallback branch and the whole experiment would
+    // silently measure nothing.
+    //
+    // LOUD ON FAILURE, unlike the cast path where a missing sleeve is cosmetic.
+    // Here the sleeve IS the experiment, so a run that quietly drew the no-art
+    // branch would be a measurement of the wrong thing. That includes PNG: this
+    // FFmpeg has no PNG decoder (issue 116), and `--art cover.png` has to say so
+    // rather than look like nothing happened.
+    if (opt.art != nullptr) {
+        std::vector<std::uint8_t> bytes;
+        {
+            std::ifstream in(opt.art, std::ios::binary);
+            if (in) {
+                bytes.assign(std::istreambuf_iterator<char>(in),
+                             std::istreambuf_iterator<char>());
+            }
+        }
+        if (bytes.empty()) {
+            say_err("holocron: --art %s could not be read, or is empty\n", opt.art);
+        } else {
+            ImageRgba8  sleeve;
+            std::string detail;
+            const ImageError e = decode_image(bytes, sleeve, detail);
+            if (e != ImageError::kOk) {
+                say_err("holocron: --art %s would not decode -- %s (%s)\n", opt.art,
+                        to_string(e), detail.c_str());
+            } else {
+                track_context.album_art_texture = upload_art(sleeve);
+                track_context.has_art           = track_context.album_art_texture != 0;
+                if (!track_context.has_art) {
+                    say_err("holocron: --art %s decoded but would not upload as a"
+                            " texture\n", opt.art);
+                } else {
+                    const Palette p = extract_palette(sleeve);
+                    apply_palette(p);
+                    // The palette read back, because the whole point of this flag
+                    // is judging what the crystal was handed -- and a sleeve that
+                    // decoded to something unexpected looks identical to one that
+                    // did not, from outside.
+                    say("holocron: --art %s -- %dx%d, primary (%.3f %.3f %.3f),"
+                        " accent (%.3f %.3f %.3f) in linear\n",
+                        opt.art, sleeve.width, sleeve.height,
+                        static_cast<double>(p.primary.r), static_cast<double>(p.primary.g),
+                        static_cast<double>(p.primary.b), static_cast<double>(p.accent.r),
+                        static_cast<double>(p.accent.g), static_cast<double>(p.accent.b));
+                }
+            }
+        }
+    }
 
     // Starting a track: name it, drop the previous sleeve, and go and get the
     // new one.
@@ -4272,6 +4547,13 @@ int main(int argc, char** argv)
     // /status/sessions, where any user of that server can read it. Verified on
     // the rack before this existed.
     const std::string session_identity = make_machine_identifier();
+
+    // ISSUE 281. Seeded from the truth at loop entry rather than from `true`: on a
+    // run where discovery never started there is no listener to lose, and starting
+    // this at true would announce a loss on the first frame of every `--no-audio`
+    // or `--no-discover` run. A false alarm in the one instrument built to catch
+    // this fault would be worse than no instrument.
+    bool companion_was_alive = companion.listener_alive();
 
     while (window.pump()) {
         // -- what the phone asked for -----------------------------------------
@@ -5672,6 +5954,43 @@ int main(int argc, char** argv)
             }
         }
         const bool fading = fade > 0.0f;
+
+        // -- has the Companion listener gone? ------------------------------------
+        //
+        // ISSUE 281. EDGE-TRIGGERED, not on a cadence and not behind a knob.
+        //
+        // httplib closes its listening socket and returns from the accept loop on
+        // any accept() error it does not recognise, and nothing in Holocron
+        // notices: `running()` is Holocron's own flag and `bound_port()` keeps
+        // reporting the number that used to work. The process stays alive,
+        // believes it is discoverable, and answers nothing -- which is one of the
+        // shapes the 281 symptom has taken.
+        //
+        // ONE LINE AT THE TRANSITION, zero while healthy. A periodic report was
+        // the obvious alternative and is wrong twice over: riding
+        // `[render] frame_report_seconds` means the instrument is OFF by default,
+        // so it would not have been running on either occasion this happened; and
+        // a line per second on a player that runs for weeks pushes the startup
+        // lines past the run log's cap, which is exactly the evidence the cap
+        // exists to keep.
+        //
+        // ABOVE the visibility split on purpose, so it still fires while the app
+        // is backgrounded -- which on a television is most of the time.
+        if (companion_was_alive && !companion.listener_alive()) {
+            companion_was_alive = false;
+            say_err("holocron: the Companion listener is GONE -- nothing is answering on"
+                    " TCP %u\n  The process is alive and Plex may still be offering this"
+                    " device. Issue 281.\n",
+                    static_cast<unsigned>(companion.bound_port()));
+        } else if (!companion_was_alive && companion.listener_alive()) {
+            // Only reachable once something restarts it, which nothing does yet.
+            // Here so that if a retry is ever built, the recovery is as loud as
+            // the loss -- "it came back on the fourth try" is a measurement about
+            // the trigger, not a success to be quiet about.
+            companion_was_alive = true;
+            say("holocron: the Companion listener is back on TCP %u\n",
+                static_cast<unsigned>(companion.bound_port()));
+        }
 
         // -- backgrounded: keep playing, stop drawing ----------------------------
         //

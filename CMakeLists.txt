@@ -14,7 +14,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(holocron
-    VERSION 1.0.1
+    VERSION 1.0.2
     DESCRIPTION "GPU music visualization engine that is also the music player"
     LANGUAGES CXX
 )
@@ -493,6 +493,17 @@ target_link_libraries(holocron_render
 target_include_directories(holocron_render SYSTEM PRIVATE
     $<TARGET_PROPERTY:SDL3::Headers,INTERFACE_INCLUDE_DIRECTORIES>
 )
+
+# THE RUN LOG, so the renderer can say WHY it stopped. Issue 298 gave BACK the
+# power to end the app on a television, and "it closed by itself" and "BACK closed
+# it" are the same observation from the couch -- the difference only exists if it
+# was written down.
+#
+# `std::printf` reaches logcat, which is a ring buffer: measured on the Shield, it
+# had already rolled by the time the question was asked. `say` also reaches the run
+# log, which is a file that survives the relaunch performed to investigate it
+# (run_log.hpp, issue 281).
+target_link_libraries(holocron_render PRIVATE holocron::platform)
 
 if(ANDROID)
     # The platform's own ES 3.2 library. GLESv3 carries the 3.x entry points;

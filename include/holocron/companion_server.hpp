@@ -94,7 +94,30 @@ public:
 
     void stop();
 
+    // WHAT HOLOCRON BELIEVES, which is not the same as what the socket is doing.
+    // Set by a successful start() and cleared only by stop(). See
+    // listener_alive() for the difference, which issue 281 is the reason to care
+    // about.
     bool running() const;
+
+    // WHETHER THE ACCEPT LOOP IS STILL THERE.
+    //
+    // ISSUE 281. cpp-httplib's listen loop closes the listening socket and
+    // returns on any accept() error it does not recognise, clearing its own
+    // `is_running_` on the way out. Nothing in Holocron notices: `running()` is
+    // its own flag and `bound_port()` keeps reporting the number that used to
+    // work, so the process stays alive, believes it is discoverable, and answers
+    // nothing.
+    //
+    // `running() && !listener_alive()` is exactly that state, and it is the one
+    // shape of the 281 symptom that code can currently detect. It is NOT a
+    // reachability check: a socket bound to 0.0.0.0 on a machine whose route has
+    // gone is still perfectly alive by this measure. It answers a question about
+    // the thread, not about the network.
+    //
+    // Recovering needs stop() THEN start(): a bare start() sees `running` still
+    // true and returns kAlreadyRunning without doing anything.
+    bool listener_alive() const;
 
     // The port actually bound, which equals `device.port` unless that was 0.
     // Zero before start() and after stop().

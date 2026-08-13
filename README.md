@@ -120,7 +120,7 @@ gain response — and may not change what it *means*.
 
 ## Current status
 
-**`v1.0.1`, and all eight milestones are finished.** Pick an album in Plexamp,
+**`v1.0.2`, and all eight milestones are finished.** Pick an album in Plexamp,
 cast it to the theater, and it plays — bit-perfect, with the visuals coloured by
 the album's own cover and the receiver switched to the right input on the way.
 
@@ -128,6 +128,21 @@ The phone's volume slider drives the amplifier from either destination, and it
 opens where the receiver actually is rather than asserting a level at it — which
 is what `v1.0.1` fixed, along with the units mismatch that made a ceiling of 40
 top out at a displayed 20.
+
+`v1.0.2` is the first release **built and signed by CI** rather than by hand on
+one machine. That is not housekeeping: the Windows download published with
+`v1.0.0` was a debug build and **would not have launched on any computer without
+Visual Studio installed**, which nobody could have known, because the only machine
+that ever ran it was the one that built it. The build now fails outright on a
+debug runtime import.
+
+<!-- measured: artwork_png.count -->
+<!-- measured: artwork_png.rate -->
+It also fixes album art. Plex's photo transcoder does not transcode — it resizes
+and hands back whatever format the sleeve was stored in, labelled `image/jpeg`
+either way — so a cover stored as a PNG arrived as PNG, could not be decoded, and
+silently took the album's whole palette with it. Measured across a real library:
+**157 of 2,450 covers, 6.4%.**
 
 `1.0.0` was never about finishing the milestone list. It was reserved for the
 first build that plays music and renders end to end, and it was taken on
@@ -159,8 +174,19 @@ Shuffle, "play next" and staying paused across a skip all work as of `v0.2.1`.
 ([#118](https://github.com/roguen/holocron/issues/118)) was closed by *measuring*
 rather than building it — the NAS answers a repeated sleeve in **1 ms**, so the
 cache stays in memory and the on-disk one ships unused on purpose. Genre and year
-are on `TrackContext`. PNG art ([#116](https://github.com/roguen/holocron/issues/116))
-needs zlib and stays moot while Plex serves JPEG.
+are on `TrackContext`.
+
+<!-- measured: artwork_png.count -->
+<!-- measured: artwork_png.rate -->
+**Album art asks Plex for JPEG, and has to.** This line used to say PNG art
+([#116](https://github.com/roguen/holocron/issues/116)) was moot because Plex
+serves JPEG. It does not: `/photo/:/transcode` resizes and hands back whatever
+format the sleeve was stored in, labelled `image/jpeg` either way. Measured across
+every album on the reference library, **157 of 2,450 thumbs — 6.4% — came back as
+PNG**, and this FFmpeg has no PNG decoder, so those albums silently lost their
+artwork *and* the palette drawn from it. The request now asks for `&format=jpeg`,
+which takes it to none of them. 116 stays open only for the day art is read from a
+local file, where there is nothing to ask.
 
 ```bash
 scripts\build.cmd                                  # build and test, from a clean shell
@@ -180,6 +206,19 @@ holocron-analyze.exe track.flac --csv frames.csv   # the offline analysis harnes
 (decode and draw without opening a device), `--frames N --shot out.bmp` (render
 exactly N frames and write the last), and `--projectm DIR` (MilkDrop presets).
 
+**Run it from the directory holding your `gatekeeper.toml`.** Started anywhere
+else it finds no config, has no token, and is therefore discoverable on the LAN
+but never offered as a cast target. It says so as the last line of startup —
+`ready` or `NOT A CAST TARGET` with what to do about it — because the facts were
+always printed and were being lost eight lines above the prompt
+([#308](https://github.com/roguen/holocron/issues/308)).
+
+**`scripts\build.cmd` configures a Debug build**, which is right for developing
+and wrong for anything you hand to somebody: a Debug binary imports the
+non-redistributable debug CRT and will not launch on a machine without Visual
+Studio. Release artifacts are built from a separate tree — see
+[`docs/shield.md`](docs/shield.md) §5a for the Android half of the same story.
+
 What exists:
 
 | | |
@@ -190,6 +229,7 @@ What exists:
 | **Tap placement** | The frame on screen is the one the speakers are producing, selected **by position** against the device clock — a measured 51 ms of correction over newest-wins. |
 | **Render** | GL 4.5 core on the desktop and **ES 3.2** on the Shield from the same shaders, a compositor stacking `RGBA16F` layers, a debug facet drawing every field, and `CrystalFacet` drawing authored crystals. |
 | **Crystals** | `.frag` + `.toml`, uniforms bound to contract fields **by name** and validated at load. Hot reload, and a vault the arrow keys move through — **including crystals copied in while it is running**. |
+| **Controls** | Arrow keys move through the vault and nudge the trim, F1 shows the licence panel, Escape quits — and on Android TV, **BACK quits** while **HOME leaves it playing**. Those two are deliberately different: a glance at another app is not an instruction to stop the music. |
 | **Plex** | GDM discovery, `--link` sign-in through the plex.tv PIN flow, automatic device registration and connection publishing, play queues built on the server, timeline reporting to both the controller and the media server, and every transport command a phone sends. |
 | **Playback** | `PlaybackSession` — decoder, analysis, ring, device and decode thread behind one object that can be started, **replaced** and **seeked**, which is what casting requires. |
 | **Track context** | `TrackContext` — what is playing, the album art as a texture, and a **palette** extracted from it: five swatches, a primary and a contrast accent, supplied to every crystal in linear RGB. |

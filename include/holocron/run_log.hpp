@@ -57,6 +57,27 @@ void say(const char* format, ...)
 #endif
     ;
 
+// The same, to stderr.
+//
+// ISSUE 281 AGAIN, AND IT IS THE HALF THAT WAS MISSING. `say()` covers what the
+// player DID; every line that says what it COULD NOT DO went to stderr and
+// therefore into nothing that survives. On the Shield the run log recorded a
+// startup reaching the end successfully and had no way to record one that did
+// not -- which is the only interesting case.
+//
+// Converting a `std::fprintf(stderr, ...)` to this is a rename: stderr still
+// gets the identical bytes, unbuffered, in the same order relative to `say()`'s
+// stdout because both flush every line.
+//
+// NOT MARKED IN THE FILE as an error. The stamp and the line are all a reader
+// needs, and a prefix would make the file harder to scan for the one sequence
+// that matters -- what was tried, in order, and where it stopped.
+void say_err(const char* format, ...)
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((format(printf, 1, 2)))
+#endif
+    ;
+
 // Flush and close. Called at exit on platforms that have one; the file is
 // flushed after every line anyway, precisely because Android does not.
 void close_run_log();

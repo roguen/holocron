@@ -89,6 +89,56 @@ rather than of whatever was playing. It was still correct. It is simply no \
 longer current, and every document that names it has to say so.\
 """
 
+# --------------------------------------------------------------------------
+# How often Plex's photo transcoder hands back a PNG. Issue 116.
+#
+# TWO KEYS FOR ONE MEASUREMENT, deliberately. Prose quotes this as "157 of 2,450"
+# and as "6.4%" and often only one of the two, so a single key would leave the
+# other spelling unguarded -- which is exactly the 265 failure. Stack both markers
+# above a block that quotes both.
+# --------------------------------------------------------------------------
+
+[[measurement]]
+key        = "artwork_png.count"
+value      = "157"
+unit       = "album thumbs, of 2,450"
+measured   = "2026-08-13"
+subject    = "the reference Plex library"
+conditions = "Plex Media Server 1.43.3.10828 on the Garage67 NAS; every album in all three artist-type sections requested through /photo/:/transcode at 512x512 with minSize=1&upscale=1 and Accept: image/jpeg -- exactly what artwork_path() sent before this measurement. Classified by the first bytes of the body, never the content type"
+bracket    = "a census, not a sample: 2,450 of 2,451 album thumbs answered, one 500s"
+resolution = "exact, for this library on this day"
+issue      = 116
+note       = """
+THE ENDPOINT IS CALLED /photo/:/transcode AND IT DOES NOT TRANSCODE. It resizes \
+and passes the source format through, so a sleeve stored as a PNG came back as \
+PNG -- and this FFmpeg has no PNG decoder, so the art and the album's palette \
+were lost together. Every one of the 157 was labelled `image/jpeg` regardless, \
+and `Accept: image/jpeg` on the request changed nothing.Adding `&format=jpeg` \
+takes it to 0 of 2,450. The spelling is load-bearing: `format=jpg` and \
+`format=JPEG` are accepted, ignored and answered with the source format, with no \
+error.Split by section, because the rate is not uniform and a music-only reading \
+would have understated it: 31 of 1,998 in Music (1.6%), 126 of 447 in AudioBooks \
+(28.2%), 0 of 5 in Radio Dramas.THIS WILL DRIFT as albums are added, and that is \
+fine -- what it records is that the rate was NOT ZERO, which is the claim the \
+four documents saying PNG was "moot while Plex serves JPEG" got wrong. Re-measure \
+only if the question comes back.\
+"""
+
+[[measurement]]
+key        = "artwork_png.rate"
+value      = "6.4"
+unit       = "% of album thumbs"
+measured   = "2026-08-13"
+subject    = "the reference Plex library"
+conditions = "the same census as artwork_png.count -- see that entry for the method, the per-section split and why the parameter spelling matters"
+bracket    = "157 of 2,450"
+resolution = "exact, for this library on this day"
+issue      = 116
+note       = """
+THE SAME MEASUREMENT AS artwork_png.count, recorded separately only so that prose \
+quoting the percentage without the counts is guarded too.\
+"""
+
 [[measurement]]
 key        = "trim_ms.shield"
 value      = "260"

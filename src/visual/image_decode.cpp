@@ -221,19 +221,43 @@ const char* to_string(ImageError e)
 ImageError decode_image(const std::vector<std::uint8_t>& bytes, ImageRgba8& out,
                         std::string& out_detail)
 {
+    // EVERY NON-kOk RETURN BELOW FILLS THIS. Not a style rule -- the enum names
+    // the CLASS of failure and the detail names THIS instance, and three of the
+    // seven exits used to leave it blank. Issue 116 was invisible for exactly that
+    // long: the only symptom of a sleeve that would not decode was the visuals
+    // going grey, with nothing said anywhere.
     out_detail.clear();
 
     if (bytes.empty()) {
+        out_detail = "there were no bytes";
         return ImageError::kEmpty;
     }
 
     const AVCodecID id = sniff(bytes);
     if (id == AV_CODEC_ID_NONE) {
+        out_detail = "the first bytes are neither a JPEG nor a PNG signature";
         return ImageError::kUnknownFormat;
     }
 
     const AVCodec* codec = avcodec_find_decoder(id);
     if (codec == nullptr) {
+        // NAMED, AND WITH THE REMEDY, because the person who reads this line is
+        // the person who can act on it -- and for a PNG the remedy is not zlib but
+        // `format=jpeg` on the request. See artwork_path() in plex_playback.cpp.
+        if (id == AV_CODEC_ID_PNG) {
+            // NAMED IN A FORM THAT FITS BOTH CALLERS. Plex art is fetched, so its
+            // remedy is a request parameter; --art reads a file off disk and has no
+            // request to change, so the sentence has to state the cause first and
+            // offer the Plex remedy as the Plex remedy rather than as the only one.
+            out_detail = "this is a PNG, and this FFmpeg is built without zlib so it has no "
+                         "PNG decoder (issue 116). Plex art avoids this by asking the photo "
+                         "transcoder for format=jpeg; a PNG from anywhere else cannot be "
+                         "decoded at all";
+        } else {
+            const char* name = avcodec_get_name(id);
+            out_detail = std::string("this FFmpeg has no decoder for ") +
+                         (name != nullptr ? name : "that format");
+        }
         return ImageError::kNoDecoder;
     }
 
@@ -242,10 +266,12 @@ ImageError decode_image(const std::vector<std::uint8_t>& bytes, ImageRgba8& out,
     d.frame   = av_frame_alloc();
     d.packet  = av_packet_alloc();
     if (d.context == nullptr || d.frame == nullptr || d.packet == nullptr) {
+        out_detail = "a decoder could not be allocated";
         return ImageError::kBadImage;
     }
 
     if (avcodec_open2(d.context, codec, nullptr) < 0) {
+        out_detail = "the decoder would not open";
         return ImageError::kBadImage;
     }
 
@@ -263,9 +289,11 @@ ImageError decode_image(const std::vector<std::uint8_t>& bytes, ImageRgba8& out,
     d.packet->size = static_cast<int>(bytes.size());
 
     if (avcodec_send_packet(d.context, d.packet) < 0) {
+        out_detail = "the decoder refused the bytes";
         return ImageError::kBadImage;
     }
     if (avcodec_receive_frame(d.context, d.frame) < 0) {
+        out_detail = "the decoder accepted the bytes and produced no picture";
         return ImageError::kBadImage;
     }
 

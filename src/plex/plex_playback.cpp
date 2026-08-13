@@ -839,8 +839,33 @@ std::string artwork_path(const PlexTrack& track, const std::string& token, int s
     // minSize=1 with upscale=1 asks for "at least this big, enlarge if need be",
     // which is what stops a 150-pixel thumb coming back at 150 pixels and giving
     // the palette almost nothing to work with.
+    //
+    // `format=jpeg` IS THE WHOLE OF ISSUE 116, AND IT HAS TO BE ASKED FOR.
+    //
+    // The endpoint is called `/photo/:/transcode` and it does not transcode. Left
+    // to itself it RESIZES and hands back the source format, so a sleeve stored as
+    // a PNG arrives as PNG -- and this FFmpeg has no PNG decoder, so the art and
+    // the palette with it were simply lost. Measured across every album on the
+    // reference library: 157 of 2,450 thumbs came back PNG, and with this
+    // parameter none of them do.
+    //
+    // WORSE, IT LABELS THEM `image/jpeg` ANYWAY. Every one of those 157 responses
+    // carried a JPEG content type over PNG bytes, and `Accept: image/jpeg` on the
+    // request changed nothing. That is the same lie `sniff()` in image_decode.cpp
+    // was already written to survive, which is the only reason this failed cleanly
+    // instead of feeding the palette noise.
+    //
+    // THE SPELLING IS LOAD-BEARING: lowercase `jpeg`. `format=jpg` and
+    // `format=JPEG` are both accepted, ignored, and answered with the source
+    // format -- no error, no warning. Tested, because a silently-ignored parameter
+    // looks exactly like a working one.
+    //
+    // A server old enough not to know `format` degrades to the old behaviour
+    // rather than failing, and would be silent about it -- which is why the
+    // refusal in image_decode.cpp now says which format it was and the caller
+    // logs it.
     return "/photo/:/transcode?width=" + dimension + "&height=" + dimension +
-           "&minSize=1&upscale=1&url=" + url_encode(source) +
+           "&minSize=1&upscale=1&format=jpeg&url=" + url_encode(source) +
            "&X-Plex-Token=" + url_encode(token);
 }
 

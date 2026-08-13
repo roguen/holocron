@@ -142,6 +142,47 @@ if [ ! -f "$so" ]; then
     echo "  Configure and build for Android first -- see docs/shield.md section 5." >&2
     exit 1
 fi
+
+# PRESENT IS NOT THE SAME AS CURRENT, AND THE DIFFERENCE COST A DEPLOYMENT.
+#
+# 2026-08-13: this script was run straight after merging two branches, printed
+# `native build/android/lib/arm64-v8a/libholocron.so (147M)`, and produced a
+# signed, verified, installable APK containing NONE of the day's work. The
+# library was four hours older than the sources. The line above reads like a
+# build step and is only a `stat`.
+#
+# So compare it against every source that goes into it. Refuse rather than warn:
+# the whole failure mode is that the output looks entirely successful, and a
+# warning in a wall of successful-looking output is one nobody reads.
+#
+# `-newer` is a plain mtime comparison, which is the right instrument here --
+# ninja's own staleness rules are more subtle, but anything ninja would rebuild
+# is by definition newer than the last link.
+#
+# IT FIRES ON A BRANCH SWITCH, AND THAT IS THE POINT RATHER THAN A FALSE
+# POSITIVE. `git checkout` rewrites the mtime of every file that differs, so
+# moving between branches makes the library stale without anybody editing
+# anything -- which is the quietest way to reach this and the way it was first
+# hit. Rebuilding is cheap; shipping the wrong binary is not.
+newer=$(find src include tools crystals CMakeLists.txt -newer "$so" \
+            \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.frag' \
+               -o -name '*.toml' -o -name 'CMakeLists.txt' \) 2>/dev/null | head -20)
+if [ -n "$newer" ]; then
+    echo "android-apk: THE NATIVE LIBRARY IS STALE." >&2
+    echo "  $so" >&2
+    echo "  is older than these, so an APK built now would not contain them:" >&2
+    echo "$newer" | sed 's/^/    /' >&2
+    echo >&2
+    echo "  Build it first:" >&2
+    echo "    ANDROID_NDK_HOME=<the ndk build/android was configured against> \\" >&2
+    echo "        cmake --build build/android" >&2
+    echo >&2
+    echo "  Set HOLOCRON_ALLOW_STALE_SO=1 to package anyway, which is only ever" >&2
+    echo "  right when you know the difference does not reach the library." >&2
+    [ "${HOLOCRON_ALLOW_STALE_SO:-}" = "1" ] || exit 1
+    echo "android-apk: HOLOCRON_ALLOW_STALE_SO=1 -- packaging a stale library on purpose" >&2
+fi
+
 echo "android-apk: native      $so ($(du -h "$so" | cut -f1))"
 
 # ---------------------------------------------------------------------------
