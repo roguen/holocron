@@ -47,6 +47,23 @@
 //
 // The weighting has a FLOOR rather than a cut-off: a genuinely monochrome sleeve
 // must still yield a usable palette instead of nothing at all.
+//
+// THE FLOOR IS A GUARD AGAINST A DEGENERATE IMAGE, NOT A SHARE OF THE VOTE, and
+// having it be the second of those was issue 297. The lightness floor was 0.15,
+// which -- on a term that was already flat enough to return 0.36 at a tenth of
+// full lightness -- meant a black surround had only to be about twice as
+// populous as the subject to be called the record's dominant colour. It usually
+// is far more than twice. Measured over eighteen real sleeves, the primary came
+// back at a relative luminance below 0.05 on twelve of them.
+//
+// The floor is now 0.001 and the term falls off as the fourth power, so the same
+// tenth-lightness colour must be sixty times more populous. See vibrancy_weight
+// in palette.cpp, which carries the numbers.
+//
+// A SLEEVE THAT IS GENUINELY ALMOST ALL BLACK STILL YIELDS A BLACK PRIMARY, and
+// that is the correct answer from this function rather than a residue of the
+// bug. Four of the eighteen are such records. What a crystal should draw when
+// the record really is black is the crystal's question and not this one's.
 
 #pragma once
 
