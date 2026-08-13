@@ -851,16 +851,36 @@ jobs:
       - name: nasm and ninja, for FFmpeg's assembly paths
         run: sudo apt-get update && sudo apt-get install -y ninja-build nasm
 
-      # Split restore/save with a conditional save, for the reasons written out
-      # at length in the build job above: a cancelled run's post-step would
-      # otherwise pin a PARTIAL archive set to the key forever.
-      - name: Restore vcpkg binaries
-        id: vcpkg-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.cache/vcpkg/archives
-          key: vcpkg-android-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-android-
+      # NO vcpkg BINARY CACHE HERE, AND THAT IS DELIBERATE RATHER THAN AN
+      # OVERSIGHT. IT COSTS ABOUT SEVENTEEN MINUTES PER RELEASE AND BUYS
+      # DETERMINISM.
+      #
+      # `scripts/android-apk.sh` takes SDL's Java from the vcpkg BUILDTREE --
+      # `buildtrees/sdl3/src/*/android-project/...` -- which exists only when
+      # vcpkg actually COMPILED sdl3. Restore a binary archive and the port is
+      # unpacked rather than built, the buildtree never appears, and the script
+      # stops with "SDL's Java sources are not in the vcpkg buildtree."
+      #
+      # THAT FAILS ON THE SECOND RUN AND NEVER THE FIRST, which is the worst
+      # shape a CI job can have. Measured: rehearsal one had no cache, built SDL
+      # from source and produced a signed APK; rehearsal two restored what
+      # rehearsal one saved and failed at packaging. A single green run would
+      # have been read as proof, and the real failure would have arrived on a
+      # release.
+      #
+      # Taking SDL's Java from the buildtree is itself deliberate --
+      # android-apk.sh explains that vendoring it lets the Java and native halves
+      # drift, with the failure being an UnsatisfiedLinkError on a device rather
+      # than a compile error. So the buildtree stays, and the cache goes.
+      #
+      # The better fix, when this becomes worth the effort: teach the script to
+      # accept the Java path from the environment, and have CI check out
+      # libsdl-org/SDL at whatever version the baseline pins. That needs the
+      # version resolved from vcpkg at runtime and is a change to the script's
+      # contract, so it is not being done inside a packaging fix.
+      #
+      # This job runs on tags only -- a handful of times a year -- so the trade is
+      # cheap. The `build` and `android` jobs, which run constantly, keep theirs.
 
       # THE MANIFEST, not classic mode. The `android` job above installs two
       # ports classically precisely to avoid FFmpeg; this one is packaging
@@ -879,12 +899,27 @@ jobs:
               -DANDROID_PLATFORM=android-30
           cmake --build build/android
 
-      - name: Save vcpkg binaries
-        if: success() && steps.vcpkg-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.cache/vcpkg/archives
-          key: vcpkg-android-${{ hashFiles('vcpkg.json') }}
+      # And the buildtree really must be there, said out loud BEFORE the script
+      # reaches it. Without this the failure reads as a packaging problem when it
+      # is a caching one, which is how twenty-five minutes was spent looking in
+      # the wrong place.
+      - name: SDL's Java must have been built, not unpacked
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+        run: |
+          found=""
+          for c in "$VCPKG_ROOT"/buildtrees/sdl3/src/*/android-project/app/src/main/java; do
+              [ -d "$c" ] && found="$c" && break
+          done
+          if [ -z "$found" ]; then
+            echo "::error::No SDL Java in the vcpkg buildtree. That means sdl3 came"
+            echo "::error::from a BINARY ARCHIVE rather than being compiled, which"
+            echo "::error::happens when a vcpkg cache is restored into this job."
+            echo "::error::This job must build from source -- see the comment above."
+            ls -la "$VCPKG_ROOT/buildtrees" 2>/dev/null || echo "(no buildtrees at all)"
+            exit 1
+          fi
+          echo "SDL's Java is at $found"
 
       # The script's own stale-library guard is what makes this safe to run
       # unattended: it refuses when the .so is older than any source that feeds
