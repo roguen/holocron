@@ -171,6 +171,26 @@ int main(int argc, char** argv)
     // is the first Holocron code that runs.
     SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE, "0");
 
+    // TRAP THE BACK BUTTON, OR THE PLAYER NEVER SEES IT. Issue 298.
+    //
+    // Left at its default of "0", SDL hands BACK to Android and the key event
+    // never reaches our loop at all -- so a handler for `SDL_SCANCODE_AC_BACK`
+    // in window.cpp would be dead code and BACK would go on doing whatever the
+    // Activity does, which since D-062 is background-and-keep-playing. That is
+    // right for HOME and wrong for BACK: on a television, BACK is the button
+    // that means "I am finished with this".
+    //
+    // Set to "1", the button arrives as an ordinary key down/up pair and this
+    // program decides. That is the whole fix; the handler is the easy half.
+    //
+    // THE COST IS REAL AND IS ACCEPTED: Android's own back navigation is now
+    // ours to implement, and there is nothing to navigate back to -- Holocron is
+    // a single Activity with no stack. HOME still backgrounds it and it keeps
+    // playing, which is D-062 and is untouched.
+    //
+    // Same placement reason as the hint above: SDL reads it when video starts.
+    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
+
     JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
     if (env != nullptr) {
         JavaVM* vm = nullptr;
