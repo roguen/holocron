@@ -623,3 +623,237 @@ jobs:
       - name: Say so if the wiki could not be reached
         if: steps.wiki.outcome != 'success'
         run: echo "::warning::the wiki could not be cloned, so its quotations were NOT checked"
+
+  # ---------------------------------------------------------------------------
+  # Packaging, for both destinations. Issue 293.
+  #
+  # STANDING RULE 5: "Every version and milestone release publishes for both and
+  # deploys to both." Until this existed both artifacts were built by hand on one
+  # machine -- and that is not a process complaint, it shipped a defect. v1.0.0's
+  # Windows zip was a DEBUG build, importing ucrtbased.dll and the rest of the
+  # non-redistributable debug CRT. It would not have launched for anyone else,
+  # and nobody could have known, because the only machine that ever ran it is the
+  # one that built it.
+  #
+  # ON TAGS ONLY, not on every pull request. The Android leg needs FFmpeg for
+  # arm64-android, which is roughly seventeen minutes; the `android` job above
+  # avoids it on purpose by installing two ports in classic mode. Paying that per
+  # PR would buy nothing -- what a PR needs to know is whether the code compiles
+  # for Android, and that job already answers it.
+  #
+  # workflow_dispatch is here so this can be rehearsed WITHOUT cutting a tag,
+  # which matters: a packaging job whose first real run is a release is one whose
+  # first real test is a release.
+  # ---------------------------------------------------------------------------
+
+  package-windows:
+    name: Package (Windows)
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out vcpkg at the pinned baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: 39344dff01c5a5a0134caf2624cdd492f05d30ea
+          path: vcpkg
+          fetch-depth: 1
+
+      - name: Bootstrap vcpkg
+        run: .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+      # THE `windows-release` PRESET, AND THAT IS THE WHOLE POINT OF THIS JOB.
+      #
+      # `scripts/build.cmd` and the `windows` preset both configure Debug, which
+      # is right for developing and wrong for anything published. The distinction
+      # is invisible on the build machine -- a Debug binary runs perfectly well
+      # where Visual Studio is installed -- so nothing but a deliberate choice
+      # here prevents it.
+      #
+      # The CRT check runs in the SAME cmd invocation, because dumpbin is only on
+      # PATH inside a vcvars environment and hunting for it under Program Files
+      # is slower and breaks whenever Visual Studio moves it.
+      - name: Configure, build Release, and refuse a debug CRT
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * `
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -property installationPath
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $vcpkg  = Join-Path $PWD 'vcpkg'
+          cmd /c "call `"$vcvars`" >nul && set VCPKG_ROOT=$vcpkg&& cmake --preset windows-release && cmake --build --preset windows-release && dumpbin /IMPORTS build\windows-release\bin\holocron.exe > imports.txt"
+          if ($LASTEXITCODE -ne 0) { throw "the Release build failed" }
+
+          # A binary importing the debug CRT cannot run on a machine without
+          # Visual Studio, and that is exactly what shipped as v1.0.0. Checked
+          # rather than trusted: the preset above is one edit away from being
+          # wrong again, and the symptom only ever appears on somebody else's
+          # computer.
+          $bad = Select-String -Path imports.txt -Pattern 'ucrtbased\.dll|VCRUNTIME140D\.dll|MSVCP140D\.dll'
+          if ($bad) {
+            Write-Host "::error::This build imports the non-redistributable debug CRT and would not launch for anyone else."
+            $bad
+            exit 1
+          }
+          Write-Host "no debug CRT imports -- this binary can run without Visual Studio installed"
+
+      - name: Stage the zip
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path CMakeLists.txt -Pattern '^\s*VERSION\s+(\d+\.\d+\.\d+)' |
+              Select-Object -First 1).Matches.Groups[1].Value
+          if (-not $version) { throw "could not read VERSION out of CMakeLists.txt" }
+          Write-Host "version $version"
+
+          $stage = "staging/holocron-$version-windows-x64"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item build/windows-release/bin/* $stage -Recurse -Force
+
+          # The vault travels with the binary or there is nothing to draw. The
+          # licence texts are an OBLIGATION rather than a courtesy -- and they
+          # are compiled into the executable as well (cmake/embed_notices.cmake),
+          # which is deliberate: an obligation met only when a file happens to
+          # sit beside the binary is not met.
+          Copy-Item crystals $stage -Recurse -Force
+          Copy-Item LICENSE, THIRD-PARTY-NOTICES.md, README.md, gatekeeper.example.toml $stage -Force
+
+          $asset = "holocron-$version-windows-x64.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $asset -Force
+          "ASSET=$asset" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Keep it whatever happens
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: ${{ env.ASSET }}
+
+      # Only on a tag. A workflow_dispatch run is a rehearsal and must not touch
+      # a published release.
+      - name: Attach it to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" "${ASSET}" --clobber
+
+  package-android:
+    name: Package (Android APK)
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # FAIL HERE, BEFORE SEVENTEEN MINUTES OF FFmpeg, AND FAIL LOUDLY.
+      #
+      # `scripts/android-apk.sh` GENERATES A NEW KEYPAIR when the keystore is
+      # absent. Inheriting that silence here would mean every CI build carried a
+      # different signature -- and Android refuses to update an installed app
+      # whose signature differs, so the only way through is an uninstall, which
+      # wipes the app's gatekeeper.toml, machine identifier and Plex token. That
+      # is a re-provisioning per build rather than an install error, and it would
+      # be discovered by somebody trying to update the Shield rather than here.
+      - name: The signing key, or nothing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is not set. Refusing to let"
+            echo "::error::android-apk.sh mint a throwaway key -- a differently"
+            echo "::error::signed APK cannot update the one installed on the Shield."
+            echo "::error::Set it from the backup in the holocron-config repo:"
+            echo "::error::  base64 -w0 shield/debug.keystore | gh secret set ANDROID_KEYSTORE_BASE64 -R roguen/holocron"
+            exit 1
+          fi
+          mkdir -p build/android
+          echo "$KEYSTORE_B64" | base64 -d > build/android/debug.keystore
+          # A truncated secret still decodes to SOMETHING, so check it is a
+          # keystore rather than merely non-empty. The password is `android` and
+          # is hardcoded in android-apk.sh; it is not a secret, and what matters
+          # about this file is continuity rather than confidentiality.
+          keytool -list -keystore build/android/debug.keystore -storepass android > /dev/null
+          echo "the signing key is present and readable"
+
+      - name: Check out vcpkg at the pinned baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: 39344dff01c5a5a0134caf2624cdd492f05d30ea
+          path: vcpkg
+          fetch-depth: 1
+
+      - name: Bootstrap vcpkg
+        run: ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: nasm and ninja, for FFmpeg's assembly paths
+        run: sudo apt-get update && sudo apt-get install -y ninja-build nasm
+
+      # Split restore/save with a conditional save, for the reasons written out
+      # at length in the build job above: a cancelled run's post-step would
+      # otherwise pin a PARTIAL archive set to the key forever.
+      - name: Restore vcpkg binaries
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: vcpkg-android-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-android-
+
+      # THE MANIFEST, not classic mode. The `android` job above installs two
+      # ports classically precisely to avoid FFmpeg; this one is packaging
+      # something that has to RUN, so it needs the real dependency set at the
+      # pinned baseline.
+      - name: Configure and build for arm64-android
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          test -d "$ANDROID_NDK_HOME" || { echo "::error::no NDK on this runner"; exit 1; }
+          cmake -S . -B build/android -G Ninja \
+              -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DCMAKE_TOOLCHAIN_FILE="$PWD/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+              -DVCPKG_TARGET_TRIPLET=arm64-android \
+              -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+              -DANDROID_ABI=arm64-v8a \
+              -DANDROID_PLATFORM=android-30
+          cmake --build build/android
+
+      - name: Save vcpkg binaries
+        if: success() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: vcpkg-android-${{ hashFiles('vcpkg.json') }}
+
+      # The script's own stale-library guard is what makes this safe to run
+      # unattended: it refuses when the .so is older than any source that feeds
+      # it, which is the failure that produced a signed, verified APK containing
+      # none of a day's work.
+      - name: Package and sign
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+        run: bash scripts/android-apk.sh
+
+      - name: Name it for the release
+        run: |
+          version=$(sed -n 's/^[[:space:]]*VERSION[[:space:]]\{1,\}\([0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}\).*/\1/p' CMakeLists.txt | head -1)
+          test -n "$version" || { echo "::error::could not read VERSION out of CMakeLists.txt"; exit 1; }
+          echo "version $version"
+          cp build/android/apk/holocron.apk "holocron-$version-arm64-android.apk"
+          echo "ASSET=holocron-$version-arm64-android.apk" >> "$GITHUB_ENV"
+
+      - name: Keep it whatever happens
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-android
+          path: ${{ env.ASSET }}
+
+      - name: Attach it to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" "${ASSET}" --clobber
