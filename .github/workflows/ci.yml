@@ -666,6 +666,30 @@ jobs:
       - name: Bootstrap vcpkg
         run: .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
 
+      # RESTORE ONLY, SHARING THE `build` JOB'S CACHE RATHER THAN KEEPING ONE.
+      #
+      # Same key, so this gets a free hit off whatever that job saved for the same
+      # vcpkg.json -- and vcpkg's binary cache is keyed on port, triplet and
+      # features rather than on the consumer's CMAKE_BUILD_TYPE, so a Debug build
+      # job's archives serve this Release one unchanged.
+      #
+      # NO SAVE STEP, deliberately. The long note in the build job records that
+      # this project has already hit GitHub's 10 GB cache limit -- 55 entries,
+      # 10.02 GB, with Windows entries at 258 MB each -- and that eviction there
+      # made a Windows restore MISS and rebuild FFmpeg from source for over an
+      # hour. A second saver on the same key would add blobs and buy nothing,
+      # since the build job runs on every push and pull request and this one runs
+      # only on tags.
+      #
+      # Without this, the first rehearsal run of this job spent its whole time
+      # building FFmpeg from source. Measured, not assumed.
+      - name: Restore vcpkg binaries (from the build job's cache)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-Windows-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-Windows-
+
       # THE `windows-release` PRESET, AND THAT IS THE WHOLE POINT OF THIS JOB.
       #
       # `scripts/build.cmd` and the `windows` preset both configure Debug, which
