@@ -112,16 +112,12 @@ void open_run_log(const std::string& directory)
 
 const std::string& run_log_path() { return state().path; }
 
-void say(const char* format, ...)
-{
-    // stdout first and unconditionally. A caller must be able to convert a
-    // printf to this without wondering whether the terminal still gets it.
-    std::va_list args;
-    va_start(args, format);
-    std::vprintf(format, args);
-    va_end(args);
-    std::fflush(stdout);
+namespace {
 
+// The file half, shared by say() and say_err() so there is one copy of the
+// stamping, the accounting and the cap. `args` is consumed.
+void write_to_file(const char* format, std::va_list args)
+{
     State& s = state();
     const std::lock_guard<std::mutex> lock(s.mutex);
     if (s.file == nullptr || s.capped) {
@@ -129,10 +125,7 @@ void say(const char* format, ...)
     }
 
     stamp(s.file);
-    va_list file_args;
-    va_start(file_args, format);
-    const int n = std::vfprintf(s.file, format, file_args);
-    va_end(file_args);
+    const int n = std::vfprintf(s.file, format, args);
 
     if (n > 0) {
         s.written += n;
@@ -149,6 +142,41 @@ void say(const char* format, ...)
                      s.written);
         std::fflush(s.file);
     }
+}
+
+}  // namespace
+
+void say(const char* format, ...)
+{
+    // stdout first and unconditionally. A caller must be able to convert a
+    // printf to this without wondering whether the terminal still gets it.
+    std::va_list args;
+    va_start(args, format);
+    std::vprintf(format, args);
+    va_end(args);
+    std::fflush(stdout);
+
+    std::va_list file_args;
+    va_start(file_args, format);
+    write_to_file(format, file_args);
+    va_end(file_args);
+}
+
+void say_err(const char* format, ...)
+{
+    // stderr first and unconditionally, for the same reason say() does stdout:
+    // converting a call site must not change what a person watching a terminal
+    // sees.
+    std::va_list args;
+    va_start(args, format);
+    std::vfprintf(stderr, format, args);
+    va_end(args);
+    std::fflush(stderr);
+
+    std::va_list file_args;
+    va_start(file_args, format);
+    write_to_file(format, file_args);
+    va_end(file_args);
 }
 
 void close_run_log()
