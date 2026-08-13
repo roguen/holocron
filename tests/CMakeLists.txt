@@ -46,6 +46,7 @@ add_executable(holocron_tests
     test_projectm_api.cpp
     test_artwork_cache.cpp
     test_run_log.cpp
+    test_screen_wake.cpp
     test_notices.cpp
     test_notices_view.cpp
 )
