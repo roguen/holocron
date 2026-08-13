@@ -796,7 +796,33 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" "${ASSET}" --clobber
+        run: |
+          # A TAG DOES NOT CREATE A RELEASE, and `gh release upload` needs one to
+          # exist. Found on v1.0.2 -- the first tag this job ever ran on -- with
+          # about twenty minutes between the tag being pushed and this step
+          # reaching it, which is the only reason it was not a failed release.
+          #
+          # Created here rather than left to whoever cut the tag, because
+          # otherwise every release is a race between a human remembering and CI
+          # arriving, and the loser is a release with no artifacts on it.
+          #
+          # `--verify-tag` so this can only ever attach to a tag that actually
+          # exists, and the annotation becomes the notes, which is what the
+          # annotation was written for. Both jobs run this and only one can win;
+          # the `|| true` is the other one finding it already there.
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "no release for ${GITHUB_REF_NAME} yet -- creating it from the tag annotation"
+            # The annotation may be absent if the checkout did not bring the tag
+            # object down. Degraded rather than fatal: a release with a thin note
+            # and the right artifacts beats no release at all.
+            notes=$(git tag -l "${GITHUB_REF_NAME}" --format='%(contents)' 2>/dev/null || true)
+            if [ -z "$notes" ]; then
+              notes="Artifacts attached by CI. See the tag annotation for what changed."
+            fi
+            gh release create "${GITHUB_REF_NAME}" --verify-tag \
+                --title "${GITHUB_REF_NAME}" --notes "$notes" || true
+          fi
+          gh release upload "${GITHUB_REF_NAME}" "${ASSET}" --clobber
 
   package-android:
     name: Package (Android APK)
@@ -948,4 +974,30 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" "${ASSET}" --clobber
+        run: |
+          # A TAG DOES NOT CREATE A RELEASE, and `gh release upload` needs one to
+          # exist. Found on v1.0.2 -- the first tag this job ever ran on -- with
+          # about twenty minutes between the tag being pushed and this step
+          # reaching it, which is the only reason it was not a failed release.
+          #
+          # Created here rather than left to whoever cut the tag, because
+          # otherwise every release is a race between a human remembering and CI
+          # arriving, and the loser is a release with no artifacts on it.
+          #
+          # `--verify-tag` so this can only ever attach to a tag that actually
+          # exists, and the annotation becomes the notes, which is what the
+          # annotation was written for. Both jobs run this and only one can win;
+          # the `|| true` is the other one finding it already there.
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "no release for ${GITHUB_REF_NAME} yet -- creating it from the tag annotation"
+            # The annotation may be absent if the checkout did not bring the tag
+            # object down. Degraded rather than fatal: a release with a thin note
+            # and the right artifacts beats no release at all.
+            notes=$(git tag -l "${GITHUB_REF_NAME}" --format='%(contents)' 2>/dev/null || true)
+            if [ -z "$notes" ]; then
+              notes="Artifacts attached by CI. See the tag annotation for what changed."
+            fi
+            gh release create "${GITHUB_REF_NAME}" --verify-tag \
+                --title "${GITHUB_REF_NAME}" --notes "$notes" || true
+          fi
+          gh release upload "${GITHUB_REF_NAME}" "${ASSET}" --clobber
