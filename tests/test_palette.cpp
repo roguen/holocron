@@ -185,6 +185,72 @@ TEST_CASE("a saturated subject beats a larger grey background", "[palette]")
     REQUIRE(relative_luminance(p.primary) > relative_luminance(glm::vec3(0.02f)));
 }
 
+// ---------------------------------------------------------------------------
+// Issue 297 -- a large near-black area outscoring a smaller saturated one
+//
+// The case above passes on the OLD weighting too: at three parts background to
+// one part subject the old numbers still get it right. The defect only appears
+// at the ratios real sleeves have, where a surround is ten or twenty times its
+// subject rather than three. These four fail on the old weighting and pass on
+// the new one, which was checked by reverting it.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a black surround does not outvote the subject it surrounds", "[palette][297]")
+{
+    // 92% near-black, 8% orange. Measured over eighteen real sleeves, this is
+    // the ordinary shape rather than an extreme one -- and the old weighting
+    // called this record black, because near-black kept 46% of a mid-tone's
+    // weight and 92 beats 8 by a great deal more than that.
+    const ImageRgba8 sleeve = two_tone(12, 12, 14, 230, 110, 30, 0.08);
+    const Palette    p      = extract_palette(sleeve);
+
+    CHECK(p.primary.r > p.primary.b * 4.0f);
+    CHECK(relative_luminance(p.primary) > 0.05f);
+}
+
+TEST_CASE("a white surround does not outvote the subject it surrounds", "[palette][297]")
+{
+    // The same defect at the other end. Paper is as common a surround as black
+    // is, and a primary of near-white washes a crystal out exactly as a primary
+    // of near-black blacks it out.
+    const ImageRgba8 sleeve = two_tone(248, 247, 245, 40, 90, 190, 0.08);
+    const Palette    p      = extract_palette(sleeve);
+
+    CHECK(p.primary.b > p.primary.r * 4.0f);
+    CHECK(relative_luminance(p.primary) < 0.6f);
+}
+
+TEST_CASE("the lightness floor is a guard against a degenerate image, not a subsidy",
+          "[palette][297]")
+{
+    // WHY THE FLOOR IS NOT SIMPLY ZERO. The lightness term is exactly zero at
+    // pure black and pure white, so without a floor any stray pixel of any other
+    // colour scores above an entire sheet of paper: 16384 x 0 loses to 1 x
+    // anything. One dark speck on a white sleeve would become the primary.
+    constexpr int kSize = 128;
+    ImageRgba8    sleeve = solid(255, 255, 255, kSize);
+    sleeve.pixels[0] = 20;
+    sleeve.pixels[1] = 20;
+    sleeve.pixels[2] = 20;
+
+    const Palette p = extract_palette(sleeve);
+    CHECK(relative_luminance(p.primary) > 0.5f);
+}
+
+TEST_CASE("a sleeve that really is black still comes back black", "[palette][297]")
+{
+    // THE FIX MUST NOT INVENT A COLOUR. Four of the eighteen sleeves 297 was
+    // measured against are records that are almost entirely dark, and for those
+    // a dark primary is the honest answer -- promoting a stray highlight to
+    // "the colour of this record" would be a worse bug than the one being fixed,
+    // and a quieter one.
+    const ImageRgba8 sleeve = two_tone(8, 8, 9, 24, 24, 26, 0.05);
+    const Palette    p      = extract_palette(sleeve);
+
+    CHECK(relative_luminance(p.primary) < 0.05f);
+    CHECK(std::isfinite(p.primary.r));
+}
+
 TEST_CASE("a monochrome sleeve still yields a usable palette", "[palette]")
 {
     // The floor in the weighting, not a cut-off: nothing here is saturated and

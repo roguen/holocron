@@ -14,7 +14,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(holocron
-    VERSION 1.0.2
+    VERSION 1.0.3
     DESCRIPTION "GPU music visualization engine that is also the music player"
     LANGUAGES CXX
 )
@@ -146,6 +146,7 @@ add_library(holocron_platform STATIC
     src/platform/multicast_lock.cpp
     src/platform/platform_paths.cpp
     src/platform/run_log.cpp
+    src/platform/screen_wake.cpp
 )
 add_library(holocron::platform ALIAS holocron_platform)
 
