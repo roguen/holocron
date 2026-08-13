@@ -134,10 +134,15 @@ one machine. That is not housekeeping: the Windows download published with
 `v1.0.0` was a debug build and **would not have launched on any computer without
 Visual Studio installed**, which nobody could have known, because the only machine
 that ever ran it was the one that built it. The build now fails outright on a
-debug runtime import. It also fixes album art — Plex's photo transcoder does not
-transcode, so a sleeve stored as a PNG arrived as PNG and silently took the whole
-palette down with it, on 157 of 2,450 albums in the library it was measured
-against.
+debug runtime import.
+
+<!-- measured: artwork_png.count -->
+<!-- measured: artwork_png.rate -->
+It also fixes album art. Plex's photo transcoder does not transcode — it resizes
+and hands back whatever format the sleeve was stored in, labelled `image/jpeg`
+either way — so a cover stored as a PNG arrived as PNG, could not be decoded, and
+silently took the album's whole palette with it. Measured across a real library:
+**157 of 2,450 covers, 6.4%.**
 
 `1.0.0` was never about finishing the milestone list. It was reserved for the
 first build that plays music and renders end to end, and it was taken on
