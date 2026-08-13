@@ -49,6 +49,7 @@
 #include <holocron/compositor.hpp>
 #include <holocron/crystal.hpp>
 #include <holocron/final_pass.hpp>
+#include <holocron/identity_policy.hpp>
 #include <holocron/image_decode.hpp>
 #include <holocron/last_good.hpp>
 #include <holocron/lyrics.hpp>
@@ -2247,7 +2248,11 @@ bool save_machine_identifier(const char* config_path, const std::string& id)
 // another, and printed two "paste this into gatekeeper.toml" blocks with two
 // different values. Issue 248. Saving the generated value is what makes repeat
 // calls agree, but the calls were also reduced to one.
-PlexDevice device_from(const Gatekeeper& cfg, const char* config_path = nullptr)
+// `config_found` and `for_link` exist for issue 308 -- see the throwaway branch
+// below. Both default to the behaviour that was there before, so a caller that
+// does not care is unaffected.
+PlexDevice device_from(const Gatekeeper& cfg, const char* config_path = nullptr,
+                       bool config_found = true, bool for_link = false)
 {
     PlexDevice d;
     d.name    = cfg.plex_device_name;
@@ -2284,6 +2289,43 @@ PlexDevice device_from(const Gatekeeper& cfg, const char* config_path = nullptr)
 
     // Generated rather than refused, so a first run works with no config at all.
     d.machine_identifier = make_machine_identifier();
+
+    // ISSUE 308. AN IDENTITY THAT BELONGS TO NOTHING IS NOT WORTH KEEPING.
+    //
+    // Launched from a directory with no `gatekeeper.toml` -- which is what
+    // double-clicking the executable, or running it by path out of the build
+    // tree, actually does -- the player has no token either. So it invents an
+    // identifier, saves it beside the binary, and becomes a device that CAN
+    // NEVER APPEAR: per D-059 a `provides=player` record is created only by the
+    // PIN exchange bound to a specific identifier, and this one has never been
+    // through one.
+    //
+    // The saving is what made that permanent. Restarting did not clear it,
+    // because the sidecar was found and reused, so the mistake survived every
+    // attempt to fix it by trying again.
+    //
+    // ONLY ON A DESKTOP WITH NO CONFIG. Android is left exactly as it was and
+    // this is the whole reason the condition is not simply "no config": there,
+    // a first run legitimately has no `gatekeeper.toml`, the identifier it
+    // generates is the one `--link` will be run against from another machine,
+    // and it MUST survive the relaunch in between (D-057, issue 248). The
+    // discriminator is `data_directory()`, which is non-empty only on a platform
+    // that has one.
+    //
+    // `--link` is the deliberate act of establishing an identity, so it saves
+    // regardless -- see the call site.
+    const holocron::IdentityContext identity{config_found,
+                                             !holocron::data_directory().empty(), for_link};
+    const bool throwaway = !holocron::should_persist_identity(identity);
+    if (throwaway) {
+        std::printf("holocron: NO CONFIG, so this identity is temporary and is NOT being saved.\n"
+                    "  A player with no `gatekeeper.toml` has no token either, and a Plex\n"
+                    "  device is bound to the identifier it was linked with -- so this one\n"
+                    "  cannot appear in Plexamp however many times it is restarted.\n"
+                    "  Start it from the directory holding your gatekeeper.toml.\n");
+        std::fflush(stdout);
+        return d;
+    }
 
     // SAVED, NOT PRINTED FOR SOMEBODY TO PASTE. The old message told the reader
     // to paste the value into gatekeeper.toml, which is an instruction nobody can
@@ -2658,6 +2700,13 @@ int main(int argc, char** argv)
     Gatekeeper  cfg;
     std::string cfg_detail;
 
+    // Whether a `gatekeeper.toml` was actually found. Issue 308: with no config
+    // there is no token either, so the identity the player invents can never be
+    // a cast target -- and it used to save that identity, which made the mistake
+    // survive every restart. Declared out here because device_from needs it far
+    // below.
+    bool config_found = false;
+
     // Backing store for the resolved vault and crystal paths. Declared out here
     // for the same reason cfg is: opt.vault ends up pointing into one of them.
     std::string vault_path_storage;
@@ -2680,6 +2729,7 @@ int main(int argc, char** argv)
         if (gerr == GatekeeperError::kNotFound) {
             std::printf("holocron: %s\n", cfg_detail.c_str());
         } else {
+            config_found = true;
             say("holocron: config %s\n", config_path.c_str());
 
             if (!opt.given.trim_ms) {
@@ -2916,7 +2966,10 @@ int main(int argc, char** argv)
     // nothing else, and a run that is signing in has no business also
     // announcing itself.
     if (opt.link) {
-        return run_link(device_from(cfg, opt.config), opt.config);
+        // for_link: establishing an identity IS the deliberate act, so --link saves
+        // one even with no config. That is the entire point of running it.
+        return run_link(device_from(cfg, opt.config, config_found, /*for_link=*/true),
+                        opt.config);
     }
 
     // --discover always wins here: it cannot be combined with --no-discover
@@ -2924,7 +2977,7 @@ int main(int argc, char** argv)
     // is wanted regardless of what the config says.
     // NOT const: start_discovery writes the port actually bound back into it,
     // and register_with_account below publishes that port to the account.
-    PlexDevice device = device_from(cfg, opt.config);
+    PlexDevice device = device_from(cfg, opt.config, config_found);
 
     if ((cfg.plex_discovery || opt.discover) && !opt.no_discover) {
         if (!start_discovery(device, gdm, companion) && opt.discover) {
@@ -4145,6 +4198,35 @@ int main(int argc, char** argv)
             std::fflush(stdout);
         }
     }
+
+    // -- THE VERDICT, AND IT IS LAST ON PURPOSE. Issue 308. -------------------
+    //
+    // Every fact below was already printed. The owner still lost an evening to
+    // this, twice, because startup is fourteen lines and the one that mattered
+    // was the sixth -- `no Plex token`, correct, accurate, and eight lines above
+    // the prompt by the time he read it.
+    //
+    // So the last thing said is the only thing most people need: can this be
+    // cast to, and if not, what to do. A summary at the end of a log is not
+    // redundancy, it is the difference between information being present and
+    // being received.
+    //
+    // NOT gated on `--no-discover`: a player that is deliberately not announcing
+    // is still worth an honest line about what it is.
+    if (cfg.plex_token.empty()) {
+        std::printf("holocron: NOT A CAST TARGET. This player will not appear in Plexamp.\n");
+        if (!config_found) {
+            std::printf("  No gatekeeper.toml was found, so it has no token and an identity it\n"
+                        "  invented. If you meant to run your configured player, start it from\n"
+                        "  the directory holding gatekeeper.toml.\n");
+        } else {
+            std::printf("  The config has no `plex.token`. Run `holocron --link` once.\n");
+        }
+    } else {
+        std::printf("holocron: ready -- \"%s\" is offered as a cast target.\n",
+                    device.name.c_str());
+    }
+    std::fflush(stdout);
 
     // The neutral ramp until a sleeve arrives, and after one fails. A crystal
     // must never see a palette of zeroes -- see neutral_palette().
