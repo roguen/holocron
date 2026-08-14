@@ -120,7 +120,7 @@ gain response — and may not change what it *means*.
 
 ## Current status
 
-**`v1.0.2`, and all eight milestones are finished.** Pick an album in Plexamp,
+**`v1.0.3`, and all eight milestones are finished.** Pick an album in Plexamp,
 cast it to the theater, and it plays — bit-perfect, with the visuals coloured by
 the album's own cover and the receiver switched to the right input on the way.
 
