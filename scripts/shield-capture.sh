@@ -222,6 +222,41 @@ done
 
     note "anything about the listener going"
     grep -h -i "listener is GONE\|listener is back\|not registering" "$out"/holocron*.log 2>/dev/null || echo "nothing"
+
+    # DID IT QUIT ON PURPOSE? ASK BEFORE CALLING ANYTHING A FAULT.
+    #
+    # This is the check that keeps the verdict above honest, and it was added
+    # because the verdict lied. A DELIBERATE quit leaves a process with
+    # SDLThread still in it -- Android caches the process after the Activity
+    # ends (D-070) -- and with no sockets, because the app really did shut them
+    # down on the way out. That is bit-for-bit the "2026-08-11 shape" the
+    # section above announces as the unexplained fault, and on 2026-08-14 it
+    # announced exactly that about an owner who had pressed Escape.
+    #
+    # It is the same mistake AGENTS.md already records from 2026-08-13, when a
+    # quit was read as a fault and Holocron was relaunched on top of somebody
+    # watching a film. Written down twice and still repeated, so it goes in the
+    # instrument rather than in another paragraph nobody reads under time
+    # pressure.
+    #
+    # The run log's LAST line is the discriminator, and it is cheap.
+    note "how the last run ENDED -- read this before believing the verdict above"
+    if [ -f "$out/holocron.log" ]; then
+        last=$(grep -E "quit requested|companion: stop" "$out/holocron.log" | tail -2)
+        if [ -n "$last" ]; then
+            echo "$last"
+            echo
+            echo "THE APP WAS SHUT DOWN DELIBERATELY. A cached process with SDLThread and no"
+            echo "sockets is the NORMAL aftermath of that -- it is NOT the unexplained"
+            echo "2026-08-11 shape, whatever the first section of this file says."
+            echo "Someone may have quit it on purpose. Do not relaunch it without asking."
+        else
+            echo "no quit line -- the run did not end through the ordinary path,"
+            echo "so the verdict at the top of this file stands as written."
+        fi
+    else
+        echo "(no run log pulled)"
+    fi
 } > "$out/06-verdict.txt" 2>&1
 
 echo
