@@ -486,6 +486,16 @@ float exactly and 32-bit integer sources do not (#36).
 .\build\windows\bin\holocron.exe track.flac
 ```
 
+**`scripts\holocron.cmd` is a `holocron` you can put on PATH and type from
+anywhere.** Putting `build\windows\bin` itself on PATH does not do this safely:
+`gatekeeper.toml` resolves against the CALLER's working directory, not the
+exe's, so a bare `holocron` typed from outside the repo silently reproduces
+issue 308 — a temporary identity, no token, **"NOT A CAST TARGET."** Loud and
+correct, and not what anyone typing `holocron` from their home directory
+wants. The wrapper `pushd`s to the repo root before launching the real exe, so
+it behaves exactly like running the command above from the repo root, no
+matter where it was typed from. Put `scripts\` on PATH, not `build\windows\bin`.
+
 `--no-audio` decodes and draws without opening a device. `--frames N --shot out.bmp`
 renders exactly N frames and writes the last one, which is **how the renderer gets
 checked without a monitor** — the same argument that makes `holocron-analyze` worth
