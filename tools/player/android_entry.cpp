@@ -198,22 +198,28 @@ int main(int argc, char** argv)
             holocron::android::set_java_vm(vm);
         }
 
-        // THE ACTIVITY, which is the process's only Context, and a Context is
-        // what getSystemService hangs off. The multicast lock needs one; nothing
-        // else does yet.
+        // THE ACTIVITY, AS THE PROCESS'S CONTEXT. A Context is what
+        // getSystemService and getAssets hang off; the multicast lock, the
+        // screen wake and the asset seeding all need one.
+        //
+        // It used to be the only Context this process had, and the interface was
+        // called set_activity for that reason. It is not any more: on the
+        // cold-start path the Service supplies one instead (issue 333), and
+        // nothing downstream can tell the difference, because every user calls
+        // getApplicationContext() before doing anything else.
         //
         // SDL HANDS BACK A LOCAL REFERENCE AND SAYS SO IN ITS OWN HEADER: "The
         // jobject returned by the function is a local reference and must be
         // released by the caller." A local reference is valid on one thread
         // until the native call that produced it returns, so it is promoted to a
-        // global inside set_activity -- and deleted here, because promoting it
+        // global inside set_context -- and deleted here, because promoting it
         // does not consume it.
         //
         // AFTER set_java_vm, not before: the promotion needs a ScopedEnv, and a
         // ScopedEnv with no VM yields nothing.
         if (jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
             activity != nullptr) {
-            holocron::android::set_activity(activity);
+            holocron::android::set_context(activity);
             env->DeleteLocalRef(activity);
         }
     }

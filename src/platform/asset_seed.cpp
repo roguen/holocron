@@ -101,13 +101,13 @@ SeedReport seed_vault_from_assets(const std::string& destination,
     SeedReport report;
 
     android::ScopedEnv env;
-    if (!env || android::activity() == nullptr) {
+    if (!env || android::context() == nullptr) {
         report.state = SeedState::kUnavailable;
         return report;
     }
 
     // activity.getAssets()
-    android::Local<jclass> cls(env.get(), env->GetObjectClass(android::activity()));
+    android::Local<jclass> cls(env.get(), env->GetObjectClass(android::context()));
     if (env.failed("GetObjectClass Activity") || !cls) {
         report.state = SeedState::kUnavailable;
         return report;
@@ -124,7 +124,7 @@ SeedReport seed_vault_from_assets(const std::string& destination,
     // while the pointer is still in use is a use-after-free with a Java object
     // on the other end of it.
     android::Local<jobject> assets(env.get(),
-                                   env->CallObjectMethod(android::activity(), get_assets));
+                                   env->CallObjectMethod(android::context(), get_assets));
     if (env.failed("getAssets") || !assets) {
         report.state = SeedState::kUnavailable;
         return report;
