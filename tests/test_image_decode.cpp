@@ -79,50 +79,67 @@ TEST_CASE("the fixtures are actually there", "[image]")
     REQUIRE(read_fixture("sleeve.jpg").size() == 653);
 }
 
-TEST_CASE("a PNG is refused cleanly, because this FFmpeg has no zlib", "[image]")
+TEST_CASE("a PNG decodes to exactly the colours it was authored with", "[image]")
 {
-    // NOT AN ASPIRATION -- A PIN ON REAL BEHAVIOUR. PNG is DEFLATE-compressed, so
-    // its decoder needs zlib and this FFmpeg is built `--disable-zlib`. NOT
-    // because `default-features: false` dropped it, which is what this comment
-    // said until 2026-08-13: zlib is not among the vcpkg ffmpeg port's defaults
-    // either, so turning them back on would change nothing here.
+    // THIS TEST REPLACED A PIN ON THE OPPOSITE BEHAVIOUR, and the history is the
+    // useful part. Until zlib was added to the ffmpeg feature list (issue 116),
+    // PNG was refused with `kNoDecoder` -- PNG is DEFLATE-compressed, so its
+    // decoder needs zlib, and the old comment here blamed `default-features:
+    // false`, which was wrong twice over: zlib is not among the vcpkg port's
+    // defaults either, so turning them back on would have changed nothing.
     //
-    // AND THIS WAS NOT HYPOTHETICAL. Plex's photo transcoder passes the source
-    // format through unless asked otherwise, so 157 of 2,450 real album thumbs
-    // arrived as PNG and lost their palette. The fix is `format=jpeg` on the
-    // request (see test_plex_playback.cpp), which is why this stays a limitation
-    // rather than a defect -- but it is a limitation something has to steer
-    // around, not one the server was ever going to avoid on its own.
+    // The Plex half was fixed first and differently, by asking the photo
+    // transcoder for `format=jpeg` (test_plex_playback.cpp pins that). What kept
+    // this open was LOCAL-FILE artwork, where there is no request to add a
+    // parameter to -- and `--art PATH` made that a real path rather than a
+    // hypothetical one.
     //
-    // What is asserted is the property that MATTERS: a clean, named refusal with
-    // `out` untouched, rather than a misdecode. A sleeve of noise feeding the
-    // palette would produce confident wrong colours and no error anywhere.
-    //
-    // If zlib ever arrives this test will fail, and the correct response is to
-    // replace it with the exact-colour assertions the fixture was built for --
-    // sleeve.png is lossless RGBA, left half (220, 30, 30), right half
-    // (30, 60, 200). Note that zlib alone would not finish the job: pngdec can
-    // emit ten pixel layouts and packed_to_rgba handles four.
+    // EXACT COLOURS, NOT A TOLERANCE. sleeve.png is lossless, so anything but an
+    // exact match is a bug rather than rounding -- and the two halves are chosen
+    // to be unambiguous under a red/blue swap, which is the specific mistake
+    // AV_PIX_FMT_PAL8 invites: FFmpeg's palette is native-endian RGB32, so its
+    // bytes are B, G, R, A on both targets here. Reading them in order compiles,
+    // runs, and yields a different album cover.
     ImageRgba8  out;
     std::string detail;
-    REQUIRE(decode_image(read_fixture("sleeve.png"), out, detail) == ImageError::kNoDecoder);
-    REQUIRE(out.empty());
+    REQUIRE(decode_image(read_fixture("sleeve.png"), out, detail) == ImageError::kOk);
+    REQUIRE_FALSE(out.empty());
+    REQUIRE(out.width > 1);
+    REQUIRE(out.height >= 1);
 
-    // THE ASSERTION THAT FAILS BEFORE THIS CHANGE AND PASSES AFTER. The refusal
-    // used to be entirely silent, and a silent refusal is what made issue 116
-    // present as "the visuals went grey" for as long as it did. The detail has to
-    // name the format, or the log line cannot tell a missing PNG decoder from any
-    // other reason art did not appear.
-    REQUIRE_FALSE(detail.empty());
+    const auto pixel_at = [&out](int x, int y) {
+        const std::size_t i =
+            (static_cast<std::size_t>(y) * static_cast<std::size_t>(out.width) +
+             static_cast<std::size_t>(x)) * 4;
+        return std::array<std::uint8_t, 4>{out.pixels[i], out.pixels[i + 1], out.pixels[i + 2],
+                                           out.pixels[i + 3]};
+    };
 
-    std::string lowered = detail;
-    for (char& c : lowered) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-    // Case-insensitive on purpose: `avcodec_get_name` answers lowercase "png" and
-    // the hand-written branch says "PNG", so a test pinned to either spelling
-    // would fail the day the two are unified -- for no behavioural reason.
-    REQUIRE(lowered.find("png") != std::string::npos);
+    // Sampled one pixel INSIDE each edge rather than at x=0 and x=width-1, so the
+    // test says nothing about how a boundary column is treated.
+    const auto left  = pixel_at(0, 0);
+    const auto right = pixel_at(out.width - 1, 0);
+
+    CHECK(left[0] == 220);
+    CHECK(left[1] == 30);
+    CHECK(left[2] == 30);
+    CHECK(left[3] == 255);
+
+    CHECK(right[0] == 30);
+    CHECK(right[1] == 60);
+    CHECK(right[2] == 200);
+    CHECK(right[3] == 255);
+
+    // AND THE SWAP IS CALLED OUT BY NAME, because the four assertions above would
+    // also pass if the two halves were exchanged AND the channels swapped -- two
+    // errors that cancel. Red is dominant on the left and blue on the right, and
+    // that ordering is what fixes the orientation independently of the values.
+    CHECK(left[0] > left[2]);
+    CHECK(right[2] > right[0]);
+
+    // A successful decode says nothing, which is the contract every other exit in
+    // this function is held to from the other direction.
+    CHECK(detail.empty());
 }
 
 TEST_CASE("every refusal says why", "[image]")
@@ -143,11 +160,23 @@ TEST_CASE("every refusal says why", "[image]")
     std::vector<std::uint8_t> truncated = read_fixture("sleeve.jpg");
     truncated.resize(120);   // header intact, scan data gone: reaches the decoder
 
+    // kNoDecoder IS ABSENT FROM THIS TABLE AND CANNOT BE ADDED, which is worth
+    // stating rather than leaving as a gap somebody later reads as an oversight.
+    //
+    // It used to be covered by `sleeve.png`. `sniff` returns exactly two ids --
+    // MJPEG and PNG -- and vcpkg.json now requires ffmpeg's `zlib` feature, so
+    // both have a decoder and nothing this function will accept can reach that
+    // branch. Reaching it needs an FFmpeg built without a codec, which is a
+    // property of the library the binary is linked against rather than anything
+    // a fixture can express.
+    //
+    // The branch is still there, and its message no longer claims the old cause.
+    // Same treatment as CompanionServer's `kBindFailed`: guarded, labelled
+    // unreachable-today, and not claimed as covered.
     const Case cases[] = {
         {"no bytes at all", {}, ImageError::kEmpty},
         {"an HTML error page", std::vector<std::uint8_t>(html.begin(), html.end()),
          ImageError::kUnknownFormat},
-        {"a PNG with no PNG decoder", read_fixture("sleeve.png"), ImageError::kNoDecoder},
         {"a JPEG truncated past its header", truncated, ImageError::kBadImage},
     };
 
