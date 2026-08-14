@@ -339,3 +339,25 @@ plex_token*
 
 shader-cache/
 **/shader-cache/
+
+# ---------------------------------------------------------------------------
+# Diagnostic captures from scripts/shield-capture.sh.
+#
+# The script writes a timestamped directory into the repo root, and what goes
+# in it is whatever the device had: the run logs, a full logcat, the socket
+# tables, the activity dump. That is a diagnosis, not a source file, and it
+# belongs to the occurrence rather than to the project.
+#
+# IGNORED RATHER THAN RELOCATED because the script's own contract is that it
+# runs from anywhere and leaves the app untouched -- and because a capture is
+# something somebody reads once, under time pressure, while a fault is live.
+# Asking them to route the output somewhere safe first is exactly the step that
+# gets skipped.
+#
+# THIS IS ALSO A SECRETS GUARD. A logcat is a whole-device log; nothing
+# guarantees another app has not printed something private into it, and this
+# repository is public. An unignored capture directory is one `git add -A` away
+# from being permanent.
+# ---------------------------------------------------------------------------
+
+shield-capture-*/
