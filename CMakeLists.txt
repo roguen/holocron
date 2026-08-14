@@ -578,6 +578,7 @@ add_library(holocron_plex STATIC
     src/plex/artwork_cache.cpp
     src/plex/lyrics.cpp
     src/plex/plex_bootstrap.cpp
+    src/plex/service_network.cpp
 )
 add_library(holocron::plex ALIAS holocron_plex)
 

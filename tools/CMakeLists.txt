@@ -48,6 +48,11 @@ if(ANDROID)
         # SDL_main plus the JavaVM handoff. Its own translation unit so that
         # main.cpp does not have to include SDL. See android_entry.cpp.
         player/android_entry.cpp
+        # The Service's entry point -- issue 333. A SECOND way into this library
+        # that does not go through SDL_main, which is the whole point: SDL_main
+        # is never entered when the display is off, and the network half never
+        # needed it. Deliberately includes no SDL at all.
+        player/android_service.cpp
     )
     set_target_properties(holocron PROPERTIES OUTPUT_NAME holocron)
 

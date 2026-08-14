@@ -46,22 +46,29 @@ void set_java_vm(void* vm);
 // on every non-Android build, so callers can ask instead of testing __ANDROID__.
 bool has_java_vm();
 
-// Hand over the Activity (a jobject, passed as void*). Same arrangement as the
-// VM above and for the same reason: the platform layer is TOLD what it needs
+// Hand over an Android Context (a jobject, passed as void*). Same arrangement as
+// the VM above and for the same reason: the platform layer is TOLD what it needs
 // rather than calling SDL for it, so SDL stays in one translation unit.
 //
-// PASS THE LOCAL REFERENCE SDL GIVES YOU AND THEN DELETE IT. This promotes it to
+// PASS THE LOCAL REFERENCE YOU WERE GIVEN AND THEN DELETE IT. This promotes it to
 // a global reference internally, because a local one is valid on one thread
 // until the native call that produced it returns -- and this has to outlive both.
 //
-// The Activity is needed because it is the only Context the process has, and a
-// Context is what `getSystemService` hangs off. Nothing here keeps the Activity
-// alive in any way that matters: the process ends with it.
+// ANY Context, NOT SPECIFICALLY THE ACTIVITY. This was `set_activity` until the
+// Service arrived (issue 333), and the rename is what the platform layer always
+// actually wanted: every user of this pointer immediately calls
+// `getApplicationContext()` on it and then `getSystemService`, both of which any
+// ContextWrapper answers. The Activity was simply the only Context the process
+// had. It is not any more -- a Service is a Context too, and on the cold-start
+// path it is the only one that exists.
+//
+// Nothing here keeps the Context alive in any way that matters: the process ends
+// with the component that owns it.
 //
 // Safe to call on any platform; off Android it is a no-op.
-void set_activity(void* activity_local_ref);
+void set_context(void* context_local_ref);
 
-// Whether an Activity has been handed over. False on every non-Android build.
-bool has_activity();
+// Whether a Context has been handed over. False on every non-Android build.
+bool has_context();
 
 }  // namespace holocron::android

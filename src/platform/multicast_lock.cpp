@@ -74,7 +74,7 @@ MulticastLockState acquire_multicast_lock()
     }
 
     android::ScopedEnv env;
-    if (!env || android::activity() == nullptr) {
+    if (!env || android::context() == nullptr) {
         return MulticastLockState::kUnavailable;
     }
 
@@ -92,7 +92,7 @@ MulticastLockState acquire_multicast_lock()
     }
 
     android::Local<jobject> ctx(env.get(),
-                                env->CallObjectMethod(android::activity(), get_app));
+                                env->CallObjectMethod(android::context(), get_app));
     if (env.failed("getApplicationContext") || !ctx) {
         return MulticastLockState::kUnavailable;
     }

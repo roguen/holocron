@@ -60,6 +60,7 @@
 #include <holocron/plex_bootstrap.hpp>
 #include <holocron/run_log.hpp>
 #include <holocron/screen_wake.hpp>
+#include <holocron/service_network.hpp>
 #include <holocron/shader_cache.hpp>
 #include <holocron/text_render.hpp>
 #include <holocron/track_context.hpp>
@@ -2857,6 +2858,24 @@ int main(int argc, char** argv)
     PlexDevice device = device_from(cfg, opt.config, config_found);
 
     if ((cfg.plex_discovery || opt.discover) && !opt.no_discover) {
+        // THE PLAYER TAKES THE SOCKETS OFF THE SERVICE BEFORE BINDING THEM.
+        // Issue 333.
+        //
+        // On Android the Service may already hold GDM and the Companion port --
+        // that is its whole job when no Activity is running. Binding on top of
+        // that does NOT fail: `CompanionServer` moves to a free port rather than
+        // refuse (issue 247), so the device would go on to announce, over GDM
+        // and to plex.tv, a port that is about to stop answering.
+        //
+        // The player wins every contest, because the player is the thing that
+        // can actually play something. Off Android this is `kUnsupported` and
+        // costs a function call -- see service_network.hpp for why the call site
+        // is unconditional rather than wrapped in an #ifdef.
+        if (const ServiceNetwork yielded = yield_service_network();
+            yielded == ServiceNetwork::kYielded) {
+            say("holocron: %s\n", to_string(yielded));
+        }
+
         if (!start_discovery(device, gdm, companion) && opt.discover) {
             // Only fatal when discovery is the whole point of the run.
             return 1;
@@ -6601,5 +6620,34 @@ int main(int argc, char** argv)
     outgoing_stack.clear();
     facet.shutdown();
     window.close();
+
+    // HAND THE SOCKETS BACK TO THE SERVICE. Issue 333, and the other half of the
+    // yield above.
+    //
+    // Without this, ending the player takes the box off the network until
+    // somebody launches it again -- which is exactly the cold case the Service
+    // exists to prevent, reached by the most ordinary route there is: pressing
+    // BACK.
+    //
+    // THE PLAYER'S OWN SOCKETS ARE CLOSED EXPLICITLY FIRST, and that ordering is
+    // the whole of it. `gdm` and `companion` are locals whose destructors run
+    // when this function returns -- i.e. AFTER the line below. Leaving it to
+    // them would have the Service rebinding while the player's listener is still
+    // open, and `CompanionServer` does not fail there: it MOVES to a free port
+    // (issue 247). The Service would come back on a port nothing announces, and
+    // the symptom would be a box that is discoverable but not castable, one
+    // launch later, with nothing in the log saying why.
+    //
+    // Both stops are idempotent, so doing this here costs nothing on the paths
+    // where discovery never started.
+    gdm.stop();
+    companion.stop();
+
+    // kNothingToDo on every desktop run and on any Android run with no Service,
+    // which is why only the two outcomes that did something are reported.
+    if (const ServiceNetwork resumed = resume_service_network();
+        resumed == ServiceNetwork::kResumed || resumed == ServiceNetwork::kFailed) {
+        say("holocron: %s\n", to_string(resumed));
+    }
     return 0;
 }
