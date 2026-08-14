@@ -111,8 +111,13 @@ issue      = 116
 note       = """
 THE ENDPOINT IS CALLED /photo/:/transcode AND IT DOES NOT TRANSCODE. It resizes \
 and passes the source format through, so a sleeve stored as a PNG came back as \
-PNG -- and this FFmpeg has no PNG decoder, so the art and the album's palette \
-were lost together. Every one of the 157 was labelled `image/jpeg` regardless, \
+PNG -- and at the time of this census this FFmpeg had no PNG decoder, so the art \
+and the album's palette were lost together. (THAT SECOND HALF IS NO LONGER TRUE: \
+ffmpeg's `zlib` feature was added when local-file artwork needed it for real, so \
+a PNG decodes now. The census stands as measured -- it records what the SERVER \
+sends, which has not changed, and `&format=jpeg` is still the right fix for \
+FETCHED art because it avoids a decode rather than relying on one.) \
+Every one of the 157 was labelled `image/jpeg` regardless, \
 and `Accept: image/jpeg` on the request changed nothing.Adding `&format=jpeg` \
 takes it to 0 of 2,450. The spelling is load-bearing: `format=jpg` and \
 `format=JPEG` are accepted, ignored and answered with the source format, with no \

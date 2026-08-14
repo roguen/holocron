@@ -208,6 +208,25 @@ target_include_directories(holocron_analysis SYSTEM PRIVATE
 
 find_package(FFMPEG REQUIRED)
 
+# zlib, EXPLICITLY, BECAUSE FFMPEG_LIBRARIES DOES NOT CARRY IT AND ONLY ONE
+# DESTINATION NOTICES.
+#
+# ffmpeg's `zlib` feature (issue 116) gives avcodec a PNG decoder, and avcodec
+# then calls inflate/deflate. vcpkg's FindFFMPEG fills FFMPEG_LIBRARIES with the
+# av* libraries and NOT their transitive dependencies.
+#
+# On Windows that is invisible: avcodec is a DLL and resolves zlib against
+# z.dll at load time, so the link line never needs it. On Android EVERYTHING is
+# static, so the same missing entry is fifteen undefined symbols at link --
+# inflateReset, inflate, deflateBound, zlibCompileFlags and the rest.
+#
+# This is exactly the shape standing rule 5 exists to catch: the Windows build
+# was green and the APK would not link. Declared unconditionally rather than
+# behind `if(ANDROID)` so the two destinations are described by the same line --
+# on Windows it resolves to the import library that was already being pulled in
+# implicitly, which costs nothing and cannot drift.
+find_package(ZLIB REQUIRED)
+
 add_library(holocron_decoder STATIC
     src/audio/decoder.cpp
 )
@@ -217,6 +236,9 @@ target_link_libraries(holocron_decoder
     PUBLIC  holocron::contract
     PRIVATE holocron::warnings
             ${FFMPEG_LIBRARIES}
+            # AFTER the av* libraries: a static link is order-sensitive, and
+            # zlib is what avcodec calls rather than the other way round.
+            ZLIB::ZLIB
 )
 target_include_directories(holocron_decoder SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_directories(holocron_decoder PRIVATE ${FFMPEG_LIBRARY_DIRS})
@@ -350,6 +372,10 @@ target_link_libraries(holocron_visual
     PRIVATE holocron::warnings
             holocron::platform
             ${FFMPEG_LIBRARIES}
+            # This is the library that actually WANTS the PNG decoder -- see the
+            # note beside find_package(ZLIB) for why FFMPEG_LIBRARIES does not
+            # bring it and why only Android notices.
+            ZLIB::ZLIB
 )
 
 # FFmpeg is PRIVATE and reached through image_decode.cpp alone, exactly as it is

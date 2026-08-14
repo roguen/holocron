@@ -18,6 +18,7 @@ These are linked into `holocron` or `holocron-analyze` and ship alongside them.
 | Library | Version | Licence | Linkage on Windows | Text |
 |---|---|---|---|---|
 | FFmpeg (`avcodec`, `avformat`, `swresample`, `avutil`) | 8.1.2 | **LGPL-2.1-or-later** | shared (`avcodec-62.dll` and friends) | [ffmpeg-LGPL-2.1.txt](licenses/ffmpeg-LGPL-2.1.txt) |
+| zlib | 1.3.2 | Zlib | shared (`z.dll`), through FFmpeg | [zlib-Zlib.txt](licenses/zlib-Zlib.txt) |
 | SDL3 | 3.4.12 | Zlib **AND** MIT **AND** Apache-2.0 | shared (`SDL3.dll`) | [sdl3-Zlib-MIT-Apache-2.0.txt](licenses/sdl3-Zlib-MIT-Apache-2.0.txt) |
 | libebur128 | 1.2.6 | MIT | shared (`ebur128.dll`) | [libebur128-MIT.txt](licenses/libebur128-MIT.txt) |
 | glad | 0.1.36 | MIT | static, compiled in | [glad-MIT.txt](licenses/glad-MIT.txt) |
@@ -111,6 +112,7 @@ does not put the escape back.
 | glad | Copyright (c) 2013-2021 David Herberth |
 | pocketfft | Copyright (C) 2010-2018 Max-Planck-Society |
 | glm | Copyright (c) 2005 - G-Truc Creation |
+| zlib | (C) 1995-2026 Jean-loup Gailly and Mark Adler |
 | OpenSSL (**Android only**) | Copyright (c) 1998-2026 The OpenSSL Project Authors. Individual files additionally carry "Copyright 1995-2026 The OpenSSL Project Authors. All Rights Reserved.", and some carry third-party lines — Oracle and Nokia among them. The Apache-2.0 text vcpkg ships as the package's copyright file contains no project line at all, so the line above is taken from the source tree rather than from that file. |
 
 **FFmpeg is the only shipped dependency under the LGPL**, so it is the only one

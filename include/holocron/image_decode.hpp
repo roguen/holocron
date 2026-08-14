@@ -26,50 +26,49 @@
 // silently produces a sleeve with its colours swapped, and a palette built from
 // that is wrong in a way nothing downstream can detect.
 //
-// JPEG WORKS. PNG DEPENDS ON THE FFmpeg BUILD, AND IN THIS ONE IT DOES NOT.
+// JPEG AND PNG BOTH WORK. PNG TOOK THREE GOES AND THE HISTORY IS LOAD-BEARING.
 //
-// PNG is DEFLATE-compressed, so its decoder needs zlib. This FFmpeg is built
-// `--disable-zlib`, so `avcodec_find_decoder(AV_CODEC_ID_PNG)` returns nullptr
-// here and a PNG is refused with kNoDecoder. The mechanism is in FFmpeg's own
-// configure: `png_decoder_select="inflate_wrapper"`, `inflate_wrapper_deps="zlib"`.
+// PNG is DEFLATE-compressed, so its decoder needs zlib, and this FFmpeg did not
+// have it until issue 116 was finished. `vcpkg.json` now asks for ffmpeg's
+// `zlib` feature unconditionally, so `avcodec_find_decoder(AV_CODEC_ID_PNG)`
+// succeeds on every platform. The mechanism is in FFmpeg's own configure:
+// `png_decoder_select="inflate_wrapper"`, `inflate_wrapper_deps="zlib"`.
 //
-// NOT BECAUSE OF `default-features: false`, which is what this comment claimed
-// until 2026-08-13 and what three other files repeated. zlib is not among the
-// vcpkg ffmpeg port's default features at the pinned baseline either, so turning
-// them back on would pull in avdevice, avfilter and swscale and STILL leave PNG
-// refused. The correction matters because the wrong cause suggests a fix that
-// does nothing.
+// Two wrong explanations were believed along the way, and both are worth keeping
+// because each suggested a fix that would have done nothing:
 //
-// AND IT WAS NOT MOOT. This comment used to say the PNG path was kept only
-// against the day zlib arrived, on the grounds that Plex's photo transcoder
-// returns JPEG. Measured over every album on the reference library -- see
-// docs/measurements.toml, `artwork_png` -- it does not. `/photo/:/transcode`
-// RESIZES and passes the source format through, so a sleeve stored as a PNG
-// arrived as PNG, was refused here, and took the palette down with it. It also
-// labelled every one of those responses `image/jpeg`, which is why `sniff()`
-// below reads the bytes instead of the header.
+// 1. NOT `default-features: false`. Four files said so. zlib is not among the
+//    vcpkg ffmpeg port's defaults either, so turning them back on would have
+//    pulled in avdevice, avfilter and swscale and STILL left PNG refused.
 //
-// THE FIX IS IN THE REQUEST, NOT HERE: `artwork_path()` in plex_playback.cpp now
-// asks for `format=jpeg` and the transcoder obliges. So this path is genuinely
-// unreached for Plex art again -- but it is unreached because something asks for
-// the right thing, not because the server was ever going to do it unprompted. A
-// server too old to know `format` would fall back to the old behaviour silently,
-// which is what the kNoDecoder detail below and the caller's log line are for.
+// 2. NOT MOOT BECAUSE "Plex returns JPEG". Measured over every album on the
+//    reference library -- docs/measurements.toml, `artwork_png` --
+//    `/photo/:/transcode` RESIZES and passes the source format straight through,
+//    so 157 of 2,450 sleeves arrived as PNG and took the palette down with them.
+//    It labels every one of them `image/jpeg` regardless, which is why `sniff()`
+//    below reads the BYTES rather than the header, and is the only reason this
+//    failed cleanly instead of misdecoding.
 //
-// Refusing CLEANLY rather than misdecoding is still the property that matters:
-// the alternative is a sleeve of noise feeding a palette, producing confident
-// wrong colours with no error anywhere.
+// TWO FIXES, FOR TWO DIFFERENT CALLERS, AND BOTH ARE NEEDED.
 //
-// IF zlib IS EVER ADDED, THAT IS NOT THE WHOLE JOB. `packed_to_rgba` handles four
-// layouts -- RGB24, RGBA, RGB0, GRAY8 -- and FFmpeg's pngdec can emit ten, the
-// extras being PAL8, MONOBLACK, YA8, YA16BE, GRAY16BE, RGB48BE and RGBA64BE.
-// Indexed PNG is ordinary for simple cover art, so zlib alone converts "PNG is
-// always refused" into "PNG is sometimes refused for a different reason". Every
-// PNG in the census happened to be RGB24 or RGBA, so this library would have been
-// fine; another one need not be.
+// Plex art is FETCHED, so the cheap fix is in the request: `artwork_path()` in
+// plex_playback.cpp asks for `format=jpeg` and the transcoder obliges. That
+// shipped first and still stands -- it avoids a decode rather than relying on
+// one, so a sleeve is smaller over the wire and the path is exercised constantly.
 //
-// Embedded art in a local file may well be PNG, and there is no request to add a
-// parameter to, so that path would need zlib for real.
+// LOCAL FILES HAVE NO REQUEST TO ADD A PARAMETER TO. `--art PATH` reads a file
+// off disk, and it is the instrument every palette question now goes through. It
+// is why zlib was added for real rather than left as a recipe: a PNG on disk had
+// no way round this at all.
+//
+// zlib ALONE IS NOT THE WHOLE JOB, WHICH IS THE PART THAT LOOKS DONE AND IS NOT.
+// FFmpeg's pngdec can emit TEN pixel layouts. `packed_to_rgba` handles RGB24,
+// RGBA, RGB0, GRAY8 and PAL8; the five it refuses by name are MONOBLACK, YA8,
+// YA16BE, GRAY16BE, RGB48BE and RGBA64BE. PAL8 was added with zlib because
+// INDEXED PNG IS ORDINARY for flat-colour cover art -- without it, zlib would
+// have converted "PNG is always refused" into "PNG is sometimes refused for a
+// different reason". Every PNG in the census happened to be RGB24 or RGBA, so
+// this library would have been fine either way; another one need not be.
 //
 // avformat IS NOT USED EITHER. A JPEG or a PNG is fed to the decoder as a single
 // packet -- there is no container to demux, and reaching for avformat would mean

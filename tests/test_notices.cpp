@@ -91,6 +91,11 @@ TEST_CASE("every shipped dependency has a copyright notice", "[notices]")
         "David Herberth",            // glad
         "Max-Planck-Society",        // pocketfft
         "G-Truc Creation",           // glm
+        // zlib, which FFmpeg links for the PNG decoder (issue 116). Asserted on
+        // the second holder rather than the first: the line reads "Jean-loup
+        // Gailly and Mark Adler", and a truncation that lost the tail would
+        // still pass on the first name.
+        "Mark Adler",
         // Android only, and asserted on EVERY platform anyway. The notices are
         // compiled into one file that ships everywhere, and the Android build is
         // the one that cannot run this test -- so if the requirement were only

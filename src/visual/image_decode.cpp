@@ -174,6 +174,48 @@ bool packed_to_rgba(const AVFrame& frame, AVPixelFormat format, ImageRgba8& out)
                 }
                 break;
 
+            // INDEXED PNG, which is ORDINARY for cover art rather than exotic --
+            // a sleeve with flat colour and lettering compresses far better as a
+            // palette, so this is what a designer's export settings produce
+            // without anybody choosing it. Issue 116.
+            //
+            // THE PALETTE IS IN data[1], AND ITS BYTE ORDER IS THE TRAP. It is
+            // 256 entries of AV_PIX_FMT_RGB32, and RGB32 in FFmpeg is a
+            // NATIVE-ENDIAN 32-bit word rather than a byte sequence: on both
+            // targets here, which are little-endian, the bytes come out
+            // **B, G, R, A**. Reading them as R, G, B, A compiles, runs, and
+            // produces a sleeve with red and blue swapped -- which does not look
+            // broken, it looks like a different album cover, and would feed the
+            // palette confident wrong colours with no error anywhere.
+            //
+            // tests/fixtures/sleeve.png exists to catch exactly this: its two
+            // halves are (220, 30, 30) and (30, 60, 200), which are unambiguous
+            // under a swap.
+            case AV_PIX_FMT_PAL8: {
+                const std::uint8_t* palette = frame.data[1];
+                if (palette == nullptr) {
+                    return false;
+                }
+                for (int x = 0; x < out.width; ++x) {
+                    // The index is a byte; no entry can be out of range, so there
+                    // is nothing to validate here that the type does not already.
+                    const std::uint8_t* entry = palette + static_cast<std::size_t>(src[x]) * 4;
+                    row[x * 4 + 0] = entry[2];  // R
+                    row[x * 4 + 1] = entry[1];  // G
+                    row[x * 4 + 2] = entry[0];  // B
+                    row[x * 4 + 3] = entry[3];  // A, which a tRNS chunk makes real
+                }
+                break;
+            }
+
+            // EVERYTHING ELSE IS REFUSED BY NAME RATHER THAN GUESSED AT.
+            //
+            // pngdec can also emit GRAY16BE, RGB48BE, RGBA64BE, MONOBLACK, YA8
+            // and YA16BE. The 16-bit ones would need a downshift and the YA ones
+            // a channel expansion; none is hard, and none is written until a real
+            // sleeve needs it, because an untested conversion is worse than an
+            // honest refusal. `kUnsupportedPixelFormat` carries the format's name
+            // to the caller, so the day one turns up it says which.
             default:
                 return false;
         }
@@ -241,23 +283,27 @@ ImageError decode_image(const std::vector<std::uint8_t>& bytes, ImageRgba8& out,
 
     const AVCodec* codec = avcodec_find_decoder(id);
     if (codec == nullptr) {
-        // NAMED, AND WITH THE REMEDY, because the person who reads this line is
-        // the person who can act on it -- and for a PNG the remedy is not zlib but
-        // `format=jpeg` on the request. See artwork_path() in plex_playback.cpp.
-        if (id == AV_CODEC_ID_PNG) {
-            // NAMED IN A FORM THAT FITS BOTH CALLERS. Plex art is fetched, so its
-            // remedy is a request parameter; --art reads a file off disk and has no
-            // request to change, so the sentence has to state the cause first and
-            // offer the Plex remedy as the Plex remedy rather than as the only one.
-            out_detail = "this is a PNG, and this FFmpeg is built without zlib so it has no "
-                         "PNG decoder (issue 116). Plex art avoids this by asking the photo "
-                         "transcoder for format=jpeg; a PNG from anywhere else cannot be "
-                         "decoded at all";
-        } else {
-            const char* name = avcodec_get_name(id);
-            out_detail = std::string("this FFmpeg has no decoder for ") +
-                         (name != nullptr ? name : "that format");
-        }
+        // UNREACHABLE WITH THE FFmpeg THIS PROJECT ASKS FOR, AND KEPT ANYWAY.
+        //
+        // `sniff` returns exactly two ids -- MJPEG and PNG -- and vcpkg.json now
+        // requires the `zlib` feature, so both have a decoder. Issue 116's whole
+        // history lived in this branch: PNG landed here, and the message used to
+        // say so and name `format=jpeg` as the way round it.
+        //
+        // It is not deleted, because "the decoder is missing" is a property of
+        // the FFmpeg the binary is linked against rather than of this source
+        // tree, and somebody building against a system FFmpeg can still reach it.
+        // What it must NOT do is keep asserting the old cause: a message reading
+        // "this FFmpeg is built without zlib" would now be a confident lie in the
+        // one place somebody looks when art does not appear.
+        //
+        // NOTE FOR THE TESTS: there is no fixture that reaches this any more, and
+        // tests/test_image_decode.cpp says so rather than pretending otherwise.
+        const char* name = avcodec_get_name(id);
+        out_detail       = std::string("this FFmpeg has no decoder for ") +
+                     (name != nullptr ? name : "that format") +
+                     " -- it was built without the codec, which the build this "
+                     "project describes in vcpkg.json always includes";
         return ImageError::kNoDecoder;
     }
 
