@@ -569,7 +569,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v1.0.3`. `main` is stable and CI is green. Bump **in the same
+Current version `v1.0.4`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
@@ -579,7 +579,7 @@ change that creates the tag**, never ahead of it — see
 `android:versionName` and `android:versionCode`. The second is a separate
 monotonic integer: leave it alone and Android refuses the upgrade with a
 signature-agnostic "app not installed", which reads as a packaging fault rather
-than a forgotten field. `versionCode` is **12** at `v1.0.3`. Plus the wiki's Home
+than a forgotten field. `versionCode` is **13** at `v1.0.4`. Plus the wiki's Home
 and Working-Agreement, which are a sixth and seventh. Nothing checks that they
 agree; see [#38](https://github.com/roguen/holocron/issues/38).
 
