@@ -36,8 +36,8 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.github.roguen.holocron"
-    android:versionCode="12"
-    android:versionName="1.0.3"
+    android:versionCode="13"
+    android:versionName="1.0.4"
     android:installLocation="auto">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="30" />
@@ -60,6 +60,18 @@
          this, and ScreenWake reports that as a value rather than aborting, so
          the symptom of forgetting it is a cast that plays with no picture. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- 5. FOREGROUND_SERVICE, for issue 333. HolocronService keeps GDM and the
+         Companion port up when the Activity is not running. A background
+         service holding sockets is what Android's background execution limits
+         exist to stop, so it has to be a foreground one, and startForeground
+         throws SecurityException without this. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!-- 6. RECEIVE_BOOT_COMPLETED, for issue 333's reboot case. Without it the
+         BOOT_COMPLETED broadcast is simply not delivered to BootReceiver, with
+         no error anywhere: the box comes up off the network and stays there. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:label="Holocron"
@@ -86,6 +98,45 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 5. The Service, for issue 333. It keeps GDM and the Companion port
+             up when the Activity is not running, which is the whole cold case:
+             launching with the display off never enters SDL_main, so without
+             this there is nothing on the network to cast TO.
+
+             NO android:process. Same process as the Activity on purpose, so the
+             handoff when a cast arrives is a mutex in native code rather than
+             IPC, and so two copies of the network stack can never exist in two
+             address spaces both believing they are the player.
+
+             android:exported="false", because nothing outside this app has any
+             business starting it, and an exported Service is an attack surface
+             for no benefit. -->
+        <service
+            android:name="io.github.roguen.holocron.HolocronService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <!-- 6. The boot receiver, so a power-cycled Shield comes back on the
+             network without anybody picking Holocron out of the launcher.
+
+             android:exported="true" is REQUIRED for a receiver the system
+             broadcasts to; BOOT_COMPLETED comes from outside the app, so an
+             unexported receiver would simply never fire. The action filter is
+             what keeps that narrow, and onReceive checks the action again
+             rather than trusting the filter.
+
+             It does NOT cover a force-stop. Android disables a force-stopped
+             app's receivers along with its services, so this is not delivered
+             until the app is launched once by hand. See D-076. -->
+        <receiver
+            android:name="io.github.roguen.holocron.BootReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

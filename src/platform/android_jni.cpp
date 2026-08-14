@@ -51,10 +51,13 @@ namespace {
 // pointer is enough and an atomic would be decoration.
 JavaVM* g_vm = nullptr;
 
-// The Activity, as a GLOBAL reference. Never released: it lives for the life of
+// The Context, as a GLOBAL reference. Never released: it lives for the life of
 // the process, and DeleteGlobalRef at static-destruction time would need a
 // JNIEnv on a thread that may already be detached.
-jobject g_activity = nullptr;
+//
+// The Activity when the Activity started the process, the Service when the
+// Service did (issue 333). Nothing downstream cares which -- see set_context.
+jobject g_context = nullptr;
 
 }  // namespace
 
@@ -68,10 +71,10 @@ bool has_java_vm()
     return g_vm != nullptr;
 }
 
-void set_activity(void* activity_local_ref)
+void set_context(void* context_local_ref)
 {
-    if (activity_local_ref == nullptr) {
-        g_activity = nullptr;
+    if (context_local_ref == nullptr) {
+        g_context = nullptr;
         return;
     }
     // PROMOTED HERE rather than by the caller, so the caller needs no jni.h --
@@ -80,17 +83,17 @@ void set_activity(void* activity_local_ref)
     if (!env) {
         return;
     }
-    g_activity = env->NewGlobalRef(static_cast<jobject>(activity_local_ref));
+    g_context = env->NewGlobalRef(static_cast<jobject>(context_local_ref));
 }
 
-bool has_activity()
+bool has_context()
 {
-    return g_activity != nullptr;
+    return g_context != nullptr;
 }
 
-jobject activity()
+jobject context()
 {
-    return g_activity;
+    return g_context;
 }
 
 // ---------------------------------------------------------------------------

@@ -64,7 +64,7 @@ constexpr jlong kHoldMs = 3000;
 ScreenWakeState wake_screen()
 {
     android::ScopedEnv env;
-    if (!env || android::activity() == nullptr) {
+    if (!env || android::context() == nullptr) {
         return ScreenWakeState::kUnavailable;
     }
 
@@ -85,7 +85,7 @@ ScreenWakeState wake_screen()
         return ScreenWakeState::kUnavailable;
     }
 
-    android::Local<jobject> ctx(env.get(), env->CallObjectMethod(android::activity(), get_app));
+    android::Local<jobject> ctx(env.get(), env->CallObjectMethod(android::context(), get_app));
     if (env.failed("getApplicationContext") || !ctx) {
         return ScreenWakeState::kUnavailable;
     }

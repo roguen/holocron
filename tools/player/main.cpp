@@ -49,7 +49,6 @@
 #include <holocron/compositor.hpp>
 #include <holocron/crystal.hpp>
 #include <holocron/final_pass.hpp>
-#include <holocron/identity_policy.hpp>
 #include <holocron/image_decode.hpp>
 #include <holocron/last_good.hpp>
 #include <holocron/lyrics.hpp>
@@ -58,8 +57,10 @@
 #include <holocron/overlay_facet.hpp>
 #include <holocron/palette.hpp>
 #include <holocron/platform_paths.hpp>
+#include <holocron/plex_bootstrap.hpp>
 #include <holocron/run_log.hpp>
 #include <holocron/screen_wake.hpp>
+#include <holocron/service_network.hpp>
 #include <holocron/shader_cache.hpp>
 #include <holocron/text_render.hpp>
 #include <holocron/track_context.hpp>
@@ -2235,248 +2236,11 @@ extern "C" void on_interrupt(int)
     g_interrupted.store(true, std::memory_order_relaxed);
 }
 
-// Where a generated machine identifier is kept, beside the config.
-//
-// A SIDECAR FILE RATHER THAN A KEY WRITTEN BACK INTO gatekeeper.toml, and that
-// is a deliberate trade.
-//
-// Writing the key back is the obvious move and it means rewriting the config.
-// toml++ can parse and re-serialize, and doing so DESTROYS every comment and all
-// the hand formatting -- and comments surviving is one of the two reasons this
-// project chose TOML over JSON in the first place (see vcpkg.json's note). A
-// program that silently reformats a file the owner hand-edits is a worse bargain
-// than a second small file.
-//
-// It is also the honest category. The identifier is not a preference anybody
-// chooses; it is an identity the program was assigned and must not lose. The
-// config says what the user wants, this says what the program IS.
-//
-// gatekeeper.toml still WINS if it carries the key -- an explicit setting always
-// beats a remembered one, which is what makes it possible to move an identity
-// between machines by hand.
-std::string machine_identifier_path(const char* config_path)
-{
-    const std::string config = resolve_data_path(config_path != nullptr ? config_path : "");
-    const std::size_t slash  = config.find_last_of("/\\");
-    const std::string dir    = slash == std::string::npos ? std::string{} : config.substr(0, slash + 1);
-    return dir + "machine-identifier";
-}
-
-std::string read_saved_machine_identifier(const char* config_path)
-{
-    std::ifstream in(machine_identifier_path(config_path));
-    if (!in) {
-        return {};
-    }
-    std::string id;
-    std::getline(in, id);
-
-    // Trim, because a file somebody has looked at may have gained whitespace or
-    // a CRLF, and a UUID with a stray \r fails validation for a reason nobody
-    // can see by reading the file.
-    while (!id.empty() && (id.back() == '\r' || id.back() == '\n' || id.back() == ' ' ||
-                           id.back() == '\t')) {
-        id.pop_back();
-    }
-    return is_valid_machine_identifier(id) ? id : std::string{};
-}
-
-bool save_machine_identifier(const char* config_path, const std::string& id)
-{
-    const std::string path = machine_identifier_path(config_path);
-    std::ofstream     out(path, std::ios::trunc);
-    if (!out) {
-        return false;
-    }
-    out << id << "\n";
-    return out.good();
-}
-
-// What Holocron will announce, built from the config.
-//
-// CALL THIS ONCE. It used to be called two and three times in a run, and when
-// the identifier had to be generated each call produced a DIFFERENT one -- so a
-// no-config run announced one identity over GDM and reported progress under
-// another, and printed two "paste this into gatekeeper.toml" blocks with two
-// different values. Issue 248. Saving the generated value is what makes repeat
-// calls agree, but the calls were also reduced to one.
-// `config_found` and `for_link` exist for issue 308 -- see the throwaway branch
-// below. Both default to the behaviour that was there before, so a caller that
-// does not care is unaffected.
-PlexDevice device_from(const Gatekeeper& cfg, const char* config_path = nullptr,
-                       bool config_found = true, bool for_link = false)
-{
-    PlexDevice d;
-    d.name    = cfg.plex_device_name;
-    d.version = holocron_version();
-    d.port    = static_cast<std::uint16_t>(cfg.plex_port);
-
-    // Empty means the built-in default, which matches plex-mpv-shim exactly.
-    // An override exists so a variation can be tried against the real phone
-    // without a rebuild -- see the note on kProtocolCapabilities.
-    if (!cfg.plex_capabilities.empty()) {
-        d.capabilities = cfg.plex_capabilities;
-    }
-    if (!cfg.plex_device_class.empty()) {
-        d.device_class = cfg.plex_device_class;
-    }
-
-    if (is_valid_machine_identifier(cfg.plex_machine_identifier)) {
-        d.machine_identifier = cfg.plex_machine_identifier;
-        return d;
-    }
-
-    if (!cfg.plex_machine_identifier.empty()) {
-        std::fprintf(stderr,
-                     "holocron: plex.machine_identifier is not a UUID and cannot be used:\n"
-                     "  %s\n",
-                     cfg.plex_machine_identifier.c_str());
-    }
-
-    // Remembered from a previous run, if there was one.
-    if (std::string saved = read_saved_machine_identifier(config_path); !saved.empty()) {
-        d.machine_identifier = std::move(saved);
-        return d;
-    }
-
-    // Generated rather than refused, so a first run works with no config at all.
-    d.machine_identifier = make_machine_identifier();
-
-    // ISSUE 308. AN IDENTITY THAT BELONGS TO NOTHING IS NOT WORTH KEEPING.
-    //
-    // Launched from a directory with no `gatekeeper.toml` -- which is what
-    // double-clicking the executable, or running it by path out of the build
-    // tree, actually does -- the player has no token either. So it invents an
-    // identifier, saves it beside the binary, and becomes a device that CAN
-    // NEVER APPEAR: per D-059 a `provides=player` record is created only by the
-    // PIN exchange bound to a specific identifier, and this one has never been
-    // through one.
-    //
-    // The saving is what made that permanent. Restarting did not clear it,
-    // because the sidecar was found and reused, so the mistake survived every
-    // attempt to fix it by trying again.
-    //
-    // ONLY ON A DESKTOP WITH NO CONFIG. Android is left exactly as it was and
-    // this is the whole reason the condition is not simply "no config": there,
-    // a first run legitimately has no `gatekeeper.toml`, the identifier it
-    // generates is the one `--link` will be run against from another machine,
-    // and it MUST survive the relaunch in between (D-057, issue 248). The
-    // discriminator is `data_directory()`, which is non-empty only on a platform
-    // that has one.
-    //
-    // `--link` is the deliberate act of establishing an identity, so it saves
-    // regardless -- see the call site.
-    const holocron::IdentityContext identity{config_found,
-                                             !holocron::data_directory().empty(), for_link};
-    const bool throwaway = !holocron::should_persist_identity(identity);
-    if (throwaway) {
-        std::printf("holocron: NO CONFIG, so this identity is temporary and is NOT being saved.\n"
-                    "  A player with no `gatekeeper.toml` has no token either, and a Plex\n"
-                    "  device is bound to the identifier it was linked with -- so this one\n"
-                    "  cannot appear in Plexamp however many times it is restarted.\n"
-                    "  Start it from the directory holding your gatekeeper.toml.\n");
-        std::fflush(stdout);
-        return d;
-    }
-
-    // SAVED, NOT PRINTED FOR SOMEBODY TO PASTE. The old message told the reader
-    // to paste the value into gatekeeper.toml, which is an instruction nobody can
-    // follow on an Android TV -- no keyboard, no editor, no shell. Until it was
-    // followed, every launch was a new device on the account.
-    if (save_machine_identifier(config_path, d.machine_identifier)) {
-        std::printf("holocron: no machine identifier yet -- generated one and saved it to\n"
-                    "  %s\n"
-                    "  It will not change again. Delete that file to be issued a new one.\n",
-                    machine_identifier_path(config_path).c_str());
-    } else {
-        // The old behaviour, kept for the case it was always right for: a
-        // read-only or unwritable location. Then a human really is the only way
-        // the value survives, and the paste instruction is the correct advice.
-        std::printf("holocron: no machine identifier yet, and it could not be saved to\n"
-                    "  %s\n"
-                    "  Plexamp gains a NEW device entry every time Holocron starts until\n"
-                    "  this is recorded. Paste it into your config:\n"
-                    "\n"
-                    "    [plex]\n"
-                    "    machine_identifier = \"%s\"\n"
-                    "\n",
-                    machine_identifier_path(config_path).c_str(), d.machine_identifier.c_str());
-    }
-    return d;
-}
-
-// Bring both halves up. Either can fail on its own, and which one failed is the
-// whole diagnosis, so they are reported separately rather than as "discovery
-// failed".
-// TAKES THE DEVICE BY NON-CONST REFERENCE, and that is the point rather than an
-// oversight. The Companion server may not get the port it was asked for -- it
-// moves to a free one rather than leave a keyboard-less device with no control
-// surface -- and everything downstream has to be told which port that was.
-//
-// Before this, `device` was const and the bound port reached nothing: GDM
-// announced the CONFIGURED port, the connection published to plex.tv named the
-// configured port, and only the control-page line printed on the terminal read
-// the real one. With `[plex] port = 0`, which the tests use and a user may
-// reasonably set, that meant announcing port 0 to every controller on the LAN.
-bool start_discovery(PlexDevice& device, GdmResponder& gdm, CompanionServer& companion)
-{
-    std::string detail;
-
-    const CompanionError cerr = companion.start(device, detail);
-    if (cerr != CompanionError::kOk) {
-        say_err("holocron: %s\n  %s\n", to_string(cerr), detail.c_str());
-        return false;
-    }
-
-    // start() reports a port it had to move away from this way, without failing.
-    if (!detail.empty()) {
-        say("holocron: the Companion HTTP port had to move\n  %s\n",
-                     detail.c_str());
-    }
-
-    // THE PORT ACTUALLY BOUND IS NOW THE TRUTH. Everything after this line --
-    // the GDM announcement, the connection published to the account, the
-    // control-page URL -- reads it from here.
-    device.port = companion.bound_port();
-
-    // HTTP first, then GDM. The announcement tells clients where to connect, so
-    // announcing before the port is listening invites a connection refused on
-    // the very first probe -- which some clients treat as a dead device rather
-    // than retrying.
-    const GdmError gerr = gdm.start(device, detail);
-    if (gerr != GdmError::kOk) {
-        say_err("holocron: %s\n  %s\n", to_string(gerr), detail.c_str());
-        if (gerr == GdmError::kBindFailed) {
-            say_err("  UDP %u is held by another Plex player -- Plex Media Player, a\n"
-                    "  Plex HTPC, or another copy of Holocron. Only one can be\n"
-                    "  discoverable on this machine at a time.\n",
-                    static_cast<unsigned>(kGdmClientUpdatePort));
-        }
-        // AND THE HTTP PORT GOES WITH IT, which is why the summary line in the
-        // caller reads NONE for both. Said out loud because a Companion server
-        // that started and was then closed by a GDM failure is the least
-        // guessable of the four outcomes.
-        say_err("  the Companion HTTP port is being given up too, so this run is not"
-                " castable\n");
-        companion.stop();
-        return false;
-    }
-    if (!detail.empty()) {
-        // start() reports a failed HELLO this way without failing outright.
-        say_err("holocron: %s\n", detail.c_str());
-    }
-
-    std::printf("holocron: announcing as \"%s\" (%s)\n", device.name.c_str(),
-                device.machine_identifier.c_str());
-    say("holocron: GDM on UDP %u, Companion on TCP %u\n",
-                static_cast<unsigned>(kGdmClientUpdatePort), static_cast<unsigned>(device.port));
-    // Printed on its own line and in full, because these two are what get
-    // varied while working out why a client does or does not offer the device.
-    // Reading them back from the running player beats trusting the config file.
-    std::printf("holocron: device_class %s, capabilities %s\n", device.device_class.c_str(),
-                device.capabilities.c_str());
-    return true;
-}
+// `machine_identifier_path`, `read_saved_machine_identifier`,
+// `save_machine_identifier`, `device_from` and `start_discovery` used to live
+// here. Moved to holocron/plex_bootstrap.hpp (issue 333/338 step 2): a second
+// caller now exists -- a headless Android Service entry point needs exactly
+// this sequence and none of what follows it in this file.
 
 // Register with the Plex ACCOUNT, which is a separate thing from announcing on
 // the LAN and is the half that actually makes the device castable.
@@ -3094,6 +2858,24 @@ int main(int argc, char** argv)
     PlexDevice device = device_from(cfg, opt.config, config_found);
 
     if ((cfg.plex_discovery || opt.discover) && !opt.no_discover) {
+        // THE PLAYER TAKES THE SOCKETS OFF THE SERVICE BEFORE BINDING THEM.
+        // Issue 333.
+        //
+        // On Android the Service may already hold GDM and the Companion port --
+        // that is its whole job when no Activity is running. Binding on top of
+        // that does NOT fail: `CompanionServer` moves to a free port rather than
+        // refuse (issue 247), so the device would go on to announce, over GDM
+        // and to plex.tv, a port that is about to stop answering.
+        //
+        // The player wins every contest, because the player is the thing that
+        // can actually play something. Off Android this is `kUnsupported` and
+        // costs a function call -- see service_network.hpp for why the call site
+        // is unconditional rather than wrapped in an #ifdef.
+        if (const ServiceNetwork yielded = yield_service_network();
+            yielded == ServiceNetwork::kYielded) {
+            say("holocron: %s\n", to_string(yielded));
+        }
+
         if (!start_discovery(device, gdm, companion) && opt.discover) {
             // Only fatal when discovery is the whole point of the run.
             return 1;
@@ -6838,5 +6620,34 @@ int main(int argc, char** argv)
     outgoing_stack.clear();
     facet.shutdown();
     window.close();
+
+    // HAND THE SOCKETS BACK TO THE SERVICE. Issue 333, and the other half of the
+    // yield above.
+    //
+    // Without this, ending the player takes the box off the network until
+    // somebody launches it again -- which is exactly the cold case the Service
+    // exists to prevent, reached by the most ordinary route there is: pressing
+    // BACK.
+    //
+    // THE PLAYER'S OWN SOCKETS ARE CLOSED EXPLICITLY FIRST, and that ordering is
+    // the whole of it. `gdm` and `companion` are locals whose destructors run
+    // when this function returns -- i.e. AFTER the line below. Leaving it to
+    // them would have the Service rebinding while the player's listener is still
+    // open, and `CompanionServer` does not fail there: it MOVES to a free port
+    // (issue 247). The Service would come back on a port nothing announces, and
+    // the symptom would be a box that is discoverable but not castable, one
+    // launch later, with nothing in the log saying why.
+    //
+    // Both stops are idempotent, so doing this here costs nothing on the paths
+    // where discovery never started.
+    gdm.stop();
+    companion.stop();
+
+    // kNothingToDo on every desktop run and on any Android run with no Service,
+    // which is why only the two outcomes that did something are reported.
+    if (const ServiceNetwork resumed = resume_service_network();
+        resumed == ServiceNetwork::kResumed || resumed == ServiceNetwork::kFailed) {
+        say("holocron: %s\n", to_string(resumed));
+    }
     return 0;
 }

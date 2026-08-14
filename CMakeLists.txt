@@ -14,7 +14,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(holocron
-    VERSION 1.0.3
+    VERSION 1.0.4
     DESCRIPTION "GPU music visualization engine that is also the music player"
     LANGUAGES CXX
 )
@@ -577,6 +577,8 @@ add_library(holocron_plex STATIC
     src/plex/plex_playback.cpp
     src/plex/artwork_cache.cpp
     src/plex/lyrics.cpp
+    src/plex/plex_bootstrap.cpp
+    src/plex/service_network.cpp
 )
 add_library(holocron::plex ALIAS holocron_plex)
 
