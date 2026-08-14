@@ -142,6 +142,72 @@ TEST_CASE("a PNG decodes to exactly the colours it was authored with", "[image]"
     CHECK(detail.empty());
 }
 
+TEST_CASE("an INDEXED PNG decodes, and its palette is not read back to front", "[image]")
+{
+    // A SECOND FIXTURE BECAUSE THE FIRST ONE COULD NOT SEE THIS.
+    //
+    // sleeve.png is colour type 6 -- RGBA -- so it exercises zlib and the
+    // pre-existing RGBA branch and NOTHING about PAL8. The PAL8 support added
+    // for issue 116 passed the whole suite while being entirely unverified,
+    // which was caught by reading the fixture's IHDR rather than by any test
+    // going red. That is this project's own recurring lesson in a new place: a
+    // test written against material the defect does not reach cannot see it.
+    //
+    // sleeve-indexed.png is the same two halves, same size, colour type 3. The
+    // ONLY difference from sleeve.png is how the pixels are stored, so a failure
+    // here is unambiguously about the indexed path.
+    //
+    // It is 92 bytes and was GENERATED rather than exported from an image editor,
+    // by tests/fixtures/make-indexed-png.js beside it -- so its provenance is
+    // readable rather than being a binary somebody has to take on trust. Nothing
+    // in the build runs that script; it is there so the fixture can be checked
+    // and regenerated.
+    //
+    // WHAT IT IS REALLY GUARDING is the byte order of the palette. FFmpeg hands
+    // PAL8 back with the palette at data[1] as 256 entries of AV_PIX_FMT_RGB32,
+    // and RGB32 is a NATIVE-ENDIAN 32-bit word -- so on both targets here the
+    // bytes are B, G, R, A. Reading them as R, G, B, A compiles, runs, produces
+    // no error, and yields a sleeve whose red and blue are exchanged. That does
+    // not look broken; it looks like a different album cover, and it would feed
+    // the palette confident wrong colours.
+    ImageRgba8  out;
+    std::string detail;
+    REQUIRE(decode_image(read_fixture("sleeve-indexed.png"), out, detail) == ImageError::kOk);
+    REQUIRE_FALSE(out.empty());
+    REQUIRE(out.width == 16);
+    REQUIRE(out.height == 16);
+
+    const auto pixel_at = [&out](int x, int y) {
+        const std::size_t i =
+            (static_cast<std::size_t>(y) * static_cast<std::size_t>(out.width) +
+             static_cast<std::size_t>(x)) * 4;
+        return std::array<std::uint8_t, 4>{out.pixels[i], out.pixels[i + 1], out.pixels[i + 2],
+                                           out.pixels[i + 3]};
+    };
+
+    const auto left  = pixel_at(0, 0);
+    const auto right = pixel_at(out.width - 1, 0);
+
+    // The same values sleeve.png carries, so the two tests can be compared by eye.
+    CHECK(left[0] == 220);
+    CHECK(left[1] == 30);
+    CHECK(left[2] == 30);
+
+    CHECK(right[0] == 30);
+    CHECK(right[1] == 60);
+    CHECK(right[2] == 200);
+
+    // OPAQUE WITH NO tRNS CHUNK. The fixture has no transparency chunk, so every
+    // palette entry's alpha must come back 255 -- and this is worth asserting
+    // because the alpha byte is read from the palette rather than assumed, so a
+    // palette whose fourth byte happened to be zero would make the whole sleeve
+    // invisible while every colour assertion above still passed.
+    CHECK(left[3] == 255);
+    CHECK(right[3] == 255);
+
+    CHECK(detail.empty());
+}
+
 TEST_CASE("every refusal says why", "[image]")
 {
     // THE GENERALISATION OF THE CASE BELOW, from the enum's NAMES to the
