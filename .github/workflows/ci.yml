@@ -815,11 +815,45 @@ jobs:
             # The annotation may be absent if the checkout did not bring the tag
             # object down. Degraded rather than fatal: a release with a thin note
             # and the right artifacts beats no release at all.
-            git tag -l "${GITHUB_REF_NAME}" --format='%(contents)' > "${RUNNER_TEMP}/notes.md" 2>/dev/null || true
+            # AN EXACT REF, not `git tag -l <pattern>`.
+            #
+            # At v1.0.4 the pattern form produced a body of over 125,000
+            # characters -- GitHub's hard limit -- so BOTH packaging jobs got
+            # `HTTP 422: body is too long`, no release was created, and it had
+            # to be made by hand from the kept artifacts. The same command run
+            # locally against the same tag yields 3,075 bytes; the whole tag set
+            # yields 148,604. So what CI produced was every annotation rather
+            # than one.
+            #
+            # THE MECHANISM IS NOT PINNED. An empty or unmatched pattern yields
+            # nothing locally rather than everything, so the obvious explanation
+            # does not hold, and the shallow checkout is the remaining suspect.
+            # `for-each-ref` on a full ref path removes the globbing entirely,
+            # which is the difference that can be reasoned about.
+            git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(contents)' \
+                > "${RUNNER_TEMP}/notes.md" 2>/dev/null || true
+
+            # AND CAPPED, WHICH IS THE FIX THAT DOES NOT DEPEND ON KNOWING THE
+            # CAUSE. A body over the limit is refused outright and takes the
+            # whole release with it; losing the tail of an annotation is a far
+            # better outcome than losing the release, and the annotation itself
+            # is still in the tag for anyone who wants all of it.
+            if [ "$(wc -c < "${RUNNER_TEMP}/notes.md")" -gt 60000 ]; then
+              head -c 60000 "${RUNNER_TEMP}/notes.md" > "${RUNNER_TEMP}/notes.trim"
+              printf '\n\n(truncated -- see the tag annotation for the full text)\n' \
+                  >> "${RUNNER_TEMP}/notes.trim"
+              mv "${RUNNER_TEMP}/notes.trim" "${RUNNER_TEMP}/notes.md"
+            fi
+
             if [ ! -s "${RUNNER_TEMP}/notes.md" ]; then
               echo "Artifacts attached by CI. See the tag annotation for what changed." \
                   > "${RUNNER_TEMP}/notes.md"
             fi
+
+            # SAID OUT LOUD. The failure this replaces was invisible until the
+            # API refused it, and a byte count in the log is what makes the next
+            # one readable at a glance.
+            echo "release notes: $(wc -c < "${RUNNER_TEMP}/notes.md") bytes"
 
             # --notes-file, NEVER --notes. An annotation is prose and grows;
             # v1.0.3's was 3.5 KB and BOTH packaging jobs died on
@@ -1017,11 +1051,45 @@ jobs:
             # The annotation may be absent if the checkout did not bring the tag
             # object down. Degraded rather than fatal: a release with a thin note
             # and the right artifacts beats no release at all.
-            git tag -l "${GITHUB_REF_NAME}" --format='%(contents)' > "${RUNNER_TEMP}/notes.md" 2>/dev/null || true
+            # AN EXACT REF, not `git tag -l <pattern>`.
+            #
+            # At v1.0.4 the pattern form produced a body of over 125,000
+            # characters -- GitHub's hard limit -- so BOTH packaging jobs got
+            # `HTTP 422: body is too long`, no release was created, and it had
+            # to be made by hand from the kept artifacts. The same command run
+            # locally against the same tag yields 3,075 bytes; the whole tag set
+            # yields 148,604. So what CI produced was every annotation rather
+            # than one.
+            #
+            # THE MECHANISM IS NOT PINNED. An empty or unmatched pattern yields
+            # nothing locally rather than everything, so the obvious explanation
+            # does not hold, and the shallow checkout is the remaining suspect.
+            # `for-each-ref` on a full ref path removes the globbing entirely,
+            # which is the difference that can be reasoned about.
+            git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(contents)' \
+                > "${RUNNER_TEMP}/notes.md" 2>/dev/null || true
+
+            # AND CAPPED, WHICH IS THE FIX THAT DOES NOT DEPEND ON KNOWING THE
+            # CAUSE. A body over the limit is refused outright and takes the
+            # whole release with it; losing the tail of an annotation is a far
+            # better outcome than losing the release, and the annotation itself
+            # is still in the tag for anyone who wants all of it.
+            if [ "$(wc -c < "${RUNNER_TEMP}/notes.md")" -gt 60000 ]; then
+              head -c 60000 "${RUNNER_TEMP}/notes.md" > "${RUNNER_TEMP}/notes.trim"
+              printf '\n\n(truncated -- see the tag annotation for the full text)\n' \
+                  >> "${RUNNER_TEMP}/notes.trim"
+              mv "${RUNNER_TEMP}/notes.trim" "${RUNNER_TEMP}/notes.md"
+            fi
+
             if [ ! -s "${RUNNER_TEMP}/notes.md" ]; then
               echo "Artifacts attached by CI. See the tag annotation for what changed." \
                   > "${RUNNER_TEMP}/notes.md"
             fi
+
+            # SAID OUT LOUD. The failure this replaces was invisible until the
+            # API refused it, and a byte count in the log is what makes the next
+            # one readable at a glance.
+            echo "release notes: $(wc -c < "${RUNNER_TEMP}/notes.md") bytes"
 
             # --notes-file, NEVER --notes. An annotation is prose and grows;
             # v1.0.3's was 3.5 KB and BOTH packaging jobs died on
