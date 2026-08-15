@@ -2985,6 +2985,17 @@ int main(int argc, char** argv)
     // earlier launch. On every desktop run there is never anything parked and
     // this is one mutex acquire.
     if (PendingCast parked; take_pending_cast(parked)) {
+        // WHERE IT WAS MEANT TO START, AND WHETHER IT WAS MEANT TO BE PAUSED.
+        // Issue 361.
+        //
+        // Those two live only on the `playMedia`, which a queue handoff
+        // arriving 25 ms later replaces -- so the stash carries them forward
+        // and they are put back on the request here, where the existing
+        // machinery already knows what to do with them. Without this, casting
+        // something paused half way through restarted it from zero, playing.
+        parked.request.offset_ms = parked.offset_ms;
+        parked.request.paused    = parked.paused;
+
         switch (parked.kind) {
         case PendingCastKind::kPlay: {
             NowPlaying what;
