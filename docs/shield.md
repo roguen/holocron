@@ -968,7 +968,7 @@ Issue 333. `HolocronService` keeps GDM and the Companion port up with no
 Activity, accepts the cast, parks it, and starts the player, which collects it
 and plays. Confirmed from a rebooted, never-launched, sleeping Shield.
 
-### `SYSTEM_ALERT_WINDOW` HAS TO BE EFFECTIVE, AND WHETHER THAT NEEDS A MANUAL STEP IS NOT SETTLED
+### `SYSTEM_ALERT_WINDOW` MUST BE ON, AND THAT IS MEASURED BY TURNING IT OFF
 
 Check it here: **Settings → Apps → Special app access → Display over other apps
 → Holocron**, or
@@ -983,34 +983,35 @@ If it is not on, grant it:
 adb shell appops set io.github.roguen.holocron SYSTEM_ALERT_WINDOW allow
 ```
 
-**WHAT IS NOT KNOWN IS WHETHER THAT GRANT IS NEEDED AT ALL.** This section said
-it was, flatly, and the owner then reported the toggle was already on without him
-touching it. The evidence does not settle it either way and the reason is a
-measurement mistake worth recording:
+**THE A/B, run on the device with everything else identical** — same build, same
+rebooted-and-sleeping cold state, same cast:
 
-- The first refusal was measured when `SYSTEM_ALERT_WINDOW` was **not declared in
-  the manifest at all**, and the first `appops set … allow` did not take for
-  exactly that reason — the appop stayed `default`.
-- The manifest declaration and the successful grant then landed **together**, so
-  the case that would separate them was never run: **declared, with the appop
-  left at `default`**.
-- `default` for this appop means *defer to the permission check*, so the
-  declaration alone may well be sufficient on this device.
+| Permission | What Android did |
+|---|---|
+| effective | `Background activity start ... allowed because SYSTEM_ALERT_WINDOW permission is granted`, Activity displayed, cast played |
+| turned off | `Background activity start [... isBgStartWhitelisted: false]` then `E ActivityTaskManager: Abort background activity starts from 10096`. No Activity |
 
-Two things changed at once and only the pair was tested. **To settle it**: turn
-the Settings toggle off, put the Shield cold (see the reboot note below), and
-cast. If it still plays, the declaration is enough and this whole subsection
-should shrink to a sentence.
+**THE SYMPTOM WITH IT OFF IS THE WORST AVAILABLE ONE: the theater lights up and
+nothing plays.** The display still comes on, because `wake_screen()` is an
+ordinary wake lock and has nothing to do with the activity-start restriction. So
+the box looks like it is responding, and the only evidence of the refusal is a
+line in logcat.
 
-What IS established: the permission being effective is what allows the launch —
-Android says so by name — and `SYSTEM_ALERT_WINDOW` is an **appop** rather than a
-runtime permission, so no dialog can be raised for it on Android TV. Whatever
-makes it effective survives reboot and app upgrades; it does **not** survive an
-uninstall.
+It is an **appop** rather than a runtime permission, so no dialog can be raised
+for it on Android TV. It survives reboot and app upgrades; it does **not**
+survive an uninstall.
 
-Without it effective, everything up to the last step still works: the cast is
-accepted, answered `200`, resolved and parked. It simply never plays, and the
-only evidence is a line in logcat.
+**One thing genuinely not established**: whether a never-touched fresh install
+starts at `allow` or at `deny`. The measurement above used `allow` against an
+explicit `deny`; a fresh install would be at `default`, which for this appop
+means *defer to the permission check*. That is why the instruction is
+**check it, and grant it if it is not on** rather than *always grant it* — that
+instruction is correct either way.
+
+An earlier version of this section stated the manual grant was required, flatly,
+on a run where the manifest declaration and the grant had landed **together**.
+The conclusion turned out to be right and the reasoning behind it was not: two
+things changed at once and only the pair had been tested.
 
 ### Why the permission is unavoidable, measured rather than assumed
 
