@@ -958,6 +958,70 @@ independent of the Activity.
 Section 8 is the feature in **normal use**, where the Shield is left running. The
 cold case is a reboot, a force-stop, or Android reclaiming the process.
 
+**That is now section 9, and it is done.**
+
+---
+
+## 9. Casting to a theater that is not running at all
+
+Issue 333. `HolocronService` keeps GDM and the Companion port up with no
+Activity, accepts the cast, parks it, and starts the player, which collects it
+and plays. Confirmed from a rebooted, never-launched, sleeping Shield.
+
+### ONE MANUAL STEP PER DEVICE, AND WITHOUT IT A COLD CAST DOES NOTHING
+
+```bash
+adb shell appops set io.github.roguen.holocron SYSTEM_ALERT_WINDOW allow
+```
+
+Or on the box itself: **Settings → Apps → Special app access → Display over
+other apps → Holocron**.
+
+**This is not something the APK can do for itself.** `SYSTEM_ALERT_WINDOW` is
+declared in the manifest, but it is an **appop**, not a runtime permission —
+declaring it grants nothing, and there is no dialog an app can raise to ask for
+it on Android TV. It survives reboot and app upgrades; it does **not** survive an
+uninstall.
+
+Without the grant everything up to the last step still works: the cast is
+accepted, answered `200`, resolved and parked. It simply never plays, and the
+only evidence is a line in logcat.
+
+### Why the permission is unavoidable, measured rather than assumed
+
+Three mechanisms were tried on the device, in this order:
+
+| | |
+|---|---|
+| Plain `startActivity` from the foreground service | **Refused.** `W ActivityTaskManager: Background activity start [... isCallingUidForeground: false; callingUidProcState: FOREGROUND_SERVICE; isBgStartWhitelisted: false]`. Android 10 blocks background activity starts and **a foreground service is not an exemption**. The call returns without throwing, so nothing on our side can see it fail |
+| A full-screen-intent notification, the mechanism alarm clocks use | **Posts and is never consumed.** Declaring `USE_FULL_SCREEN_INTENT` silenced the warning and changed nothing: no `NotificationService` or `StatusBar` line appears at all, which is consistent with an Android TV having no notification shade. Kept as a fallback because it costs nothing on a device where the appop is missing |
+| `SYSTEM_ALERT_WINDOW` | **Works**, and Android says so: `Background activity start ... allowed because SYSTEM_ALERT_WINDOW permission is granted.` |
+
+### The ordering trap between the wake and the launch
+
+`wake_screen()` must come **before** the launch, because starting the Activity
+into a dark display reproduces issue 333's own cause and the Activity dies back
+to nothing.
+
+That is the **opposite** of what a full-screen intent wants — one only takes over
+the screen when the device is off or locked, so waking first downgrades it to a
+heads-up notification. Both orderings were measured. It is moot on this device
+because the notification is never consumed either way, and the order is chosen
+for the mechanism that works.
+
+### A test scenario that produces a convincing wrong answer
+
+**Quitting with BACK and then casting kills the process on relaunch.** SDL has
+already run `SDL_main` to completion in that process, so bringing the Activity
+back replaces it — `Process io.github.roguen.holocron has died: fg TOP` — and the
+parked cast, which lives in that process's memory, dies with it. It looks exactly
+like the stash being broken.
+
+**After a reboot the Service has no SDL history**, the Activity starts in the
+same process, and the stash survives as designed. The cold case that matters is
+the one that works; the failure was an artefact of how the device got into its
+state. Reboot before testing this, rather than quitting.
+
 **Whether playback begins while the Shield is asleep** is still open as a fact.
 The run above cannot answer it: the wake fired 463 ms before playback started, so
 the two are no longer separable.

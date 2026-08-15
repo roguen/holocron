@@ -147,6 +147,7 @@ add_library(holocron_platform STATIC
     src/platform/platform_paths.cpp
     src/platform/run_log.cpp
     src/platform/screen_wake.cpp
+    src/platform/launch_player.cpp
 )
 add_library(holocron::platform ALIAS holocron_platform)
 
@@ -605,6 +606,7 @@ add_library(holocron_plex STATIC
     src/plex/lyrics.cpp
     src/plex/plex_bootstrap.cpp
     src/plex/service_network.cpp
+    src/plex/pending_cast.cpp
 )
 add_library(holocron::plex ALIAS holocron_plex)
 

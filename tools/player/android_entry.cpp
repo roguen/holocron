@@ -217,10 +217,26 @@ int main(int argc, char** argv)
         //
         // AFTER set_java_vm, not before: the promotion needs a ScopedEnv, and a
         // ScopedEnv with no VM yields nothing.
-        if (jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
-            activity != nullptr) {
-            holocron::android::set_context(activity);
-            env->DeleteLocalRef(activity);
+        // ONLY IF THE SERVICE HAS NOT ALREADY SUPPLIED ONE, and that condition is
+        // the other half of the fix described in android_service.cpp.
+        //
+        // The Service is the better owner: it outlives this Activity, and it is
+        // the only component that can raise UI from the background -- which is
+        // what `launch_player()` needs when a cast arrives with nothing on
+        // screen. Overwriting its Context here with a component that has no
+        // `launchPlayer()` method is exactly what broke the cold-cast handoff
+        // once already.
+        //
+        // With the Service setting unconditionally and this setting only when
+        // absent, the Service wins whichever order the two start in -- which
+        // matters, because `startService` is asynchronous and the ordering is
+        // not something either side can rely on.
+        if (!holocron::android::has_context()) {
+            if (jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
+                activity != nullptr) {
+                holocron::android::set_context(activity);
+                env->DeleteLocalRef(activity);
+            }
         }
     }
 

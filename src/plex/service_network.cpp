@@ -39,9 +39,12 @@ const char* to_string(ServiceNetwork s)
 #include <holocron/companion_server.hpp>
 #include <holocron/gatekeeper.hpp>
 #include <holocron/gdm_responder.hpp>
+#include <holocron/launch_player.hpp>
+#include <holocron/pending_cast.hpp>
 #include <holocron/platform_paths.hpp>
 #include <holocron/plex_bootstrap.hpp>
 #include <holocron/run_log.hpp>
+#include <holocron/screen_wake.hpp>
 
 #include <memory>
 #include <mutex>
@@ -126,6 +129,82 @@ std::uint16_t start_locked()
 
     auto gdm       = std::make_unique<GdmResponder>();
     auto companion = std::make_unique<CompanionServer>();
+
+    // THE HANDOFF. Issue 333/338's last step, and the reason this Service is
+    // worth having rather than merely being discoverable.
+    //
+    // Without these three handlers the Companion server still answers a
+    // `playMedia` 200 -- that is its documented behaviour for a command with no
+    // handler -- and NOTHING HAPPENS. From the phone that is worse than being
+    // offline: the device is in the list, it accepts the cast, and the theater
+    // stays dark and silent.
+    //
+    // Set BEFORE start_discovery, so a command cannot arrive at a server whose
+    // handlers are not attached yet and be silently acknowledged. Same rule the
+    // player follows.
+    const auto hand_over = [](const PendingCast& cast) {
+        stash_pending_cast(cast);
+
+        // WAKE FIRST, THEN LAUNCH -- and the reason is that the launch that
+        // actually works is `startActivity`, not the notification.
+        //
+        // Starting the Activity into a DARK display reproduces issue 333's own
+        // measured cause: SDL creates its native thread only in the RESUMED
+        // branch, gated on a ready surface AND `mIsResumedCalled`, and `onStop`
+        // clears the latter about 15 ms later, so `SDL_main` is never entered.
+        // The wake is what makes the launch survive.
+        //
+        // The full-screen-intent notification wants the OPPOSITE order -- it
+        // only takes over the screen when the device is off or locked -- and
+        // that tension was measured both ways. It is moot on this device: an
+        // Android TV has no notification shade and never consumes one, so the
+        // notification is a fallback that does nothing here and the ordering is
+        // chosen for the mechanism that works.
+        const ScreenWakeState woke = wake_screen();
+        if (woke == ScreenWakeState::kFailed || woke == ScreenWakeState::kUnavailable) {
+            say_err("service: could not wake the display -- %s\n", to_string(woke));
+        }
+
+        //
+        const LaunchPlayerState launched = launch_player();
+        say("service: cast parked and the player asked for -- %s\n", to_string(launched));
+
+        // THE SOCKETS ARE NOT GIVEN UP HERE. The player takes them itself, by
+        // calling yield_service_network() before it binds -- which happens on
+        // ITS thread, once it has actually got far enough to want them. Dropping
+        // them here would leave the box unreachable for the several seconds the
+        // Activity takes to start, and if the launch failed it would leave it
+        // unreachable permanently.
+    };
+
+    companion->set_play_handler(
+        [hand_over](const PlayRequest& request, const PlexTrack& track, const std::string& url) {
+            PendingCast cast;
+            cast.kind    = PendingCastKind::kPlay;
+            cast.request = request;
+            cast.track   = track;
+            cast.url     = url;
+            hand_over(cast);
+        });
+    companion->set_queue_handler([hand_over](const PlayRequest& request, const PlexQueue& q) {
+        PendingCast cast;
+        cast.kind    = PendingCastKind::kQueue;
+        cast.request = request;
+        cast.queue   = q;
+        hand_over(cast);
+    });
+    // ISSUE 280. A queue the controller already owns, handed over by a
+    // `playMedia` with no `createPlayQueue` behind it. Kept separate from the
+    // handler above all the way through the stash, because the two disagree
+    // about where playback starts and collapsing them plays the wrong song.
+    companion->set_queue_handoff_handler(
+        [hand_over](const PlayRequest& request, const PlexQueue& q) {
+            PendingCast cast;
+            cast.kind    = PendingCastKind::kQueueHandoff;
+            cast.request = request;
+            cast.queue   = q;
+            hand_over(cast);
+        });
 
     if (!start_discovery(device, *gdm, *companion)) {
         // start_discovery has already said which half failed and why.
