@@ -968,24 +968,50 @@ Issue 333. `HolocronService` keeps GDM and the Companion port up with no
 Activity, accepts the cast, parks it, and starts the player, which collects it
 and plays. Confirmed from a rebooted, never-launched, sleeping Shield.
 
-### ONE MANUAL STEP PER DEVICE, AND WITHOUT IT A COLD CAST DOES NOTHING
+### `SYSTEM_ALERT_WINDOW` MUST BE ON, AND THAT IS MEASURED BY TURNING IT OFF
+
+Check it here: **Settings → Apps → Special app access → Display over other apps
+→ Holocron**, or
+
+```bash
+adb shell appops get io.github.roguen.holocron SYSTEM_ALERT_WINDOW
+```
+
+If it is not on, grant it:
 
 ```bash
 adb shell appops set io.github.roguen.holocron SYSTEM_ALERT_WINDOW allow
 ```
 
-Or on the box itself: **Settings → Apps → Special app access → Display over
-other apps → Holocron**.
+**THE A/B, run on the device with everything else identical** — same build, same
+rebooted-and-sleeping cold state, same cast:
 
-**This is not something the APK can do for itself.** `SYSTEM_ALERT_WINDOW` is
-declared in the manifest, but it is an **appop**, not a runtime permission —
-declaring it grants nothing, and there is no dialog an app can raise to ask for
-it on Android TV. It survives reboot and app upgrades; it does **not** survive an
-uninstall.
+| Permission | What Android did |
+|---|---|
+| effective | `Background activity start ... allowed because SYSTEM_ALERT_WINDOW permission is granted`, Activity displayed, cast played |
+| turned off | `Background activity start [... isBgStartWhitelisted: false]` then `E ActivityTaskManager: Abort background activity starts from 10096`. No Activity |
 
-Without the grant everything up to the last step still works: the cast is
-accepted, answered `200`, resolved and parked. It simply never plays, and the
-only evidence is a line in logcat.
+**THE SYMPTOM WITH IT OFF IS THE WORST AVAILABLE ONE: the theater lights up and
+nothing plays.** The display still comes on, because `wake_screen()` is an
+ordinary wake lock and has nothing to do with the activity-start restriction. So
+the box looks like it is responding, and the only evidence of the refusal is a
+line in logcat.
+
+It is an **appop** rather than a runtime permission, so no dialog can be raised
+for it on Android TV. It survives reboot and app upgrades; it does **not**
+survive an uninstall.
+
+**One thing genuinely not established**: whether a never-touched fresh install
+starts at `allow` or at `deny`. The measurement above used `allow` against an
+explicit `deny`; a fresh install would be at `default`, which for this appop
+means *defer to the permission check*. That is why the instruction is
+**check it, and grant it if it is not on** rather than *always grant it* — that
+instruction is correct either way.
+
+An earlier version of this section stated the manual grant was required, flatly,
+on a run where the manifest declaration and the grant had landed **together**.
+The conclusion turned out to be right and the reasoning behind it was not: two
+things changed at once and only the pair had been tested.
 
 ### Why the permission is unavoidable, measured rather than assumed
 
