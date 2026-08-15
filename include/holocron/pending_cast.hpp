@@ -72,6 +72,28 @@ struct PendingCast {
 
     // kQueue and kQueueHandoff only.
     PlexQueue queue;
+
+    // WHAT THE `playMedia` SAID, KEPT EVEN WHEN A QUEUE ARRIVES AFTER IT.
+    // Issue 361.
+    //
+    // A real cast sends BOTH, about 25 ms apart:
+    //
+    //     companion: play "Cherry Twist" ... (441 ms in, paused)
+    //     companion: queue 11641 handed over -- 23 track(s), on 4
+    //
+    // The queue is what should be played -- it knows every track -- but the
+    // OFFSET and the PAUSED FLAG exist only on the `playMedia`, and the first
+    // version of this dropped them by letting the queue replace the whole
+    // stash. Casting something you had paused half way through then restarted
+    // it from the beginning, playing.
+    //
+    // This project has been caught by that shape twice already: #115 and #280
+    // are both cases where the `playMedia` carried the only record of
+    // something. These two fields are carried across the replacement rather
+    // than the whole command being kept, because everything else on it is
+    // genuinely superseded by the queue.
+    std::int64_t offset_ms = 0;
+    bool         paused    = false;
 };
 
 // Park a cast for the Activity to collect. Replaces any cast already parked.

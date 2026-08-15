@@ -174,6 +174,86 @@ TEST_CASE("a queue survives the trip with its tracks", "[pending_cast]")
     CHECK(out.queue.id == "12345");
 }
 
+TEST_CASE("a queue arriving after a play keeps where it was meant to start", "[pending_cast]")
+{
+    // ISSUE 361, AND THIS IS THE ONE THAT WAS FOUND IN THE FIELD. A real cast
+    // sends both commands about 25 ms apart:
+    //
+    //     companion: play "Cherry Twist" ... (441 ms in, paused)
+    //     companion: queue 11641 handed over -- 23 track(s), on 4
+    //
+    // The queue is the better command and must win -- it knows every track --
+    // but the OFFSET and the PAUSED FLAG exist only on the `playMedia`. Letting
+    // it replace the whole stash restarted a half-played track from zero,
+    // playing, when the phone had asked for it paused at 441 ms.
+    drain();
+
+    PendingCast play  = a_play("Cherry Twist");
+    play.offset_ms    = 441;
+    play.paused       = true;
+    stash_pending_cast(play);
+
+    PendingCast queue;
+    queue.kind     = PendingCastKind::kQueueHandoff;
+    queue.queue.id = "11641";
+    stash_pending_cast(queue);
+
+    PendingCast out;
+    REQUIRE(take_pending_cast(out));
+
+    // The queue won, as it must.
+    CHECK(out.kind == PendingCastKind::kQueueHandoff);
+    CHECK(out.queue.id == "11641");
+    // And the two fields it could not have came across with it.
+    CHECK(out.offset_ms == 441);
+    CHECK(out.paused);
+}
+
+TEST_CASE("a second play command wins with its own offset", "[pending_cast]")
+{
+    // THE CARRY MUST NOT OUTLIVE ITS PURPOSE. Somebody changing their mind sends
+    // a fresh `playMedia`, and that one's values are the truth -- including a
+    // deliberate zero. Carrying forward unconditionally would make a track cast
+    // from the beginning resume at wherever the previous one happened to be.
+    drain();
+
+    PendingCast first = a_play("Cherry Twist");
+    first.offset_ms   = 441;
+    first.paused      = true;
+    stash_pending_cast(first);
+
+    PendingCast second = a_play("Born Too Slow");
+    second.offset_ms   = 0;
+    second.paused      = false;
+    stash_pending_cast(second);
+
+    PendingCast out;
+    REQUIRE(take_pending_cast(out));
+    CHECK(out.track.title == "Born Too Slow");
+    CHECK(out.offset_ms == 0);
+    CHECK_FALSE(out.paused);
+}
+
+TEST_CASE("a queue with its own offset is not overwritten by an older one", "[pending_cast]")
+{
+    // The carry is forward-only onto a field the newer command did not set, so
+    // a queue that genuinely carries an offset keeps it.
+    drain();
+
+    PendingCast play = a_play("Cherry Twist");
+    play.offset_ms   = 441;
+    stash_pending_cast(play);
+
+    PendingCast queue;
+    queue.kind      = PendingCastKind::kQueue;
+    queue.offset_ms = 90000;
+    stash_pending_cast(queue);
+
+    PendingCast out;
+    REQUIRE(take_pending_cast(out));
+    CHECK(out.offset_ms == 90000);
+}
+
 TEST_CASE("exactly one of many threads takes the cast", "[pending_cast]")
 {
     // THE MUTEX IS DOING REAL WORK, not guarding a theoretical race: the stash

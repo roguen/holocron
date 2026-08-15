@@ -228,9 +228,10 @@ bool element_attribute(const std::string& element, const std::string& name, std:
 const char* to_string(TransportState state)
 {
     switch (state) {
-    case TransportState::kStopped: return "stopped";
-    case TransportState::kPaused:  return "paused";
-    case TransportState::kPlaying: return "playing";
+    case TransportState::kStopped:   return "stopped";
+    case TransportState::kPaused:    return "paused";
+    case TransportState::kPlaying:   return "playing";
+    case TransportState::kBuffering: return "buffering";
     }
     return "stopped";
 }
