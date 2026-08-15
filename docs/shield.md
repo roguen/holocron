@@ -968,22 +968,47 @@ Issue 333. `HolocronService` keeps GDM and the Companion port up with no
 Activity, accepts the cast, parks it, and starts the player, which collects it
 and plays. Confirmed from a rebooted, never-launched, sleeping Shield.
 
-### ONE MANUAL STEP PER DEVICE, AND WITHOUT IT A COLD CAST DOES NOTHING
+### `SYSTEM_ALERT_WINDOW` HAS TO BE EFFECTIVE, AND WHETHER THAT NEEDS A MANUAL STEP IS NOT SETTLED
+
+Check it here: **Settings → Apps → Special app access → Display over other apps
+→ Holocron**, or
+
+```bash
+adb shell appops get io.github.roguen.holocron SYSTEM_ALERT_WINDOW
+```
+
+If it is not on, grant it:
 
 ```bash
 adb shell appops set io.github.roguen.holocron SYSTEM_ALERT_WINDOW allow
 ```
 
-Or on the box itself: **Settings → Apps → Special app access → Display over
-other apps → Holocron**.
+**WHAT IS NOT KNOWN IS WHETHER THAT GRANT IS NEEDED AT ALL.** This section said
+it was, flatly, and the owner then reported the toggle was already on without him
+touching it. The evidence does not settle it either way and the reason is a
+measurement mistake worth recording:
 
-**This is not something the APK can do for itself.** `SYSTEM_ALERT_WINDOW` is
-declared in the manifest, but it is an **appop**, not a runtime permission —
-declaring it grants nothing, and there is no dialog an app can raise to ask for
-it on Android TV. It survives reboot and app upgrades; it does **not** survive an
+- The first refusal was measured when `SYSTEM_ALERT_WINDOW` was **not declared in
+  the manifest at all**, and the first `appops set … allow` did not take for
+  exactly that reason — the appop stayed `default`.
+- The manifest declaration and the successful grant then landed **together**, so
+  the case that would separate them was never run: **declared, with the appop
+  left at `default`**.
+- `default` for this appop means *defer to the permission check*, so the
+  declaration alone may well be sufficient on this device.
+
+Two things changed at once and only the pair was tested. **To settle it**: turn
+the Settings toggle off, put the Shield cold (see the reboot note below), and
+cast. If it still plays, the declaration is enough and this whole subsection
+should shrink to a sentence.
+
+What IS established: the permission being effective is what allows the launch —
+Android says so by name — and `SYSTEM_ALERT_WINDOW` is an **appop** rather than a
+runtime permission, so no dialog can be raised for it on Android TV. Whatever
+makes it effective survives reboot and app upgrades; it does **not** survive an
 uninstall.
 
-Without the grant everything up to the last step still works: the cast is
+Without it effective, everything up to the last step still works: the cast is
 accepted, answered `200`, resolved and parked. It simply never plays, and the
 only evidence is a line in logcat.
 
