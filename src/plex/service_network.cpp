@@ -145,28 +145,27 @@ std::uint16_t start_locked()
     const auto hand_over = [](const PendingCast& cast) {
         stash_pending_cast(cast);
 
-        // LAUNCH FIRST, AND DO NOT WAKE THE SCREEN BEFORE IT. The order here is
-        // the opposite of the obvious one and it was measured, twice.
+        // WAKE FIRST, THEN LAUNCH -- and the reason is that the launch that
+        // actually works is `startActivity`, not the notification.
         //
-        // The launch goes through a full-screen-intent notification, because
-        // Android 10 refuses a plain `startActivity` from the background and a
-        // foreground service is not an exemption. **A full-screen intent only
-        // takes over the screen when the device is OFF or LOCKED.** Awake and
-        // unlocked, Android downgrades it to an ordinary heads-up notification
-        // -- which on a television nobody is looking at is indistinguishable
-        // from nothing happening.
+        // Starting the Activity into a DARK display reproduces issue 333's own
+        // measured cause: SDL creates its native thread only in the RESUMED
+        // branch, gated on a ready surface AND `mIsResumedCalled`, and `onStop`
+        // clears the latter about 15 ms later, so `SDL_main` is never entered.
+        // The wake is what makes the launch survive.
         //
-        // So waking the display first DEFEATS the very mechanism that raises the
-        // player. Measured on the Shield: with `wake_screen()` 30 ms ahead of
-        // it, the intent posted, the screen came on, and no Activity ever
-        // started. The full-screen intent wakes the device itself -- that is
-        // what it is for, and it is how an alarm clock reaches a sleeping
-        // phone.
+        // The full-screen-intent notification wants the OPPOSITE order -- it
+        // only takes over the screen when the device is off or locked -- and
+        // that tension was measured both ways. It is moot on this device: an
+        // Android TV has no notification shade and never consumes one, so the
+        // notification is a fallback that does nothing here and the ordering is
+        // chosen for the mechanism that works.
+        const ScreenWakeState woke = wake_screen();
+        if (woke == ScreenWakeState::kFailed || woke == ScreenWakeState::kUnavailable) {
+            say_err("service: could not wake the display -- %s\n", to_string(woke));
+        }
+
         //
-        // `wake_screen()` still exists and is still right for the case it was
-        // built for (issue 338 step 1): a cast arriving at a RUNNING player,
-        // where there is no Activity to start and the only missing thing is the
-        // screen. It is called from the player's own handlers, not from here.
         const LaunchPlayerState launched = launch_player();
         say("service: cast parked and the player asked for -- %s\n", to_string(launched));
 

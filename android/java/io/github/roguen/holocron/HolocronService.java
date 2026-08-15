@@ -188,6 +188,25 @@ public class HolocronService extends Service {
      * nobody reads it, and it is dismissed as soon as the Activity is up.
      */
     public void launchPlayer() {
+        // startActivity FIRST, because with SYSTEM_ALERT_WINDOW granted it is
+        // exempt from the background-activity-start restriction and is the only
+        // mechanism measured to actually work on this device.
+        //
+        // The notification below is kept as a fallback for the case the appop is
+        // NOT granted -- it costs nothing when the start succeeds, and without
+        // the grant it is the only thing that could conceivably raise the
+        // player. Both are attempted rather than one being chosen, because
+        // neither reports failure in a way this code can see: startActivity
+        // returns void and the refusal appears only in the platform log.
+        try {
+            Intent direct = new Intent(this, HolocronActivity.class);
+            direct.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(direct);
+            Log.i(TAG, "service: startActivity issued");
+        } catch (Exception e) {
+            Log.e(TAG, "service: startActivity threw", e);
+        }
+
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager == null) {
             Log.e(TAG, "service: no NotificationManager, so no way to raise the player");
