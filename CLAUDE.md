@@ -496,6 +496,15 @@ wants. The wrapper `pushd`s to the repo root before launching the real exe, so
 it behaves exactly like running the command above from the repo root, no
 matter where it was typed from. Put `scripts\` on PATH, not `build\windows\bin`.
 
+**It runs an INSTALLED RELEASE if there is one, and the dev build otherwise.**
+Unpack a published Windows zip into `..\holocron-dist\<version>\` — a sibling of
+the repo, like `holocron-agent`, so it never appears in a diff — and the newest
+one there wins. That is not tidiness: `scripts\build.cmd` configures **Debug**,
+so without this the theater runs a debug binary, several times the size and
+materially slower, while a Release artifact sits published and unused. That is
+exactly what the rack was doing until `v1.0.5`. The fallback keeps a fresh clone
+working with no install step.
+
 `--no-audio` decodes and draws without opening a device. `--frames N --shot out.bmp`
 renders exactly N frames and writes the last one, which is **how the renderer gets
 checked without a monitor** — the same argument that makes `holocron-analyze` worth

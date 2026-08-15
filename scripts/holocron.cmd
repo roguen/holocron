@@ -26,10 +26,40 @@ REM `.\build\windows\bin\holocron.exe` from the repo root already did.
 REM
 REM Add scripts\ to PATH, not build\windows\bin -- this file is what should
 REM resolve for the bare word `holocron`, not the exe underneath it.
+REM
+REM WHICH BUILD IT RUNS: AN INSTALLED RELEASE IF THERE IS ONE, ELSE THE DEV
+REM BUILD.
+REM
+REM `..\holocron-dist\<version>\` is where a published Windows zip is unpacked
+REM on the rack -- a sibling of the repo, like holocron-agent, so it is outside
+REM the tree and never appears in a diff. The newest directory there wins.
+REM
+REM Preferring it matters and is not tidiness. `scripts\build.cmd` configures
+REM DEBUG, so the dev build carries the debug CRT and is several times the size
+REM and materially slower -- and it is what `holocron` ran until this was added,
+REM which meant the theater was running a debug binary while a Release artifact
+REM sat published and unused. The fallback keeps a fresh clone working with no
+REM install step, which is the case that made this file useful in the first
+REM place.
 setlocal
 set "REPO=%~dp0.."
+set "EXE=%REPO%\build\windows\bin\holocron.exe"
+
+REM Newest installed release, if any. `dir /b /o-n` sorts by name descending,
+REM which is right for v1.0.9 vs v1.0.10 only up to nine -- fine for now, and
+REM the version is printed below so a wrong pick is visible rather than silent.
+if exist "%REPO%\..\holocron-dist" (
+    for /f "delims=" %%d in ('dir /b /a:d /o-n "%REPO%\..\holocron-dist" 2^>nul') do (
+        if exist "%REPO%\..\holocron-dist\%%d\holocron.exe" (
+            set "EXE=%REPO%\..\holocron-dist\%%d\holocron.exe"
+            goto :found
+        )
+    )
+)
+:found
+
 pushd "%REPO%"
-"%REPO%\build\windows\bin\holocron.exe" %*
+"%EXE%" %*
 set "EXITCODE=%ERRORLEVEL%"
 popd
 exit /b %EXITCODE%
