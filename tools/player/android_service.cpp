@@ -69,9 +69,28 @@ Java_io_github_roguen_holocron_HolocronService_nativeStartNetwork(JNIEnv* env, j
     if (env->GetJavaVM(&vm) == JNI_OK && vm != nullptr) {
         holocron::android::set_java_vm(vm);
     }
-    if (!holocron::android::has_context()) {
-        holocron::android::set_context(thiz);
-    }
+
+    // UNCONDITIONALLY, AND THE SERVICE DELIBERATELY WINS OVER THE ACTIVITY.
+    //
+    // This was `if (!has_context())` and that quietly broke the cold-cast
+    // handoff. On a launch that starts with the Activity, `android_entry.cpp`
+    // stores the Activity first -- so the Service left it alone, and
+    // `launch_player()` then looked for `launchPlayer()` on an ACTIVITY, did not
+    // find it, and fell through to the bare `startActivity` that Android's
+    // background-start restriction refuses. Measured: the whole chain ran,
+    // reported success, and nothing came up.
+    //
+    // The Service is the right owner of this pointer for two reasons. It
+    // OUTLIVES the Activity -- after BACK the Activity is destroyed while the
+    // process lingers, leaving a global ref to a dead component -- and it is the
+    // one that can raise UI from the background at all.
+    //
+    // Nothing else is harmed by the swap: every other user of this pointer calls
+    // getApplicationContext() before doing anything, which any ContextWrapper
+    // answers. `android_entry.cpp` is the other half of this and now sets the
+    // context only when there is none, so the Service wins whichever order the
+    // two happen to start in.
+    holocron::android::set_context(thiz);
 
     return static_cast<jint>(holocron::start_service_network());
 }

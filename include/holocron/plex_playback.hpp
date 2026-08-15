@@ -174,6 +174,22 @@ enum class TransportState : std::uint8_t {
     kStopped = 0,
     kPaused,
     kPlaying,
+
+    // NOTHING IS DECODING YET, BUT SOMETHING IS ABOUT TO. Issue 361.
+    //
+    // Added for the cold cast: the Service accepts a `playMedia` with no player
+    // running and takes about 27 seconds to start one. Reporting `stopped`
+    // across that window told the controller nothing was playing, and Plexamp
+    // dropped the session -- the cast played and the phone never followed it.
+    //
+    // `playing` would have been the easy lie and is worse: the position would
+    // sit at zero for half a minute, which is its own broken-looking bar, and a
+    // controller that then sees the real player start from the same position has
+    // no way to tell a stall from a restart.
+    //
+    // Plex's own wire value for this is `buffering`, and it means exactly what
+    // is true here.
+    kBuffering,
 };
 
 // The wire spelling. Plex's own values, lower case.

@@ -120,23 +120,29 @@ gain response — and may not change what it *means*.
 
 ## Current status
 
-**`v1.0.4`, and all eight milestones are finished.** Pick an album in Plexamp,
+**`v1.0.5`, and all eight milestones are finished.** Pick an album in Plexamp,
 cast it to the theater, and it plays — bit-perfect, with the visuals coloured by
 the album's own cover and the receiver switched to the right input on the way.
 
-**On the Shield the screen no longer has to be on first.** A cast to a sleeping
-box is answered, wakes the display, and plays.
+**The theater does not have to be on, awake, or even running.** Cast to a Shield
+that is asleep with Holocron closed and it wakes up, starts itself and plays.
+Confirmed on the real device from a cold reboot: music, picture, a moving
+progress bar and the phone's volume driving the receiver, on the first cast.
 
-**And Holocron no longer has to be running for the box to be there at all.** The
-part that listens — Plex discovery and the Companion port — now lives in an
-Android service with a life of its own, so the Shield stays visible to Plexamp
-after the app is closed and comes back on its own after a reboot. Confirmed by
-rebooting the real device and touching nothing: the launcher came up, and the
-theater was already answering. What is not finished is the last step of the cold
-case — a cast that arrives while nothing is on screen is accepted, but does not
-yet start playing on its own ([#333](https://github.com/roguen/holocron/issues/333)).
-A force-stop is deliberately out of scope: Android switches an app's services off
-until somebody opens it again, and no design on our side changes that.
+Two things are worth knowing about that, because you meet both on day one:
+
+- **It takes about half a minute.** Starting from nothing means loading a 147 MB
+  library, SDL and OpenGL. The phone shows the track as *buffering* throughout,
+  so the wait is visible rather than looking like a cast that failed.
+- **"Display over other apps" has to be on for Holocron** on the Shield —
+  *Settings → Apps → Special app access*. Android will not let an app raise a
+  screen from the background without it, and being a background service is not
+  an exemption. With it off you get the worst-looking failure available: the
+  theater lights up and nothing plays.
+
+A force-stop is deliberately out of scope. Android switches a force-stopped
+app's services off until somebody opens it again, and no design on our side
+changes that.
 
 <!-- measured: palette_black.before -->
 <!-- measured: palette_black.after -->

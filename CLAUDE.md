@@ -214,7 +214,7 @@ tested:
 | Playback | `PlaybackSession` owns the decoder, analysis, ring, device and decode thread, and can be **started and replaced**. A cast starts one; `stop` stops it. `holocron` with no track opens the window and waits to be cast to. |
 | Track context | `TrackContext` is populated at last — title, artist, album, transport, and the **palette**. Fetch and JPEG decode run on a worker with a **generation counter**, because skipping an album starts a fetch per track and they do not finish in order; without it the sleeve of a track skipped past seconds ago wins and colours the visuals from the wrong record. |
 | Palette | `extract_palette` — five swatches, a primary and a contrast accent, in **linear** RGB. "Dominant" is deliberately *not* "most common": the most common colour on a sleeve is the border, so population is weighted towards saturated mid-luminance colour, with a floor so a monochrome sleeve still yields something. Buckets in sRGB, answers in linear. |
-| Album art | `decode_image` — JPEG via `avcodec`, colour conversion **hand-rolled** because `vcpkg.json` deliberately excludes `swscale`. PNG is refused cleanly, because this FFmpeg is built `--disable-zlib` ([#116](https://github.com/roguen/holocron/issues/116)) — **not** because `default-features: false` drops it, which is what four files claimed until 2026-08-13. **The photo transcoder does not transcode**: it resizes and passes the source format through, labelled `image/jpeg` either way, so PNG sleeves were silently losing their palette until `artwork_path()` started asking for `&format=jpeg`. See the paragraph below the M5 table. |
+| Album art | `decode_image` — JPEG **and PNG** via `avcodec`, colour conversion **hand-rolled** because `vcpkg.json` deliberately excludes `swscale`. **PNG works as of `v1.0.5` (#116)**: `vcpkg.json` asks for ffmpeg's `zlib` feature, and `packed_to_rgba` gained **PAL8**, because indexed PNG is ordinary for flat-colour sleeves and zlib alone would only have changed *which* error you got. The earlier blame on `default-features: false` was wrong — zlib is not in the port's defaults either. **The photo transcoder does not transcode**: it resizes and passes the source format through, labelled `image/jpeg` either way, so PNG sleeves silently lost their palette until `artwork_path()` started asking for `&format=jpeg` — that fix stands and is still the right one for *fetched* art, since it avoids a decode rather than relying on one. zlib is what local files needed, and `--art PATH` is the caller that made it real. |
 | Executables | `holocron` — the player. `holocron-analyze` — the offline harness. |
 
 ### M3 has started, and four things about the compositor are worth knowing
@@ -569,7 +569,7 @@ Windows 10 Pro and will continue to; Linux is a fallback that would mean rebuild
 the box, not a plan. Every document written before 2026-08-01 assumed a macOS dev
 host and a Linux target — treat that framing as superseded wherever it survives.
 
-Current version `v1.0.4`. `main` is stable and CI is green. Bump **in the same
+Current version `v1.0.5`. `main` is stable and CI is green. Bump **in the same
 change that creates the tag**, never ahead of it — see
 [#29](https://github.com/roguen/holocron/issues/29).
 
@@ -579,7 +579,7 @@ change that creates the tag**, never ahead of it — see
 `android:versionName` and `android:versionCode`. The second is a separate
 monotonic integer: leave it alone and Android refuses the upgrade with a
 signature-agnostic "app not installed", which reads as a packaging fault rather
-than a forgotten field. `versionCode` is **13** at `v1.0.4`. Plus the wiki's Home
+than a forgotten field. `versionCode` is **14** at `v1.0.5`. Plus the wiki's Home
 and Working-Agreement, which are a sixth and seventh. Nothing checks that they
 agree; see [#38](https://github.com/roguen/holocron/issues/38).
 
