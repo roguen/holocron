@@ -33,6 +33,7 @@ add_executable(holocron_tests
     test_gatekeeper.cpp
     test_plex_device.cpp
     test_plex_bootstrap.cpp
+    test_pending_cast.cpp
     test_eiscp.cpp
     test_herald.cpp
     test_companion_server.cpp

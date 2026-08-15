@@ -6,6 +6,7 @@ package io.github.roguen.holocron;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.os.Build;
@@ -53,6 +54,16 @@ public class HolocronService extends Service {
     private static final String TAG = "holocron";
     private static final String CHANNEL_ID = "holocron.discovery";
     private static final int NOTIFICATION_ID = 1;
+
+    /**
+     * A SECOND channel, at high importance, purely so a full-screen intent is
+     * honoured. Android only fires one from a notification whose channel is
+     * IMPORTANCE_HIGH; the discovery channel is deliberately IMPORTANCE_LOW so
+     * that a television does not ping every time the box becomes castable, and
+     * raising it would trade a real annoyance for this one moment.
+     */
+    private static final String CAST_CHANNEL_ID = "holocron.cast";
+    private static final int CAST_NOTIFICATION_ID = 2;
 
     /** Set once the native library is in this process, whoever loaded it. */
     private static boolean sLibraryLoaded = false;
@@ -151,6 +162,81 @@ public class HolocronService extends Service {
             nativeStopNetwork();
         }
         super.onDestroy();
+    }
+
+    /**
+     * Bring the player up because a cast arrived while nothing was on screen.
+     *
+     * <p><b>Called from native code by name</b> — {@code launch_player()} looks
+     * this method up on the stored Context and calls it if it is there. Renaming
+     * it silently disables the cold-cast handoff, because a missing method is
+     * the expected case for a Context that is not this Service.
+     *
+     * <p><b>Why not simply {@code startActivity}.</b> Measured on the Shield:
+     * Android refuses it and says so only in the log —
+     * {@code W ActivityTaskManager: Background activity start [... isCallingUidForeground:
+     * false; callingUidProcState: FOREGROUND_SERVICE; isBgStartWhitelisted: false]}.
+     * Android 10 blocks activity starts from the background and <b>being a
+     * foreground service is not an exemption</b>. The call returns without
+     * throwing and nothing comes up, which is the worst shape a failure can
+     * have.
+     *
+     * <p>A notification carrying a <b>full-screen intent</b> is the sanctioned
+     * route — the mechanism alarm clocks and calling apps use, and the one case
+     * Android intends to raise an Activity over a sleeping screen. The
+     * notification is a side effect rather than the point: on a television
+     * nobody reads it, and it is dismissed as soon as the Activity is up.
+     */
+    public void launchPlayer() {
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) {
+            Log.e(TAG, "service: no NotificationManager, so no way to raise the player");
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= 26 /* Android 8.0 (O) */) {
+            // IMPORTANCE_HIGH IS LOAD-BEARING. A full-screen intent on a lower
+            // channel is silently downgraded to an ordinary notification, which
+            // on a dark television is indistinguishable from nothing happening.
+            NotificationChannel channel = new NotificationChannel(
+                    CAST_CHANNEL_ID, "Casting", NotificationManager.IMPORTANCE_HIGH);
+            channel.setDescription("Brings the picture up when something is cast.");
+            // Silent even at high importance: the sound belongs to the music
+            // that is about to start, not to the notification announcing it.
+            channel.setSound(null, null);
+            channel.enableVibration(false);
+            manager.createNotificationChannel(channel);
+        }
+
+        Intent intent = new Intent(this, HolocronActivity.class);
+        // FLAG_ACTIVITY_NEW_TASK is required for an Activity started from a
+        // non-Activity context, exactly as it is for the native fallback path.
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= 23 /* Android 6.0 (M) */) {
+            // FLAG_IMMUTABLE is required from API 31 and harmless before it.
+            flags |= PendingIntent.FLAG_IMMUTABLE;
+        }
+        PendingIntent pending = PendingIntent.getActivity(this, 0, intent, flags);
+
+        Notification.Builder builder = Build.VERSION.SDK_INT >= 26
+                ? new Notification.Builder(this, CAST_CHANNEL_ID)
+                : new Notification.Builder(this);
+
+        Notification notification = builder
+                .setContentTitle("Holocron")
+                .setContentText("Starting what was cast")
+                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setContentIntent(pending)
+                // `true` means "this is time-critical", which is what allows the
+                // launch over a locked or sleeping screen.
+                .setFullScreenIntent(pending, true)
+                .setAutoCancel(true)
+                .build();
+
+        manager.notify(CAST_NOTIFICATION_ID, notification);
+        Log.i(TAG, "service: asked for the player with a full-screen intent");
     }
 
     /**

@@ -73,6 +73,23 @@
          no error anywhere: the box comes up off the network and stays there. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- 7. USE_FULL_SCREEN_INTENT, and it is what makes a COLD cast play.
+         Issue 333's last step.
+
+         Android 10 refuses activity starts from the background, and being a
+         foreground service is NOT an exemption, so HolocronService cannot bring
+         the player up with a plain startActivity: measured on the Shield, the
+         call returns without throwing and the platform logs
+         "Background activity start ... isBgStartWhitelisted: false".
+
+         A notification carrying a full-screen intent is the sanctioned route,
+         the same one alarm clocks and calling apps use. Without this permission
+         the intent is DOWNGRADED TO AN ORDINARY NOTIFICATION and the only
+         evidence is a warning line: "Use of fullScreenIntent requires the
+         USE_FULL_SCREEN_INTENT permission". The cast is then accepted, the
+         screen wakes, and nothing plays. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+
     <application
         android:label="Holocron"
         android:icon="@mipmap/ic_launcher"

@@ -56,6 +56,7 @@
 #include <holocron/notices_view.hpp>
 #include <holocron/overlay_facet.hpp>
 #include <holocron/palette.hpp>
+#include <holocron/pending_cast.hpp>
 #include <holocron/platform_paths.hpp>
 #include <holocron/plex_bootstrap.hpp>
 #include <holocron/run_log.hpp>
@@ -2961,6 +2962,59 @@ int main(int argc, char** argv)
             std::snprintf(udp_text, sizeof(udp_text), "NONE");
         }
         say("holocron: startup -- companion tcp %s, gdm udp %s\n", tcp_text, udp_text);
+    }
+
+    // A CAST THAT ARRIVED BEFORE THERE WAS ANYTHING TO PLAY IT. Issue 333/338.
+    //
+    // On Android the Service accepts `playMedia` with no Activity running and
+    // answers it 200 -- then parks the resolved command, wakes the display and
+    // starts this. So by the time the player is up, the thing it exists to do
+    // has already been asked for and Plexamp is NOT going to ask again: it had
+    // its 200 and considers the command delivered. Waiting for a second command
+    // would wait forever, with the theater lit and silent.
+    //
+    // HERE, AFTER THE NETWORK IS UP AND BEFORE THE WINDOW, on purpose. After,
+    // because the timeline the controller polls has to be answerable the moment
+    // playback starts -- reporting a track on a player Plexamp cannot reach is
+    // how it decides the player is broken and takes control back. Before the
+    // window, because this only queues the command into the same CastCommand a
+    // live request writes to; the render loop performs it on its first pass,
+    // exactly as if it had just arrived over HTTP.
+    //
+    // `take_pending_cast` CONSUMES, so a restart cannot replay an album from an
+    // earlier launch. On every desktop run there is never anything parked and
+    // this is one mutex acquire.
+    if (PendingCast parked; take_pending_cast(parked)) {
+        switch (parked.kind) {
+        case PendingCastKind::kPlay: {
+            NowPlaying what;
+            what.source      = parked.url;
+            what.title       = parked.track.title;
+            what.artist      = parked.track.artist;
+            what.album       = parked.track.album;
+            what.duration_ms = parked.track.duration_ms;
+            cast.request_play(parked.url, parked.request, what, parked.track);
+            // The TITLE, never the URL -- it carries a token.
+            say("holocron: playing a cast that arrived before the window did -- \"%s\"\n",
+                parked.track.title.c_str());
+            break;
+        }
+        case PendingCastKind::kQueue:
+            cast.request_queue(parked.request, parked.queue);
+            say("holocron: a queue arrived before the window did -- %zu track(s)\n",
+                parked.queue.tracks.size());
+            break;
+        case PendingCastKind::kQueueHandoff:
+            // Kept distinct all the way here rather than folded into kQueue,
+            // because the two disagree about where playback starts and merging
+            // them plays the wrong song. Issue 280.
+            cast.request_queue_handoff(parked.request, parked.queue);
+            say("holocron: a handed-over queue arrived before the window did -- %zu track(s)\n",
+                parked.queue.tracks.size());
+            break;
+        case PendingCastKind::kNone:
+            break;  // take_pending_cast does not return true for this
+        }
     }
 
     if (companion.bound_port() != 0) {
