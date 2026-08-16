@@ -188,6 +188,15 @@ void close_run_log()
         std::fclose(s.file);
         s.file = nullptr;
     }
+
+    // AND THE PATH, WHICH IS THE HALF THAT WAS MISSING (issue 366). The header
+    // says run_log_path() is "empty when there is none", and a closed log is
+    // none -- leaving the string behind makes it name a file nothing is writing
+    // to. The only reader outside the tests uses it to decide whether to print
+    // the location at all, which is exactly the question it was answering wrong.
+    s.path.clear();
+    s.written = 0;
+    s.capped  = false;
 }
 
 }  // namespace holocron
