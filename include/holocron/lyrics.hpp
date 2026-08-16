@@ -15,12 +15,16 @@
 //           codec="lrc" format="lrc" timed="1" provider="..." />
 //
 // `format` is the field that matters. `lrc` is timed, `txt` is a block of text
-// with no timing at all. On a 40-track sample spread evenly across 50,414
-// tracks: 16 synced, 14 text-only, 10 with no lyric stream. So all three states
-// are common, and a scrolling implementation that assumes timing would have
-// nothing to show for three tracks in five.
+// with no timing at all. Censused over 1,200 random tracks of the 50,415 in the
+// owner's Music section, 2026-08-15: 381 advertise an `lrc` (31.8%), 357 are
+// text-only (29.8%), 462 have no lyric stream at all (38.5%). So all three
+// states are common, and a scrolling implementation that assumes timing would
+// have nothing to show for two tracks in three.
 //
-// FOUR THINGS THAT COST A SESSION EACH IF NOT KNOWN
+// (That paragraph read "16 synced, 14 text-only, 10 with none" from a 40-track
+// sample until 2026-08-15. The shape held; the sample is now 30x bigger.)
+//
+// SIX THINGS THAT COST A SESSION EACH IF NOT KNOWN
 //
 //   * The lyric streams are NOT in the section listing. `/library/sections/N/all`
 //     returns no Stream elements at all, so a sweep over the library says every
@@ -32,6 +36,56 @@
 //
 //   * The body is served as `Content-Type: text/html` even though it is LRC.
 //     Nothing may switch on the content type.
+//
+//   * THE SERVER PICKS THE DOCUMENT OFF THE `Accept` HEADER, and the two forms
+//     are not the same file. `text/plain` gives LRC, which is what this code
+//     asks for and parses. `application/xml` gives a Plex `<Lyrics>` document --
+//     `<Line startOffset endOffset>` with `<Span text startOffset endOffset>`
+//     children. `text/html` and `*/*` both 404 on a stream that serves fine to
+//     `text/plain` in the same second, so an experiment run with a browser's
+//     header set concludes the library has no lyrics at all.
+//
+//     THE XML IS NOT WORTH SWITCHING TO, and it was checked twice over. Its
+//     `endOffset` is not a line's end: 285 of the 285 lines with a following
+//     line end exactly on that line's `startOffset`, and none earlier. Nor does
+//     it carry per-word timing -- every `<Line>` holds exactly one `<Span>`,
+//     whose text is the whole line and whose offsets are the line's own, so the
+//     mechanism for word timing exists in the schema and this provider leaves it
+//     empty: 0 of 293 lines. Measured 2026-08-15. The first fact is why issue
+//     296's first half derives a dwell rather than reading a field; the second
+//     is why its second half has nothing to render.
+//
+//     The two forms otherwise agree exactly. On every track fetched both ways
+//     the XML's timed line count matched the LRC's -- 24/24, 30/30, 25/25,
+//     47/47 -- with four empty `<Line/>` elements carrying no attributes at all,
+//     which are an artefact of the serialisation and not content.
+//
+//   * THE 404 STRETCHES ARE GLOBAL, NOT PER STREAM. A stream that served a
+//     minute ago 404s in the same burst as one never asked for, and request
+//     shape changes nothing -- `download=1`, `format=lrc`, a Plexamp-shaped
+//     header set and no client identifier all 404 identically inside a stretch.
+//     So it is a budget on the token rather than anything about the track, and
+//     an experiment that concludes "this library has no lyrics" has probably
+//     just spent it.
+//
+//     WHAT THE BUDGET IS HAS NOT BEEN PINNED, and two attempts to pin it were
+//     both too confident. Every observation, 2026-08-15, in order: ten minutes
+//     of silence then a burst gave 3; five minutes gave 1; once every five
+//     minutes gave 404, 404; fifteen minutes then a burst gave 5 of 5; fifteen
+//     minutes again gave 404 on the first request. So it is NOT a per-minute
+//     rate and NOT simply bought by silence either -- the same fifteen-minute
+//     pause paid twice and then did not. About 14 bodies came back over 90
+//     minutes, which is the only summary the evidence actually supports.
+//
+//     Do not build anything that depends on a model of this. What it is safe to
+//     act on is the shape: a sweep will be refused long before it finishes, and
+//     the refusal says nothing about the track.
+//
+//     Either way it settles the direction for issue 153's retry: MORE REQUESTS
+//     IS THE ONE THING THAT CANNOT HELP. Note also that ordinary playback is
+//     nowhere near this -- two requests per track, one track every few minutes
+//     -- so a 404 seen during a cast is not obviously the same phenomenon as one
+//     seen during a sweep, and nothing here has measured the playback case.
 //
 //   * The body opens with bracketed METADATA lines -- `[au:...]`, `[by:...]` --
 //     which have the same shape as a timestamped line and no timestamp in them.
@@ -65,6 +119,12 @@ struct Lyrics {
     // called it is a hint, and what the body contains is the answer.
     bool                   synced = false;
     std::vector<LyricLine> lines;
+
+    // How long a line stays on screen when nothing follows it soon, in
+    // milliseconds. Filled in by parse_lyrics from the track's own rhythm; see
+    // lyric_dwell_ms. ZERO MEANS NEVER CLEAR, which is what a hand-built Lyrics
+    // gets and is the behaviour every release up to v1.0.5 had.
+    std::int64_t           dwell_ms = 0;
 
     bool empty() const { return lines.empty(); }
 };
@@ -144,6 +204,49 @@ Lyrics parse_lyrics(const std::string& body, bool synced_hint);
 // Returns `lines.size()` when the first line is not yet due, which is the
 // ordinary state during an intro and has to be distinguishable from "line 0".
 // Undefined for unsynced lyrics; the caller has `synced` and should not ask.
+//
+// THIS IS "WHICH LINE IS DUE", NOT "WHAT TO DRAW". A line is due from its own
+// timestamp until the next one's, however far away that is; the drawing question
+// has an extra rule and is lyric_visible_at below.
 std::size_t lyric_index_at(const Lyrics& lyrics, std::int64_t position_ms);
+
+// The fewest lines a track needs before its own rhythm is worth estimating. A
+// median taken from two gaps is not a rhythm, and getting it wrong costs a line
+// that vanishes mid-phrase.
+constexpr std::size_t kLyricDwellMinLines = 6;
+
+// A dwell is this many times the track's median line gap. See lyric_dwell_ms.
+constexpr double kLyricDwellFactor = 2.5;
+
+// ...clamped between these, so a track whose median is unrepresentative cannot
+// produce a line that blinks or one that never leaves.
+constexpr std::int64_t kLyricDwellFloorMs   = 3'000;
+constexpr std::int64_t kLyricDwellCeilingMs = 12'000;
+
+// How long a line should stay on screen once nothing follows it, derived from
+// the track's own line rhythm.
+//
+// WHY THE TRACK'S OWN RHYTHM AND NOT A FIXED NUMBER. LRC gives the START of a
+// line and nothing else, so how long it lasts has to be estimated, and the best
+// available estimate is how long the OTHER lines of the same song last. A rapid
+// verse runs three lines to the second a ballad spends on one, and a single
+// number is wrong at both ends -- late by seconds on the first, early enough to
+// cut a phrase on the second.
+//
+// Returns 0 -- never clear -- for unsynced lyrics and for a track with too few
+// lines to estimate from. That is deliberately the pre-v1.0.6 behaviour: a line
+// that overstays is a blemish and a line that leaves early is a missing lyric.
+std::int64_t lyric_dwell_ms(const Lyrics& lyrics);
+
+// Which line should be ON SCREEN at `position_ms`, which is not the same
+// question as which one is due.
+//
+// Returns `lines.size()` for "nothing" -- during the intro, and now also once
+// the current line has been up for `lyrics.dwell_ms` with nothing to replace it.
+// That second case is the last line of a verse sitting through the instrumental
+// after it, which is what issue 296 is about.
+//
+// A `dwell_ms` of 0 makes this identical to lyric_index_at.
+std::size_t lyric_visible_at(const Lyrics& lyrics, std::int64_t position_ms);
 
 }  // namespace holocron

@@ -14,7 +14,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(holocron
-    VERSION 1.0.5
+    VERSION 1.0.6
     DESCRIPTION "GPU music visualization engine that is also the music player"
     LANGUAGES CXX
 )

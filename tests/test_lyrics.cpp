@@ -222,6 +222,146 @@ TEST_CASE("asking an empty set for a line does not walk off the front")
     CHECK(lyric_index_at(empty, 123456) == 0);
 }
 
+// ---------------------------------------------------------------------------
+// A line leaving when it has been sung (issue 296)
+//
+// LRC gives a line's START and nothing else, so its end is estimated from how
+// long the other lines of the same song last. The three ways that can go wrong
+// are all in these two functions: an estimate taken from too little evidence, an
+// estimate dragged by an instrumental, and an estimate that clips a line the
+// singer was still on.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// `count` lines, `gap_ms` apart, starting at `gap_ms`.
+Lyrics steady(std::size_t count, std::int64_t gap_ms)
+{
+    Lyrics out;
+    out.synced = true;
+    for (std::size_t i = 0; i < count; ++i) {
+        out.lines.push_back(LyricLine{static_cast<std::int64_t>(i + 1) * gap_ms, "line"});
+    }
+    out.dwell_ms = lyric_dwell_ms(out);
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("a dwell is derived from the track's own line rhythm")
+{
+    const Lyrics slow = steady(20, 4000);
+    const Lyrics fast = steady(20, 1600);
+
+    // 4 s x 2.5 and 1.6 s x 2.5, both inside the clamps. The point of the test is
+    // that the two answers DIFFER: a single number for every song is early on a
+    // ballad and late on a rapid verse, which is the whole reason this is derived.
+    CHECK(slow.dwell_ms == 10'000);
+    CHECK(fast.dwell_ms == 4'000);
+    CHECK(slow.dwell_ms > fast.dwell_ms);
+}
+
+TEST_CASE("the dwell is clamped at both ends")
+{
+    // A patter song at two lines a second would otherwise clear in 750 ms, which
+    // reads as a flicker rather than as a lyric.
+    CHECK(steady(20, 500).dwell_ms == kLyricDwellFloorMs);
+
+    // A hymn at twelve seconds a line would otherwise hold one for half a minute,
+    // which is the complaint this whole change exists to answer.
+    CHECK(steady(20, 12000).dwell_ms == kLyricDwellCeilingMs);
+}
+
+TEST_CASE("one long instrumental does not move the dwell")
+{
+    Lyrics with_gap = steady(20, 4000);
+    // Push everything from line 10 on out by two minutes: a real instrumental
+    // break. The MEAN gap goes from 4 s to about 10 s and describes no line in
+    // the song; the median is unmoved, which is why it is the median.
+    for (std::size_t i = 10; i < with_gap.lines.size(); ++i) {
+        with_gap.lines[i].at_ms += 120'000;
+    }
+    CHECK(lyric_dwell_ms(with_gap) == steady(20, 4000).dwell_ms);
+}
+
+TEST_CASE("too few lines to estimate from means the line never leaves")
+{
+    // Five lines is four gaps. A median from that is a guess, and the cost of a
+    // wrong one is a lyric that vanishes while it is still being sung -- so the
+    // fallback is the behaviour every release up to v1.0.5 had.
+    const Lyrics few = steady(kLyricDwellMinLines - 1, 4000);
+    CHECK(few.dwell_ms == 0);
+
+    Lyrics unsynced;
+    unsynced.lines = steady(20, 4000).lines;
+    unsynced.synced = false;
+    CHECK(lyric_dwell_ms(unsynced) == 0);
+}
+
+TEST_CASE("a line leaves the screen once nothing is following it")
+{
+    const Lyrics song = steady(20, 4000);          // dwell 10 s
+    REQUIRE(song.dwell_ms == 10'000);
+    const std::size_t last = song.lines.size() - 1;
+
+    // The last line of the track. It is due from 80 s to forever, and that is
+    // exactly the complaint: it sat on screen through the outro.
+    CHECK(lyric_index_at(song, 300'000) == last);
+
+    CHECK(lyric_visible_at(song, 80'000) == last);
+    CHECK(lyric_visible_at(song, 89'999) == last);
+    CHECK(lyric_visible_at(song, 90'000) == song.lines.size());   // ten seconds later, gone
+    CHECK(lyric_visible_at(song, 300'000) == song.lines.size());
+}
+
+TEST_CASE("a line that is replaced on time is never clipped")
+{
+    const Lyrics song = steady(20, 4000);   // 4 s apart, dwell 10 s
+
+    // THE CLIP IS THE FAILURE MODE THAT MATTERS. Clearing a line early leaves a
+    // gap in the words; clearing one late leaves a stale line. Every ordinary
+    // line here is replaced at 4 s, well inside the 10 s dwell, so the rule is
+    // invisible during singing and only acts where the singing stopped.
+    for (std::int64_t t = 4000; t < 80'000; t += 250) {
+        REQUIRE(lyric_visible_at(song, t) == lyric_index_at(song, t));
+    }
+}
+
+TEST_CASE("a dwell of zero draws exactly what was drawn before")
+{
+    Lyrics song = steady(20, 4000);
+    song.dwell_ms = 0;
+
+    // The escape hatch, and the thing that makes a hand-built Lyrics safe: with
+    // no dwell the two functions are the same function.
+    for (std::int64_t t = 0; t < 300'000; t += 997) {
+        REQUIRE(lyric_visible_at(song, t) == lyric_index_at(song, t));
+    }
+}
+
+TEST_CASE("the intro is still the intro")
+{
+    const Lyrics song = steady(20, 4000);
+
+    // Before the first line is due, "nothing" already had to be expressible, and
+    // the dwell must not turn that into line zero by arithmetic on a line that
+    // has not started.
+    CHECK(lyric_visible_at(song, 0) == song.lines.size());
+    CHECK(lyric_visible_at(song, 3999) == song.lines.size());
+    CHECK(lyric_visible_at(song, 4000) == 0);
+}
+
+TEST_CASE("a parsed body carries its own dwell")
+{
+    // The path that matters: nothing in the player computes this, so if
+    // parse_lyrics does not fill it in, the feature is silently absent.
+    const Lyrics song = parse_lyrics(
+        "[00:10.00]one\n[00:14.00]two\n[00:18.00]three\n"
+        "[00:22.00]four\n[00:26.00]five\n[00:30.00]six\n[00:34.00]seven\n", true);
+    REQUIRE(song.synced);
+    CHECK(song.dwell_ms == 10'000);
+}
+
 TEST_CASE("carriage returns from a network body do not end up in the words")
 {
     // The body arrives over HTTP and is served as text/html; CRLF is ordinary.
