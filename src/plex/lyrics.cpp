@@ -312,7 +312,12 @@ std::int64_t lyric_dwell_ms(const Lyrics& lyrics)
     // THE MEDIAN, BECAUSE THE MEAN IS THE THING BEING GUARDED AGAINST. A track
     // with one two-minute instrumental has a mean gap that describes no line in
     // it; the median is unmoved by however long that passage runs.
-    std::nth_element(gaps.begin(), gaps.begin() + gaps.size() / 2, gaps.end());
+    // The cast is not decoration: an iterator's difference_type is SIGNED, and
+    // adding a size_t to one trips -Wsign-conversion, which is -Werror here and
+    // is not a warning MSVC has -- so this compiles on the machine the work
+    // happens on and fails in Linux CI, which is what that job is for.
+    const auto middle = static_cast<std::ptrdiff_t>(gaps.size() / 2);
+    std::nth_element(gaps.begin(), gaps.begin() + middle, gaps.end());
     const std::int64_t median = gaps[gaps.size() / 2];
 
     const std::int64_t dwell =
