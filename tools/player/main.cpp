@@ -175,6 +175,14 @@ struct Options {
     // standalone image file and nothing else, so the honest description is "as
     // if this had been cast".
     const char* art      = nullptr;
+
+    // An LRC file, loaded as if it had been fetched for the playing track. Same
+    // blind spot as `art` and the same remedy: `song` is populated in exactly one
+    // place, the cast's lyric fetch, so the whole lyric overlay was unreachable
+    // without a Plex server and a phone. Issue 296 is a change to what that
+    // overlay draws and there was no way to look at it.
+    const char* lyrics   = nullptr;
+
     int         frames   = 0;      // 0 = run until the window closes
     int         width    = 1280;
     int         height   = 720;
@@ -326,7 +334,7 @@ const char* const kValueOptions[] = {
     "--shot", "--frames", "--width", "--height", "--crystal",
     "--vault", "--config", "--trim-ms", "--sink",
     "--projectm", "--projectm-lib", "--overlay", "--colophon-page",
-    "--art",
+    "--art", "--lyrics",
 };
 
 bool takes_a_value(const char* a)
@@ -366,6 +374,8 @@ Options parse(int argc, char** argv)
             o.projectm_lib = argv[++i];
         } else if (std::strcmp(a, "--art") == 0 && i + 1 < argc) {
             o.art = argv[++i];
+        } else if (std::strcmp(a, "--lyrics") == 0 && i + 1 < argc) {
+            o.lyrics = argv[++i];
         } else if (std::strcmp(a, "--config") == 0 && i + 1 < argc) {
             o.config = argv[++i];
         } else if (std::strcmp(a, "--calibrate") == 0) {
@@ -511,6 +521,10 @@ void usage()
         "                 palette and u_has_art reach the crystal with no Plex\n"
         "                 server. Half of what a crystal is handed was otherwise\n"
         "                 unreachable on the desk -- see issue 297\n"
+        "  --lyrics PATH  load an LRC file as if it had been fetched, and turn\n"
+        "                 the lyric overlay on. Follows the playing file's own\n"
+        "                 clock, so `holocron song.flac --lyrics song.lrc` shows\n"
+        "                 the words the cast path would have shown -- see 296\n"
         "\n"
         "--frames with --shot is how the renderer is checked without a monitor,\n"
         "the same way holocron-analyze checks the analysis without a renderer.\n"
@@ -4320,6 +4334,44 @@ int main(int argc, char** argv)
         }
     }
 
+    // -- --lyrics PATH: words, as if they had been fetched ---------------------
+    //
+    // THE SAME BLIND SPOT AS --art, ONE OVERLAY ALONG. `song` is assigned in
+    // exactly one place -- the cast's lyric fetch -- so the lyric overlay could
+    // only ever be looked at by casting to the machine from a phone. Issue 296 is
+    // a change to WHEN a line leaves the screen, and a change nobody can see is a
+    // change nobody can judge.
+    //
+    // Through the real parse_lyrics, so an LRC pulled off the server exercises
+    // the same reader, the same offset handling and the same derived dwell the
+    // cast path gets. The line count and the dwell are printed because "loaded
+    // nothing" and "loaded words with no timing" draw the same thing -- nothing
+    // -- and would otherwise be one event.
+    if (opt.lyrics != nullptr) {
+        std::string body;
+        {
+            std::ifstream in(opt.lyrics, std::ios::binary);
+            if (in) {
+                body.assign(std::istreambuf_iterator<char>(in),
+                            std::istreambuf_iterator<char>());
+            }
+        }
+        if (body.empty()) {
+            say_err("holocron: --lyrics %s could not be read, or is empty\n", opt.lyrics);
+        } else {
+            song = parse_lyrics(body, true);
+            if (song.lines.empty()) {
+                say_err("holocron: --lyrics %s parsed to no lines at all\n", opt.lyrics);
+            } else {
+                lyrics_visible = true;
+                say("holocron: --lyrics %s -- %zu line(s), %s, dwell %lld ms\n", opt.lyrics,
+                    song.lines.size(),
+                    song.synced ? "timed" : "NO TIMING, so nothing will be drawn",
+                    static_cast<long long>(song.dwell_ms));
+            }
+        }
+    }
+
     // Starting a track: name it, drop the previous sleeve, and go and get the
     // new one.
     const auto begin_track = [&](const PlayRequest& server, const PlexTrack& track,
@@ -6153,7 +6205,33 @@ int main(int argc, char** argv)
         // not what was asked for -- the toggle simply has nothing to show, which
         // the log says once per track.
         if (overlay_ready && lyrics_visible && song.synced && !song.lines.empty()) {
-            const std::size_t index = lyric_index_at(song, timeline.time_ms);
+            // WHICH CLOCK. `timeline.time_ms` is a CAST's position and a local
+            // file never sets it -- the transport stays kStopped, so the block
+            // that advances it is not reached. `--lyrics` therefore reads the
+            // session's own clock, which is the SAME quantity the cast path puts
+            // into timeline.time_ms one screen up, not a second source of truth.
+            //
+            // AND FALLS BACK TO THE ANALYSIS CLOCK WITH NO DEVICE, because
+            // track_position_ms is device frames played and `--no-audio` plays
+            // none -- it would sit at 0 and draw nothing, which is exactly the
+            // combination `--frames N --shot` needs. The decode-side clock runs
+            // a little ahead of what a speaker would be producing, which is the
+            // whole reason FrameHistory exists; for judging when a line leaves
+            // the screen that is close enough, and it is the only reason this
+            // flag is an instrument rather than a second playback path.
+            std::int64_t at_ms = timeline.time_ms;
+            if (opt.lyrics != nullptr) {
+                at_ms = session.track_position_ms();
+                if (at_ms <= 0) {
+                    at_ms = static_cast<std::int64_t>(session.newest_position_us() / 1000ULL);
+                }
+            }
+
+            // VISIBLE, NOT DUE (issue 296). A line is due until the next one
+            // arrives, which leaves the last line of a verse on screen through
+            // the instrumental after it -- sometimes for a minute. This is the
+            // same question with the track's own rhythm applied to it.
+            const std::size_t index = lyric_visible_at(song, at_ms);
 
             // lines.size() is "the first line is not yet due", which is an
             // ordinary state during an intro and is not an index.
