@@ -45,10 +45,20 @@
 //     `text/plain` in the same second, so an experiment run with a browser's
 //     header set concludes the library has no lyrics at all.
 //
-//     THE XML IS NOT WORTH SWITCHING TO. Its `endOffset` is not a line's end:
-//     73 of the 73 lines with a following line end exactly on that line's
-//     `startOffset`. Measured 2026-08-15, and it is why issue 296's first half
-//     is a derived dwell rather than a field nobody had read.
+//     THE XML IS NOT WORTH SWITCHING TO, and it was checked twice over. Its
+//     `endOffset` is not a line's end: 285 of the 285 lines with a following
+//     line end exactly on that line's `startOffset`, and none earlier. Nor does
+//     it carry per-word timing -- every `<Line>` holds exactly one `<Span>`,
+//     whose text is the whole line and whose offsets are the line's own, so the
+//     mechanism for word timing exists in the schema and this provider leaves it
+//     empty: 0 of 293 lines. Measured 2026-08-15. The first fact is why issue
+//     296's first half derives a dwell rather than reading a field; the second
+//     is why its second half has nothing to render.
+//
+//     The two forms otherwise agree exactly. On every track fetched both ways
+//     the XML's timed line count matched the LRC's -- 24/24, 30/30, 25/25,
+//     47/47 -- with four empty `<Line/>` elements carrying no attributes at all,
+//     which are an artefact of the serialisation and not content.
 //
 //   * THE 404 STRETCHES ARE GLOBAL, NOT PER STREAM. A stream that served a
 //     minute ago 404s in the same burst as one never asked for, and request
@@ -58,12 +68,18 @@
 //     an experiment that concludes "this library has no lyrics" has probably
 //     just spent it.
 //
-//     WHAT THE BUDGET IS HAS NOT BEEN PINNED, and the honest shape of the
-//     evidence is: ten minutes of silence then a burst gave 3 bodies; five
-//     minutes then a burst gave 1; asking once every five minutes gave 404 and
-//     404. So SILENCE is what seems to buy requests, and a steady trickle buys
-//     none -- which is the opposite of what a per-minute rate limit would do.
-//     Measured 2026-08-15 while collecting for issue 296.
+//     WHAT THE BUDGET IS HAS NOT BEEN PINNED, and two attempts to pin it were
+//     both too confident. Every observation, 2026-08-15, in order: ten minutes
+//     of silence then a burst gave 3; five minutes gave 1; once every five
+//     minutes gave 404, 404; fifteen minutes then a burst gave 5 of 5; fifteen
+//     minutes again gave 404 on the first request. So it is NOT a per-minute
+//     rate and NOT simply bought by silence either -- the same fifteen-minute
+//     pause paid twice and then did not. About 14 bodies came back over 90
+//     minutes, which is the only summary the evidence actually supports.
+//
+//     Do not build anything that depends on a model of this. What it is safe to
+//     act on is the shape: a sweep will be refused long before it finishes, and
+//     the refusal says nothing about the track.
 //
 //     Either way it settles the direction for issue 153's retry: MORE REQUESTS
 //     IS THE ONE THING THAT CANNOT HELP. Note also that ordinary playback is

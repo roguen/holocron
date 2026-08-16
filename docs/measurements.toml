@@ -248,7 +248,7 @@ evening is lower than this and is not a property of the library.\
 
 [[measurement]]
 key        = "lyrics.line_end"
-value      = "73 of 73"
+value      = "285 of 285"
 unit       = "lines whose XML endOffset is exactly the next line's startOffset"
 measured   = "2026-08-15"
 subject    = "the Plex <Lyrics> document served for Accept: application/xml"
@@ -261,4 +261,26 @@ THE RICHER DOCUMENT CARRIES NO EXTRA INFORMATION. endOffset looks like the answe
 to "when did this line stop being sung" and is only the next line's start \
 restated, so the same question is open in both forms and issue 296's first half \
 has to derive a dwell rather than read a field.\
+"""
+
+[[measurement]]
+key        = "lyrics.word_level"
+value      = "0 of 293"
+unit       = "lyric lines carrying per-word timing"
+measured   = "2026-08-15"
+subject    = "the Plex <Lyrics> documents for eight tracks of the owner's Music section"
+conditions = "collected through Accept: application/xml, which is the only form that could express per-word timing; a line counted as word-level when it carries more than one <Span>, and the LRC form checked separately for enhanced-LRC <mm:ss.xx> tags inside a line"
+bracket    = "eight documents, drawn at random from the 381 tracks of a 1,200-track sample that advertise a synced lrc stream -- small, and small because of the server's request budget rather than by choice"
+resolution = "exact, for the corpus measured"
+issue      = 296
+note       = """
+THE SCHEMA HAS A PLACE FOR WORD TIMING AND THIS PROVIDER LEAVES IT EMPTY. Every \
+<Line> carries exactly one <Span> whose text is the whole line and whose offsets \
+are the line's own, so the mechanism exists and is unused. That is why eight \
+documents are worth quoting at all: the question is whether the SOURCE ever \
+populates it, and all 381 lrc streams in the sample come from one provider, \
+com.plexapp.agents.lyricfind.WHAT IT DECIDES. Issue 296's second half -- a \
+highlight or crawl showing which words are being sung -- has no data to render. \
+The remaining option is interpolating across the line, which the issue itself \
+judged may be worse than no highlight at all.\
 """

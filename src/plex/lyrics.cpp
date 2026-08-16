@@ -312,6 +312,7 @@ std::int64_t lyric_dwell_ms(const Lyrics& lyrics)
     // THE MEDIAN, BECAUSE THE MEAN IS THE THING BEING GUARDED AGAINST. A track
     // with one two-minute instrumental has a mean gap that describes no line in
     // it; the median is unmoved by however long that passage runs.
+    //
     // The cast is not decoration: an iterator's difference_type is SIGNED, and
     // adding a size_t to one trips -Wsign-conversion, which is -Werror here and
     // is not a warning MSVC has -- so this compiles on the machine the work
