@@ -103,6 +103,26 @@ TEST_CASE("the previous run survives the relaunch that investigates it", "[run_l
     CHECK(current.find("the run that failed") == std::string::npos);
 }
 
+TEST_CASE("a closed log is not still named by run_log_path", "[run_log]")
+{
+    // ISSUE 366. `close_run_log` closed the handle and left the string, so
+    // run_log_path() went on naming a file nothing was writing to -- against the
+    // header, which says "empty when there is none".
+    //
+    // IT IS THE TWO CASES BELOW THAT PAID FOR IT, not this one. They ask whether
+    // a REFUSED open left a path, and got a leftover from whatever ran before
+    // them in the same process; under ctest each case is its own process and it
+    // never showed, so the suite was flaky only for the person running the
+    // binary by hand.
+    Scratch s;
+    close_run_log();
+    open_run_log(s.dir.string());
+    REQUIRE_FALSE(run_log_path().empty());
+
+    close_run_log();
+    CHECK(run_log_path().empty());
+}
+
 TEST_CASE("a directory that cannot be written costs the file and nothing else", "[run_log]")
 {
     // Every say() must still reach stdout with no log open. A player on a
