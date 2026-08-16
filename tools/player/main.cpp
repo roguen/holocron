@@ -6153,7 +6153,11 @@ int main(int argc, char** argv)
         // not what was asked for -- the toggle simply has nothing to show, which
         // the log says once per track.
         if (overlay_ready && lyrics_visible && song.synced && !song.lines.empty()) {
-            const std::size_t index = lyric_index_at(song, timeline.time_ms);
+            // VISIBLE, NOT DUE (issue 296). A line is due until the next one
+            // arrives, which leaves the last line of a verse on screen through
+            // the instrumental after it -- sometimes for a minute. This is the
+            // same question with the track's own rhythm applied to it.
+            const std::size_t index = lyric_visible_at(song, timeline.time_ms);
 
             // lines.size() is "the first line is not yet due", which is an
             // ordinary state during an intro and is not an index.

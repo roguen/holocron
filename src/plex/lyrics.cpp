@@ -233,7 +233,8 @@ Lyrics parse_lyrics(const std::string& body, bool synced_hint)
     if (!out.lines.empty()) {
         std::stable_sort(out.lines.begin(), out.lines.end(),
                          [](const LyricLine& a, const LyricLine& b) { return a.at_ms < b.at_ms; });
-        out.synced = true;
+        out.synced   = true;
+        out.dwell_ms = lyric_dwell_ms(out);   // needs the sorted lines, so it is last
         return out;
     }
 
@@ -284,6 +285,54 @@ std::size_t lyric_index_at(const Lyrics& lyrics, std::int64_t position_ms)
                                          return ms < line.at_ms;
                                      });
     return static_cast<std::size_t>(it - lyrics.lines.begin()) - 1;
+}
+
+std::int64_t lyric_dwell_ms(const Lyrics& lyrics)
+{
+    if (!lyrics.synced || lyrics.lines.size() < kLyricDwellMinLines) {
+        return 0;
+    }
+
+    // GAPS, NOT DURATIONS. What is being estimated is how long a line is sung
+    // for, and the only evidence in an LRC file is how long it is until the next
+    // one starts. Zero-length gaps are dropped: a repeated chorus emits one line
+    // per timestamp and duplicates land on the same millisecond.
+    std::vector<std::int64_t> gaps;
+    gaps.reserve(lyrics.lines.size());
+    for (std::size_t i = 1; i < lyrics.lines.size(); ++i) {
+        const std::int64_t gap = lyrics.lines[i].at_ms - lyrics.lines[i - 1].at_ms;
+        if (gap > 0) {
+            gaps.push_back(gap);
+        }
+    }
+    if (gaps.size() + 1 < kLyricDwellMinLines) {
+        return 0;
+    }
+
+    // THE MEDIAN, BECAUSE THE MEAN IS THE THING BEING GUARDED AGAINST. A track
+    // with one two-minute instrumental has a mean gap that describes no line in
+    // it; the median is unmoved by however long that passage runs.
+    std::nth_element(gaps.begin(), gaps.begin() + gaps.size() / 2, gaps.end());
+    const std::int64_t median = gaps[gaps.size() / 2];
+
+    const std::int64_t dwell =
+        static_cast<std::int64_t>(static_cast<double>(median) * kLyricDwellFactor);
+    return std::min(kLyricDwellCeilingMs, std::max(kLyricDwellFloorMs, dwell));
+}
+
+std::size_t lyric_visible_at(const Lyrics& lyrics, std::int64_t position_ms)
+{
+    const std::size_t index = lyric_index_at(lyrics, position_ms);
+    if (index >= lyrics.lines.size() || lyrics.dwell_ms <= 0) {
+        return index;
+    }
+
+    // The line has been on screen for its whole estimated length and nothing has
+    // arrived to replace it, so nobody is singing it any more.
+    if (position_ms - lyrics.lines[index].at_ms >= lyrics.dwell_ms) {
+        return lyrics.lines.size();
+    }
+    return index;
 }
 
 }  // namespace holocron
