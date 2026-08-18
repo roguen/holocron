@@ -84,6 +84,15 @@ table when it wants an envelope of its own:
 crystal means writing GLSL and naming inputs — never writing C++, and never
 reaching outside the contract for data.
 
+A crystal may also ask to see the frame it drew last, with `feedback = true` in
+its manifest. That is what makes trails and accumulation expressible -- the whole
+MilkDrop family of looks, which are all some arrangement of "draw a little light,
+then warp what is already there". `crystals/geiss` is the reference and is Ryan
+Geiss's own two-step description of his 1998 screensaver, reimplemented from that
+description rather than from his code: the original engine is a runtime x86 code
+generator and does not port anywhere. It costs the layer a second surface, so
+nothing allocates one until a crystal asks.
+
 **Vault** — the directory the crystals live in. The vault is first-party source
 and is committed to the repository; it is the actual product of the project as
 much as the engine is.
