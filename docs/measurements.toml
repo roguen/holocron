@@ -284,3 +284,56 @@ highlight or crawl showing which words are being sung -- has no data to render. 
 The remaining option is interpolating across the line, which the issue itself \
 judged may be worse than no highlight at all.\
 """
+
+[[measurement]]
+key        = "frame.pulse.shield"
+value      = "5.56"
+unit       = "ms, mean frame time"
+measured   = "2026-08-11"
+subject    = "crystals/pulse on the theater Shield"
+conditions = "1920x1080, [render] scale 1.0, vsync off. Whether a track was playing was NOT recorded, and that turns out to matter -- see the note"
+bracket    = "not recorded"
+resolution = "not recorded"
+issue      = 288
+note = """
+THIS IS THE PUBLISHED FIGURE, recorded here because several documents quote it \
+and the checker needs a key to hang them on. It is NOT a fresh measurement.A \
+RE-MEASURE ON 2026-08-18 READ 2.49 ms, less than half of it, on v1.0.7 at the \
+same resolution and scale with vsync off and NOTHING PLAYING. The same run \
+reproduced the other two published figures almost exactly -- drift 14.64 against \
+14.59, duel 15.89 at scale 0.35 against 15.85 -- so the instrument is sound and \
+pulse alone disagrees.THE DISCREPANCY IS UNRESOLVED and the leading explanation \
+is the condition nobody wrote down: whether a track was playing. pulse is cheap \
+enough that its frame time is dominated by fixed per-frame CPU cost rather than \
+by the shader, so analysis running would show up in it while hiding inside the \
+GPU time of drift and duel, which are an order of magnitude heavier. That is a \
+hypothesis and has not been tested.WHAT TO DO ABOUT IT: re-measure pulse both \
+ways in one sitting. Until then quote 5.56 as the published figure and 2.49 as \
+the idle reading, and do not average them -- they are two different \
+measurements, possibly of two different things.\
+"""
+
+[[measurement]]
+key        = "frame.geiss.shield"
+value      = "5.56"
+unit       = "ms, mean frame time"
+measured   = "2026-08-18"
+subject    = "crystals/geiss on the theater Shield, v1.0.7 from the release APK"
+conditions = "1920x1080, [render] scale 1.0, vsync off, nothing playing, [render] frame_report_seconds = 5.0; reported over 900-frame windows"
+bracket    = "ten settled reports across TWO independent switches to the crystal, every one 5.56 or 5.57; the first report after a switch is discarded because it measures the shader compile"
+resolution = "0.01 ms as printed; run-to-run spread below the printed digit"
+issue      = 373
+note = """
+THIS IS THE MEASUREMENT STANDING RULE 5 SAID WAS OWED. geiss shipped in the \
+v1.0.7 APK with no frame time from the device, and a crystal is not verified for \
+a destination until it has one. It holds the 16.7 ms budget at FULL scale with \
+about 3x margin and needs no entry in [render.scale_overrides] -- against duel at \
+120.97 ms and storm at 135.61 ms, which both do.WITH VSYNC ON IT READS 16.68 ms, \
+which is the refresh interval and not the crystal. That reading is worth knowing \
+and worth not quoting: it says geiss holds 60 fps and says nothing about how much \
+headroom is left.IT LANDS ON EXACTLY THE PUBLISHED PULSE FIGURE AND THAT IS A \
+COINCIDENCE. See frame.pulse.shield, which reads 2.49 on this same run. The gap \
+between geiss and pulse measured back to back is 3.07 ms, which is what the \
+feedback buffer costs -- one extra 1080p RGBA16F surface, read once per frame. \
+Called out so nobody later reads the two entries as one number copied twice.\
+"""
