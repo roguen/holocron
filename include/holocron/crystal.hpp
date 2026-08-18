@@ -158,6 +158,19 @@ struct Crystal {
     std::string name;
     std::string fragment_source;   // the .frag, read whole
 
+    // Whether this crystal samples what it drew last frame. Issue 373.
+    //
+    // OPT-IN, BECAUSE IT COSTS A SURFACE. A feedback layer needs a second target
+    // of the same size -- 66 MB at 4K -- and the compositor allocates it only for
+    // a crystal that asks, the same rule the read-back canvas follows. A crystal
+    // that leaves this false is exactly as expensive as it was before the feature
+    // existed.
+    //
+    // The shader then gets `u_feedback` (sampler2D) and `u_has_feedback` (bool);
+    // see crystals/geiss.frag, which is the whole MilkDrop lineage in two steps:
+    // draw the waveform, warp what was already there.
+    bool feedback = false;
+
     std::vector<UniformBinding> uniforms;
 
     Provenance provenance;

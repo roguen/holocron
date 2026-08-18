@@ -662,6 +662,19 @@ struct LiveStack {
     std::uint64_t                        opacity_seen   = 0;
     bool                                 opacity_primed = false;
 
+    // The crystals in this stack that asked for feedback, borrowed from `facets`
+    // and null for every layer that did not. Issue 373.
+    //
+    // PARALLEL TO `facets`, not a filtered list, because the index IS the layer
+    // number and that is what the compositor keys its history on. A compacted
+    // list would need a second array to say which layer each entry belonged to,
+    // which is the same information with one more thing to get wrong.
+    //
+    // Follows the `projectm` pointer below: borrowed, cleared with the stack,
+    // and never owning -- the facets own themselves and the compositor owns the
+    // surfaces.
+    std::vector<CrystalFacet*> feedback;
+
     // The projectM facet in this stack, if it has one, borrowed from `facets`.
     //
     // Kept because the control surface has to reach it -- "next preset" and
@@ -688,6 +701,7 @@ struct LiveStack {
     void clear()
     {
         facets.clear();
+        feedback.clear();
         projectm = nullptr;
         archive  = Archive{};
     }
@@ -832,6 +846,9 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
             std::printf("holocron: %s projectM, %zu presets\n", verb, facet->preset_count());
             next.projectm = facet.get();
             next.facets.push_back(std::move(facet));
+            // Holds the index open. projectM draws with its own GL and has no
+            // feedback uniform, but the array is indexed by layer.
+            next.feedback.push_back(nullptr);
             continue;
         }
 
@@ -870,6 +887,7 @@ bool build_stack(const Archive& archive, LiveStack& out, const char* verb,
         // to stacks was caught by the Linux job noticing describe() had gone
         // unused, which is a better fault-finder than it sounds.
         describe(verb, crystal, *facet);
+        next.feedback.push_back(crystal.feedback ? facet.get() : nullptr);
         next.facets.push_back(std::move(facet));
     }
 
@@ -6039,6 +6057,24 @@ int main(int argc, char** argv)
             // framebuffer still gets a picture, and the alternative is nothing at
             // all -- but it is why `--no-compositor` says what it is doing.
             for (std::size_t i = 0; i < live_stack.size(); ++i) {
+                // FEEDBACK IS ASKED FOR EVERY FRAME, NOT ONCE ON SWITCH. The
+                // surface can go away underneath us -- a resize reallocates, a
+                // failed allocation leaves it off -- and a crystal that asked once
+                // and was refused would sample nothing for ever with nothing said.
+                // enable_feedback is a no-op when it is already on, so the
+                // ordinary frame costs a bounds check. Issue 373.
+                //
+                // Only with a compositor: the no-compositor path draws straight to
+                // the window, and the window's own previous frame is not something
+                // this can hand back.
+                CrystalFacet* wants = i < live_stack.feedback.size() ? live_stack.feedback[i]
+                                                                     : nullptr;
+                if (wants != nullptr) {
+                    wants->set_feedback(into_layer && compositor.enable_feedback(i, true)
+                                            ? compositor.feedback_texture(i)
+                                            : 0);
+                }
+
                 if (into_layer) {
                     if (!compositor.bind_layer(i)) {
                         break;
@@ -6055,7 +6091,20 @@ int main(int argc, char** argv)
             // alive. It is fed the same AudioFrame, because it is the same moment.
             if (fading && into_layer) {
                 for (std::size_t j = 0; j < outgoing_stack.size(); ++j) {
-                    if (!compositor.bind_layer(live_stack.size() + j)) {
+                    // The outgoing stack sits ABOVE the incoming one, so its
+                    // layer index is offset -- and its history has to follow the
+                    // index it is actually drawing into, or a crossfade between
+                    // two feedback crystals would have them warping each other.
+                    const std::size_t at = live_stack.size() + j;
+                    CrystalFacet*     wants =
+                        j < outgoing_stack.feedback.size() ? outgoing_stack.feedback[j] : nullptr;
+                    if (wants != nullptr) {
+                        wants->set_feedback(compositor.enable_feedback(at, true)
+                                                ? compositor.feedback_texture(at)
+                                                : 0);
+                    }
+
+                    if (!compositor.bind_layer(at)) {
                         break;
                     }
                     outgoing_stack.facets[j]->draw(frame, track_context, draw_w, draw_h);
@@ -6144,6 +6193,12 @@ int main(int argc, char** argv)
                                     .count(),
                                 window.width(), window.height());
             }
+
+            // AFTER THE COMPOSITE HAS READ THE LAYERS, and after the final pass,
+            // which reads the canvas rather than the layers but is still this
+            // frame's work. What each feedback layer just drew becomes what it
+            // will sample next frame. Issue 373.
+            compositor.swap_feedback();
         }
 
         // -- the now-playing card ---------------------------------------------

@@ -279,6 +279,22 @@ CrystalError load_crystal(const std::string& stem_path, Crystal& out, std::strin
         return CrystalError::kManifestIncomplete;
     }
 
+    // -- feedback ------------------------------------------------------------
+    //
+    // Optional and defaulting to false, so every crystal written before this
+    // existed keeps loading unchanged. A non-boolean is refused rather than
+    // coerced: `feedback = "true"` is a typo with a plausible shape, and taking
+    // it as false would leave the author staring at a shader whose feedback
+    // branch never runs. Issue 373.
+    if (const auto node = tbl["feedback"]) {
+        const auto* b = node.as_boolean();
+        if (b == nullptr) {
+            out_detail = manifest_path + ": `feedback` must be a boolean";
+            return CrystalError::kManifestIncomplete;
+        }
+        out.feedback = b->get();
+    }
+
     // -- provenance ----------------------------------------------------------
     //
     // Read and stored, never judged. Nothing in this block can fail a load: a
