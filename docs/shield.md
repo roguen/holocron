@@ -813,6 +813,33 @@ puts every mixer output at 48 kHz 16-bit. The two boxes are two tiers rather tha
 one target converging, and the Shield's job is the cheap crystals at 1080p with
 the rack asleep. Do not plan work here that assumes the gap closes.
 
+**AND THE TWO NOW SHIP DIFFERENT VAULTS, which is the first place rule 5's "two
+tiers" stopped being a caution and became a build step.** `storm` is excluded
+from the Android APK -- `ANDROID_VAULT_EXCLUDE` in `scripts/android-apk.sh`, the
+owner's instruction, issue 288's reason. It costs **135.61 ms a frame** here
+against a 16.7 ms budget, which is 7.4 fps: not a crystal that wants tuning, a
+crystal this device cannot draw, and an arrow key from the couch that lands on a
+frozen picture.
+
+It stays in `crystals/` and stays on the rack, where the same stack is nothing
+like this. The exclusion lives in the thing that builds the Android artifact
+rather than in the vault, because the vault is one directory and the two
+destinations are not.
+
+**Excluding it from the APK does NOT remove it from a device that already has
+it.** `asset_seed` never overwrites and never deletes -- deliberately, so an
+upgrade cannot revert an edited crystal -- so the copy unpacked on first run
+stays until somebody removes it:
+
+```
+adb shell rm /sdcard/Android/data/io.github.roguen.holocron/files/crystals/storm.toml
+```
+
+Done on the Shield 2026-08-15. The control page goes on listing it until the
+next run, and that is not a second bug: `set_control_vault` is called from the
+render loop, and with the Service holding the port and no Activity there is no
+render loop to re-publish. `scan_vault` reads the directory on the next start.
+
 **The two now announce different names.** `Theater Shield` on this box, `Theater
 PC` on the rack — platform-derived in `plex_device.hpp`, because a default that
 needs an ADB session to correct is wrong on the platform with no keyboard.

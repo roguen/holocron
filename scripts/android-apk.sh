@@ -264,8 +264,48 @@ cp "$out/classes.dex" "$out/staging/"
 # data directory on first run and scans that. See asset_seed.hpp for why a copy
 # rather than reading in place, and note that the destination path there and the
 # `assets/crystals` prefix here have to agree BY HAND. Nothing checks.
+#
+# NOT THE WHOLE VAULT. `ANDROID_VAULT_EXCLUDE` names entries that are shipped on
+# Windows and deliberately NOT on Android, because the two destinations are two
+# tiers with their own envelopes and always will be -- D-066, standing rule 5.
+#
+# `storm` is excluded on the owner's instruction, and issue 288 is the reason:
+# measured on the Shield at 1920x1080 with vsync off, it costs 135.61 ms a frame
+# against a 16.7 ms budget. That is 7.4 fps -- not a crystal that needs tuning,
+# a crystal the device cannot draw. Leaving it in the list means an arrow key
+# from the couch lands on a frozen picture.
+#
+# It stays in `crystals/` and stays on the rack, where it costs nothing like
+# this. Excluding it HERE rather than deleting the file is the whole point: the
+# vault is one directory and the destinations differ, so the difference belongs
+# in the thing that builds the Android artifact.
+#
+# A name here that is not in `crystals/` is a typo that would silently do
+# nothing, so it is checked and fatal.
+ANDROID_VAULT_EXCLUDE="${ANDROID_VAULT_EXCLUDE:-storm}"
+
 mkdir -p "$out/staging/assets/crystals"
-cp crystals/* "$out/staging/assets/crystals/"
+for f in crystals/*; do
+    stem=$(basename "$f")
+    stem="${stem%.*}"
+    excluded=no
+    for skip in $ANDROID_VAULT_EXCLUDE; do
+        if [ "$stem" = "$skip" ]; then
+            excluded=yes
+        fi
+    done
+    if [ "$excluded" = no ]; then
+        cp "$f" "$out/staging/assets/crystals/"
+    fi
+done
+
+for skip in $ANDROID_VAULT_EXCLUDE; do
+    if ! ls crystals/"$skip".* > /dev/null 2>&1; then
+        echo "android-apk: ANDROID_VAULT_EXCLUDE names \`$skip\`, which is not in crystals/" >&2
+        exit 1
+    fi
+    echo "android-apk: excluding \`$skip\` from the Android vault (issue 288)"
+done
 
 # THE INSTRUMENTS, for the same reason and one that is sharper.
 #
