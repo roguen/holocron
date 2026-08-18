@@ -121,6 +121,12 @@ struct CrystalFacet::Impl {
     GLint u_palette_accent  = -1;
     GLint u_album_art       = -1;
     GLint u_has_art         = -1;
+    GLint u_feedback        = -1;
+    GLint u_has_feedback    = -1;
+
+    // Set from outside once per frame, before draw(). Not owned here -- the
+    // compositor owns the target it belongs to.
+    TextureHandle feedback = 0;
 
     // One per manifest entry, resolved once. -1 means the compiler removed it.
     struct Bound {
@@ -251,6 +257,8 @@ bool CrystalFacet::finish_init(const Crystal& crystal)
     impl_->u_palette_accent  = glGetUniformLocation(impl_->program, "u_palette_accent");
     impl_->u_album_art       = glGetUniformLocation(impl_->program, "u_album_art");
     impl_->u_has_art         = glGetUniformLocation(impl_->program, "u_has_art");
+    impl_->u_feedback        = glGetUniformLocation(impl_->program, "u_feedback");
+    impl_->u_has_feedback    = glGetUniformLocation(impl_->program, "u_has_feedback");
 
     // Resolve every manifest binding ONCE. Looking these up per frame would be a
     // string hash per uniform per frame for a value that cannot change while the
@@ -314,6 +322,8 @@ bool CrystalFacet::ready() const { return impl_->program != 0 && impl_->vao != 0
 
 std::size_t CrystalFacet::unused_uniforms() const { return impl_->unused; }
 
+void CrystalFacet::set_feedback(TextureHandle texture) { impl_->feedback = texture; }
+
 float CrystalFacet::elapsed() const
 {
     const auto now = std::chrono::steady_clock::now();
@@ -374,6 +384,15 @@ void CrystalFacet::draw(const AudioFrame& frame, const TrackContext& track, int 
         // never points at whatever a previous crystal left there.
         bind_texture_unit(0, static_cast<GLuint>(track.album_art_texture));
         glUniform1i(impl_->u_album_art, 0);
+    }
+    if (impl_->u_has_feedback >= 0) {
+        glUniform1i(impl_->u_has_feedback, impl_->feedback != 0 ? 1 : 0);
+    }
+    if (impl_->u_feedback >= 0) {
+        // Unit 1. Same rule as the art above: bound even when empty, so the
+        // sampler never points at another crystal's leftovers.
+        bind_texture_unit(1, static_cast<GLuint>(impl_->feedback));
+        glUniform1i(impl_->u_feedback, 1);
     }
 
     // -- the author's own envelopes ------------------------------------------

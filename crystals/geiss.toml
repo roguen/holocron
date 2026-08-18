@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# geiss -- the waveform, and the warp.
+#
+# A reimplementation of the look Ryan Geiss's 1998 screensaver produced, from
+# his own account of how it worked rather than from his code. Issue 373.
+#
+#   "From a graphics perspective, Geiss worked by essentially a fast repetition
+#    of 2 simple steps: draw some audio waveform into an image. Warp the image.
+#    ... On modern PCs, the GPU can do this warp for you in its sleep (and in
+#    fact, this is how Milkdrop works). But this was more or less before GPUs
+#    existed."
+#                              -- geisswerks.com/geiss/secrets.html
+#
+# THE SHIPPED SOURCE IS NOT PORTABLE AND DID NOT NEED TO BE. His engine is a
+# runtime x86 code generator -- it allocates an executable buffer, pastes
+# hand-written MMX fragments together, patches the jump targets and calls the
+# result -- and every bit of that exists to make one bilinear sample fast on a
+# Pentium. It cannot load into an x64 process and cannot execute on the Shield's
+# aarch64 at all. On a GPU the whole of it is `texture()` with GL_LINEAR.
+#
+# So this is a clean-room implementation of the DESCRIPTION, which is the only
+# part that ports. His code is 3-Clause BSD and would have been usable; there
+# was simply nothing in it to use.
+#
+# THE FIRST CRYSTAL THAT SAMPLES THE PREVIOUS FRAME, which is the whole reason
+# it took a compositor change to arrive. See `feedback` below.
+
+name    = "geiss"
+license = "GPL-3.0-or-later"
+author  = "Roguen Keller"
+source_url = "https://www.geisswerks.com/geiss/secrets.html"
+
+# Sample what this layer drew last frame, as `u_feedback`. Costs a second
+# surface of the layer's size and nothing allocates it until a crystal says
+# this. Issue 373.
+feedback = true
+
+[uniforms]
+
+# The warp is driven by the low end, which is what makes it breathe rather than
+# rotate at a constant rate. Enveloped by the analysis already, then given a
+# slower decay here so the zoom eases out of a hit instead of snapping back.
+u_bass = { bind = "bass_norm", attack = 0.05, decay = 0.55 }
+
+# Brightness of the injected waveform. Raw would flicker on every hi-hat.
+u_treble = { bind = "treble_norm", attack = 0.02, decay = 0.30 }
+
+# Colour. The spectral centroid is the only field that says "bright" or "dark"
+# about the sound itself rather than about its level.
+u_centroid = { bind = "spectral_centroid", attack = 0.10, decay = 0.60 }
+
+# TWO WARP FIELDS, SWAPPED ON A BEAT, which is Geiss's own structure: he
+# generated the next warp map in the background a row at a time and switched to
+# it on a good beat. There is nothing to precompute here, so what survives is
+# the shape of it -- a phase that advances once per bar and picks the field.
+#
+# `accumulate` integrates into [0,1), which is the only music-driven clock the
+# format has. Its step is one ANALYSIS HOP rather than one drawn frame, so the
+# rate is the music's and not the monitor's.
+u_turn = { bind = "beat_phase", mode = "accumulate", scale = 0.25 }
+
+# The impact. Onsets are already enveloped; this is the flash that puts new
+# light into the image for the warp to carry away.
+u_onset = { bind = "onset_strength", attack = 0.01, decay = 0.22 }

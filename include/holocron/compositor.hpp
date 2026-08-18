@@ -119,6 +119,55 @@ public:
     // False if the index does not exist or the layer was never allocated.
     bool bind_layer(std::size_t index);
 
+    // -- feedback -------------------------------------------------------------
+    //
+    // Let a layer see what it drew last frame. Issue 373.
+    //
+    // THIS IS THE GAP `docs/cutting-crystals.md` NAMES, and it names it as a
+    // compositor concern rather than a crystal-format one: "a crystal is a pure
+    // function of (v_uv, u_time, audio); there is no previous-frame texture, so
+    // trails, accumulation buffers and particle systems with persistence are not
+    // expressible today." Everything in the MilkDrop lineage is on the far side
+    // of it -- Ryan Geiss's own account of the original is two steps, "draw some
+    // audio waveform into an image" and "warp the image", where the image being
+    // warped is the last frame.
+    //
+    // PING-PONG, NOT A COPY. Each feedback layer gets a second target of the same
+    // size; `bind_layer` binds whichever is the write target this frame and
+    // `feedback_texture` hands back the other, which is what was on it last
+    // frame. `swap_feedback` exchanges them after the composite has read the new
+    // one. A blit into a history target would be simpler to describe and would
+    // cost a full-screen copy per feedback layer per frame; this costs a pointer
+    // swap.
+    //
+    // A LAYER MUST OVERWRITE EVERY PIXEL IT DRAWS INTO, which feedback crystals
+    // do by construction -- warping the previous frame is a full-screen pass. The
+    // target it gets is not last frame's picture but the one before that, and a
+    // crystal that only touched part of it would show the two interleaving. Both
+    // targets are cleared when feedback is turned on so the first two frames are
+    // black rather than whatever the allocator handed over.
+    //
+    // ALLOCATED ONLY WHEN ASKED, the same rule the read-back canvas follows: a
+    // second 4K RGBA16F surface is 66 MB, and a vault where nothing wants
+    // feedback should not pay for it. Turning it off frees the target.
+    //
+    // False if the index does not exist or the extra target could not be
+    // allocated -- in which case `feedback_texture` returns 0 and a crystal that
+    // wanted feedback draws its no-feedback branch rather than nothing.
+    bool enable_feedback(std::size_t index, bool on);
+
+    // What layer `index` looked like at the end of the previous frame, or 0 when
+    // feedback is off, the index does not exist, or no frame has been drawn yet.
+    //
+    // Zero is the same "nothing to sample" signal album art uses, and for the
+    // same reason: a crystal has to be able to tell the first frame from a
+    // black one.
+    TextureHandle feedback_texture(std::size_t index) const;
+
+    // Exchange the write and history targets of every feedback layer. Call once
+    // per frame, after composite() has read the layers.
+    void swap_feedback();
+
     // Combine the layers onto the currently bound framebuffer, bottom first.
     //
     // `states` is indexed the same way the layers are, and a shorter span simply

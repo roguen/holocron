@@ -563,17 +563,67 @@ both were settled by rendering it and by timing it.
 
 ---
 
+## Feedback: sampling the frame you drew last
+
+**A crystal CAN see its own previous frame**, as of issue 373. This used to be
+the first entry under *What a crystal cannot do yet*, described there as "the
+single biggest limit versus the MilkDrop lineage" -- which it was, and which is
+why it is now its own section rather than a footnote.
+
+Opt in from the manifest:
+
+```toml
+feedback = true
+```
+
+The shader then gets two more uniforms:
+
+```glsl
+uniform sampler2D u_feedback;      // this layer, exactly as it was last frame
+uniform bool      u_has_feedback;  // false on the first frame, and if it failed
+```
+
+**Test `u_has_feedback` before sampling.** It is false on the very first frame
+and stays false if the surface could not be allocated -- and a crystal that
+samples anyway gets black, which is indistinguishable from a crystal that is
+simply not working. Write the no-feedback branch as something you would be
+willing to look at.
+
+**It costs a surface.** Feedback gives the layer a second render target of the
+same size: 66 MB at 4K. Nothing allocates it until a crystal asks, so leaving
+the key out costs exactly nothing, and asking for it in an archive of four
+layers costs four times over.
+
+**You must write every pixel.** The target you draw into is not last frame's
+picture -- it is the one before that, because the two swap. A crystal that
+touches only part of the frame shows the two interleaving, which looks like a
+flicker at half the frame rate and is the first thing to suspect if you see one.
+
+**The decay constant is the whole stability of a feedback shader.** It is a
+geometric series: multiply the previous frame by anything at or above 1.0 and the
+image diverges to white. The approach is slow enough to be deceptive -- 0.995
+looks fine for ten seconds and then blows out. `geiss` uses 0.972, which holds a
+filament for about two seconds at 60 Hz.
+
+**Apply per-frame shading to the RESULT, not to the feedback.** A vignette
+multiplied into the sampled previous frame is re-applied every frame and
+compounds into a black tunnel within seconds. Shade what you output.
+
+`crystals/geiss` is the reference, and it is Ryan Geiss's own two-step
+description of the 1998 screensaver: draw some light into the image, then warp
+the image. The image being warped is the previous frame.
+
+---
+
 ## What a crystal cannot do yet
 
-**No feedback, and no history.** A crystal is a pure function of `(v_uv, u_time,
-audio)`. There is no previous-frame texture, so trails, accumulation buffers and
-particle systems with persistence are not expressible today. Raymarching,
-domain-warped noise, SDFs and procedural fields all are.
+**One pass, one shader.** No multi-pass, no compute, no textures you supply --
+with the one exception below.
 
-This is the single biggest limit versus the MilkDrop lineage, and it is a
-compositor concern rather than a crystal-format one — M3.
-
-**One pass, one shader.** No multi-pass, no compute, no textures you supply.
+**No arrays or textures from `AudioFrame`.** The manifest binds SCALAR fields by
+name, so `waveform` and the raw spectrum are on the contract and unreachable from
+a shader. `crystals/geiss` wants the waveform and drives its figure from the
+bands instead, which is the honest stand-in until a texture binding exists.
 
 **No state between frames.** If you need something to persist, it has to come
 from `AudioFrame`, which is the contract everything reads.

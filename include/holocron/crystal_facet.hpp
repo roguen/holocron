@@ -23,6 +23,8 @@
 //                                          most to least dominant
 //   uniform vec3      u_palette_primary;   the colour to build the look from
 //   uniform vec3      u_palette_accent;    chosen for contrast against primary
+//   uniform sampler2D u_feedback;          this layer last frame -- issue 373
+//   uniform bool      u_has_feedback;      whether u_feedback holds anything
 //   uniform sampler2D u_album_art;         the sleeve, sRGB, linearised on read
 //   uniform bool      u_has_art;           whether u_album_art holds anything
 //
@@ -59,6 +61,7 @@
 #include <string>
 
 #include <holocron/facet.hpp>
+#include <holocron/track_context.hpp>   // TextureHandle
 
 namespace holocron {
 
@@ -108,6 +111,15 @@ public:
     // judge that motion.
     float elapsed() const override;
     void  set_elapsed(float seconds) override;
+
+    // The layer's own previous frame, or 0 when there is none. Issue 373.
+    //
+    // NOT ON TrackContext, WHICH IS WHERE THE ALBUM ART LIVES, and the difference
+    // is the point: art is a property of what is playing and is the same for
+    // every facet drawing it, while feedback is a property of the LAYER this
+    // facet happens to occupy. Putting it on the track would make two crystals
+    // in an archive share one history and quietly draw into each other.
+    void set_feedback(TextureHandle texture);
 
     void draw(const AudioFrame& frame, const TrackContext& track, int width, int height) override;
 
