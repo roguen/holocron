@@ -287,12 +287,19 @@ frame_report_seconds = 0.0
 # Per-crystal overrides of `scale` above, by VAULT ENTRY NAME -- the name the
 # arrow keys and the control page show.
 #
+# measured: frame.pulse.shield
 # ISSUE 288. One number for the whole vault cannot fit a machine where the
 # entries differ by a factor of twenty. On the Shield, measured at 1080p:
 # `pulse` 5.56 ms a frame, `drift` 14.59 ms, `duel` 121 ms and `storm` 136 ms
 # against a 16.7 ms budget. Set the global scale low enough for `duel` and
 # `pulse` is needlessly soft; leave it at 1.0 and two of the four shipped
 # entries are unwatchable.
+#
+# `geiss` was measured on the Shield 2026-08-18 and needs NO override: it holds
+# the budget at full scale with about 3x margin, despite carrying a feedback
+# buffer. That buffer is not free -- it costs roughly 3 ms over `pulse` measured
+# back to back on one run -- but it starts from a cheap enough shader that the
+# result is still the second-cheapest entry in the vault.
 #
 # IN HERE RATHER THAN IN THE CRYSTAL'S OWN .toml, deliberately. A crystal's cost
 # is not a property of the crystal, it is a property of the crystal ON A
