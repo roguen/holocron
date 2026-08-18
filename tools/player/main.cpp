@@ -60,6 +60,8 @@
 #include <holocron/platform_paths.hpp>
 #include <holocron/plex_bootstrap.hpp>
 #include <holocron/run_log.hpp>
+#include <holocron/foreground_ask.hpp>
+#include <holocron/launch_player.hpp>
 #include <holocron/screen_wake.hpp>
 #include <holocron/service_network.hpp>
 #include <holocron/shader_cache.hpp>
@@ -2693,6 +2695,20 @@ int main(int argc, char** argv)
     //
     // Nothing plays over Plex yet. This announces the device and answers the
     // probes; the commands are logged and not acted on.
+    // ISSUE 382. Whether a cast needs to ask for the foreground.
+    //
+    // DECLARED BEFORE THE COMPANION SERVER ON PURPOSE. `wake_for_cast` runs on
+    // the Companion's worker thread, and that thread is alive until `companion`
+    // is destroyed. Members are destroyed in reverse declaration order, so
+    // anything the handler touches has to be declared FIRST or it becomes a
+    // dangling read during shutdown. That is also why the render loop publishes
+    // a flag into this rather than the handler reading the Window: the Window is
+    // constructed several hundred lines below and would therefore die BEFORE the
+    // server that reads it.
+    //
+    // See foreground_ask.hpp for the rule and why it is a type.
+    ForegroundAsk foreground;
+
     GdmResponder    gdm;
     CompanionServer companion;
     CastCommand     cast;
@@ -2709,7 +2725,7 @@ int main(int argc, char** argv)
     //
     // Every path that starts playback goes through one of the three handlers
     // below, so this is called once per cast and not once per track.
-    const auto wake_for_cast = [] {
+    const auto wake_for_cast = [&foreground] {
         const ScreenWakeState woke = wake_screen();
         switch (woke) {
         case ScreenWakeState::kUnsupported:
@@ -2723,6 +2739,50 @@ int main(int argc, char** argv)
             // did not come on is a better outcome than a cast that was refused.
             say_err("holocron: could not wake the display -- %s\n", to_string(woke));
             break;
+        }
+
+        // ISSUE 382. WAKING THE DISPLAY IS ONLY HALF OF WHAT A CAST ASKS FOR.
+        //
+        // Reported by the owner and reproduced the same minute: the music
+        // played, the display came on, and the Android TV launcher stayed on
+        // screen. The Activity was PAUSED -- `mLastPausedActivity` named it
+        // while `mCurrentFocus` named the launcher -- and GL lives below this
+        // loop's visibility split, so nothing drew.
+        //
+        // THIS IS NOT THE COLD-CAST CASE AND 333 DOES NOT COVER IT. That path
+        // handles NO Activity at all: the Service parks the command, wakes the
+        // box and calls `launch_player()` itself. Here an Activity already
+        // exists, so the Service never sees the cast -- the player owns the
+        // sockets by then -- and nothing asks for the foreground. One keypress
+        // reproduces it: launch, press HOME, cast.
+        //
+        // THE BEHAVIOUR IT COLLIDES WITH IS DELIBERATE AND STAYS. Issue 242
+        // made backgrounding keep the music playing and the player
+        // controllable, so that HOME mid-album does not stop the theater. That
+        // is right for HOME. It is wrong for a CAST, because a cast is a
+        // request to SHOW something -- a controller asking a display device to
+        // play cannot be satisfied with audio alone.
+        //
+        // ASKED ONCE PER BACKGROUND EPISODE, NOT ONCE PER CAST. A play command
+        // and the queue that follows it 25 ms later (issue 361) both land here,
+        // and `launch_player()` posts a full-screen-intent notification, so
+        // firing per handler would raise two. The latch is cleared by the
+        // render loop when the picture actually returns, which is the only
+        // evidence available that the ask worked -- `kStarted` means Android
+        // ACCEPTED the intent, not that anything came up.
+        //
+        // `kUnsupported` is a desktop. It un-latches rather than logging,
+        // because there is no Activity to raise and a line per cast on the rack
+        // would be noise about a platform that has no such problem.
+        if (foreground.should_ask()) {
+            const LaunchPlayerState launched = launch_player();
+            if (launched == LaunchPlayerState::kUnsupported) {
+                foreground.withdraw();
+            } else {
+                say("holocron: cast arrived with the picture down -- asked for the"
+                    " foreground, %s\n",
+                    to_string(launched));
+            }
         }
     };
 
@@ -5979,7 +6039,24 @@ int main(int argc, char** argv)
         // rather than seconds, so a background loop running at a different rate
         // would quietly change their behaviour -- and the process is playing
         // music, so it is not asleep and there is no wake-up to save.
-        if (!window.visible()) {
+        // ISSUE 382. PUBLISH WHETHER THERE IS A PICTURE, so a cast arriving on
+        // the Companion's thread can tell whether it needs to ask for one.
+        //
+        // Read here rather than in the handler because `window` is constructed
+        // long after the Companion server and is therefore DESTROYED FIRST --
+        // a handler holding a pointer to it would be a dangling read during
+        // shutdown. An atomic declared above the server has neither problem.
+        //
+        // THE LATCH IS CLEARED ONLY WHEN THE PICTURE IS ACTUALLY BACK, and that
+        // is the point of clearing it here instead of where it is set. Nothing
+        // else in the process can distinguish "Android accepted the intent"
+        // from "the Activity came up" -- `launch_player()` returns `kStarted`
+        // for the first -- so the render loop reaching this line is the only
+        // evidence there is, and it is first-hand.
+        const bool visible = window.visible();
+        foreground.observe_picture(visible);
+
+        if (!visible) {
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
             continue;
         }
