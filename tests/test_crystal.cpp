@@ -90,6 +90,64 @@ TEST_CASE("a well-formed crystal loads", "[crystal]")
     }
 }
 
+// ---------------------------------------------------------------------------
+// feedback (issue 373)
+//
+// The key that decides whether the compositor allocates a second surface for
+// this crystal's layer. Three things can go wrong and they are one test each:
+// the key not being read, the default not being off, and a plausible typo being
+// taken as a value.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("feedback defaults to off", "[crystal]")
+{
+    Scratch s;
+    s.write("plain.frag", kMinimalFrag);
+    s.write("plain.toml", "name = \"plain\"\n");
+
+    Crystal     c;
+    std::string detail;
+    REQUIRE(load_crystal(s.stem("plain"), c, detail) == CrystalError::kOk);
+
+    // OFF IS THE LOAD-BEARING DEFAULT, not a tidy one: every crystal written
+    // before the key existed must keep costing exactly what it did, and a
+    // second 4K surface is 66 MB.
+    CHECK_FALSE(c.feedback);
+}
+
+TEST_CASE("feedback is read when asked for", "[crystal]")
+{
+    Scratch s;
+    s.write("fb.frag", kMinimalFrag);
+    s.write("fb.toml",
+            "name = \"fb\"\n"
+            "feedback = true\n");
+
+    Crystal     c;
+    std::string detail;
+    REQUIRE(load_crystal(s.stem("fb"), c, detail) == CrystalError::kOk);
+    CHECK(c.feedback);
+}
+
+TEST_CASE("a non-boolean feedback is refused rather than coerced", "[crystal]")
+{
+    Scratch s;
+    s.write("bad.frag", kMinimalFrag);
+    s.write("bad.toml",
+            "name = \"bad\"\n"
+            "feedback = \"true\"\n");
+
+    Crystal     c;
+    std::string detail;
+
+    // A QUOTED BOOLEAN IS THE TYPO THIS CATCHES, and it is a plausible one --
+    // every other value in the file is a string. Taken as false it would load
+    // cleanly and the author would be left staring at a shader whose feedback
+    // branch never runs, with nothing on screen or in the log to say why.
+    CHECK(load_crystal(s.stem("bad"), c, detail) == CrystalError::kManifestIncomplete);
+    CHECK(detail.find("feedback") != std::string::npos);
+}
+
 TEST_CASE("a crystal that reacts to nothing is still valid", "[crystal]")
 {
     // A static background is a legitimate crystal, and it is also the smallest

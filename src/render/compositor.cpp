@@ -11,6 +11,7 @@
 
 #include "gl_bind.hpp"
 
+#include <utility>
 #include <vector>
 
 namespace holocron {
@@ -137,6 +138,12 @@ struct Compositor::Impl {
     RenderTarget under;
     bool         canvas_ready = false;
 
+    // The other half of each feedback layer's ping-pong pair, parallel to
+    // `layers`. An entry is only allocated for a layer that asked; `ready()` on
+    // it is what "this layer has feedback" means, so there is no second flag to
+    // fall out of step with the allocation. Issue 373.
+    std::vector<RenderTarget> history;
+
     int width  = 0;
     int height = 0;
 };
@@ -235,10 +242,24 @@ bool Compositor::resize(std::size_t count, int width, int height)
     if (impl_->layers.size() != count) {
         impl_->layers.resize(count);
     }
+    if (impl_->history.size() != count) {
+        // A feedback layer that falls off the end of a shrinking stack loses its
+        // history with it, which is correct: the layer it belonged to is gone.
+        impl_->history.resize(count);
+    }
 
     bool all_ok = true;
     for (RenderTarget& t : impl_->layers) {
         all_ok = t.resize(width, height) && all_ok;
+    }
+
+    // Only the ones already allocated -- resize must not switch feedback on for
+    // a layer that never asked, and is a no-op at an unchanged size, so the
+    // ordinary every-frame call costs nothing here.
+    for (RenderTarget& t : impl_->history) {
+        if (t.ready()) {
+            all_ok = t.resize(width, height) && all_ok;
+        }
     }
 
     impl_->width  = width;
@@ -268,6 +289,66 @@ bool Compositor::bind_layer(std::size_t index)
     }
     impl_->layers[index].bind();
     return true;
+}
+
+bool Compositor::enable_feedback(std::size_t index, bool on)
+{
+    if (index >= impl_->history.size()) {
+        return false;
+    }
+
+    if (!on) {
+        impl_->history[index].shutdown();
+        return true;
+    }
+
+    if (impl_->history[index].ready()) {
+        return true;   // already on, and re-asking every frame is the normal case
+    }
+    if (impl_->width <= 0 || impl_->height <= 0) {
+        return false;  // nothing sized yet; the caller will ask again next frame
+    }
+    if (!impl_->history[index].resize(impl_->width, impl_->height)) {
+        return false;
+    }
+
+    // BOTH SIDES CLEARED, not just the new one. The write target has whatever the
+    // previous occupant of that layer left in it, and a feedback crystal samples
+    // its partner on frame one -- so without this the effect starts by warping a
+    // stale picture, which reads as a glitch on every switch rather than on the
+    // first run only.
+    GLint previous = 0;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &previous);
+    for (RenderTarget* t : {&impl_->history[index], &impl_->layers[index]}) {
+        if (t->ready()) {
+            t->bind();
+            glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+    }
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(previous));
+    return true;
+}
+
+TextureHandle Compositor::feedback_texture(std::size_t index) const
+{
+    if (index >= impl_->history.size() || !impl_->history[index].ready()) {
+        return 0;
+    }
+    return impl_->history[index].texture();
+}
+
+void Compositor::swap_feedback()
+{
+    // AFTER THE COMPOSITE, NOT BEFORE. composite() reads `layers`, so swapping
+    // first would put last frame's picture on screen and hand the crystal the
+    // one it just drew -- the effect still runs, one frame stale, and the only
+    // symptom is a lag nobody would trace back to here.
+    for (std::size_t i = 0; i < impl_->history.size(); ++i) {
+        if (impl_->history[i].ready()) {
+            std::swap(impl_->layers[i], impl_->history[i]);
+        }
+    }
 }
 
 TextureHandle Compositor::composite(std::span<const LayerState> states, int screen_width,
