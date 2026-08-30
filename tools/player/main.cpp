@@ -72,6 +72,7 @@
 #include <holocron/herald.hpp>
 #include <holocron/plex_device.hpp>
 #include <holocron/plex_link.hpp>
+#include <holocron/registration_watch.hpp>
 #include <holocron/render_target.hpp>
 #include <holocron/crystal_facet.hpp>
 #include <holocron/crystal_watch.hpp>
@@ -2289,7 +2290,9 @@ extern "C" void on_interrupt(int)
 // Deliberately NOT fatal. A player that will not start because plex.tv is
 // unreachable is worse than one that plays the file you asked for and says the
 // casting half is unavailable.
-void register_with_account(const Gatekeeper& cfg, const PlexDevice& device)
+// Returns the URI the account accepted, or empty when nothing was published.
+// The caller keeps it so a later address change can be noticed -- issue 388.
+std::string register_with_account(const Gatekeeper& cfg, const PlexDevice& device)
 {
     if (cfg.plex_token.empty()) {
         // `say`, NOT `std::printf`, and the difference is the whole reason this
@@ -2307,7 +2310,7 @@ void register_with_account(const Gatekeeper& cfg, const PlexDevice& device)
         say("holocron: no Plex token -- discoverable on this network, but NOT\n"
             "  offered as a cast target in Plexamp or Plex Web. Run\n"
             "  `holocron --link` once to fix that.\n");
-        return;
+        return {};
     }
 
     // The address the media server can reach, asked of the routing table. Any
@@ -2317,11 +2320,10 @@ void register_with_account(const Gatekeeper& cfg, const PlexDevice& device)
     if (local.empty()) {
         say_err("holocron: cannot work out this machine's LAN address; not\n"
                 "  registering with the account\n");
-        return;
+        return {};
     }
 
-    const std::string uri =
-        "http://" + local + ":" + std::to_string(static_cast<unsigned>(device.port));
+    const std::string uri = connection_uri(local, static_cast<unsigned>(device.port));
 
     std::string     detail;
     const LinkError err = register_player(cfg.plex_token, device.machine_identifier, device.name,
@@ -2329,9 +2331,10 @@ void register_with_account(const Gatekeeper& cfg, const PlexDevice& device)
     if (err != LinkError::kOk) {
         say_err("holocron: could not register with your Plex account -- %s\n  %s\n",
                 to_string(err), detail.c_str());
-        return;
+        return {};
     }
     say("holocron: registered with your Plex account at %s\n", uri.c_str());
+    return uri;
 }
 
 // --link: sign this Holocron in to a Plex account.
@@ -2731,6 +2734,14 @@ int main(int argc, char** argv)
     // See foreground_ask.hpp for the rule and why it is a type.
     ForegroundAsk foreground;
 
+    // ISSUE 388. What this machine last told the account its address was.
+    //
+    // Declared out here rather than inside the discovery block below, because
+    // the block is where it is SET and the render loop is where it is checked.
+    // Touched only from the render thread, so it needs no atomics -- unlike
+    // `foreground` above, which the Companion's worker thread reads.
+    RegistrationWatch registration;
+
     GdmResponder    gdm;
     CompanionServer companion;
     CastCommand     cast;
@@ -3017,7 +3028,7 @@ int main(int argc, char** argv)
         // FAILED RUN from refreshing the entry. It does not stop plex.tv
         // advertising a dead address.
         if (companion.bound_port() != 0) {
-            register_with_account(cfg, device);
+            registration.published(register_with_account(cfg, device));
         } else {
             say_err("holocron: not registering with your Plex account -- nothing is"
                     " listening,\n  so the address would be one that answers nothing\n");
@@ -4561,6 +4572,18 @@ int main(int argc, char** argv)
     auto           last_server_report      = std::chrono::steady_clock::now();
     auto           last_poll_report        = std::chrono::steady_clock::now();
 
+    // ISSUE 388. How often to ask the routing table whether this machine moved.
+    //
+    // THIRTY SECONDS IS ABOUT THE ACCOUNT, NOT ABOUT THE COST. The check itself
+    // is a UDP socket that sends nothing, so it could run every frame; what it
+    // bounds is how long the account may advertise a dead address after a
+    // DHCP lease moves. Half a minute is short enough that nobody is left
+    // staring at a cast target that will not answer, and long enough that a
+    // machine flapping between two interfaces cannot turn it into a stream of
+    // registrations.
+    constexpr auto kAddressCheckInterval = std::chrono::seconds(30);
+    auto           last_address_check    = std::chrono::steady_clock::now();
+
     // Issue 283's instrument. Off unless `[render] frame_report_seconds` says
     // otherwise, because a line every few seconds is noise on a machine nobody
     // is measuring -- and on the Shield the log is the only output there is.
@@ -6038,6 +6061,51 @@ int main(int argc, char** argv)
             companion_was_alive = true;
             say("holocron: the Companion listener is back on TCP %u\n",
                 static_cast<unsigned>(companion.bound_port()));
+        }
+
+        // -- has this machine moved? --------------------------------------------
+        //
+        // ISSUE 388. `register_player` is an upsert and nothing anywhere
+        // withdraws a published connection, so whatever was published last
+        // stays on the account until something replaces it. Registration ran
+        // once, at startup, so a machine whose address changed under a
+        // long-running player advertised the old one indefinitely.
+        //
+        // Measured, not imagined: the theater PC moved from `.144` to `.54`,
+        // the account went on offering `http://192.168.68.144:32500`, and
+        // `.144` answered nothing. The device appeared in Plexamp and could not
+        // be reached, which reads as a broken player rather than a stale record.
+        //
+        // THE TIMER ASKS THE ROUTING TABLE, NOT PLEX. `local_address_towards`
+        // opens a UDP socket, sends nothing, and reads back the source address
+        // the OS would choose; it costs microseconds and touches no network. A
+        // request to plex.tv happens only when that answer actually differs
+        // from what was published, so the steady state is free and the account
+        // is corrected within one interval of a real change.
+        //
+        // ABOVE THE VISIBILITY SPLIT, deliberately. The case this exists for is
+        // a box that sits for days between casts, which on a television means
+        // backgrounded almost all of that time -- checking only while drawing
+        // would miss exactly the situation it was built for.
+        const auto address_check_now = std::chrono::steady_clock::now();
+        if (registration.has_published() &&
+            address_check_now - last_address_check >= kAddressCheckInterval) {
+            last_address_check = address_check_now;
+
+            const std::string address_now =
+                connection_uri(local_address_towards("192.168.1.1"),
+                               static_cast<unsigned>(companion.bound_port()));
+
+            // `is_stale` is what holds the rules -- an empty address is a
+            // routing table that will not answer rather than a machine that
+            // moved, and re-publishing on that would turn a blip into churn.
+            // See registration_watch.hpp.
+            if (registration.is_stale(address_now)) {
+                say("holocron: this machine's address changed -- was %s, telling your\n"
+                    "  Plex account it is now %s\n",
+                    registration.uri().c_str(), address_now.c_str());
+                registration.published(register_with_account(cfg, device));
+            }
         }
 
         // -- backgrounded: keep playing, stop drawing ----------------------------
