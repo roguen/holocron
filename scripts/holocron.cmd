@@ -27,6 +27,17 @@ REM
 REM Add scripts\ to PATH, not build\windows\bin -- this file is what should
 REM resolve for the bare word `holocron`, not the exe underneath it.
 REM
+REM A DESKTOP OR TASKBAR SHORTCUT MUST POINT AT THIS FILE, NOT AT THE EXE, and
+REM for exactly the same reason -- a shortcut is just another launch site with
+REM its own working directory. One pointing at the exe reproduces issue 308 on
+REM every double-click.
+REM
+REM holocron.ico beside it is what such a shortcut should use for its icon. The
+REM executable carries no icon resource, so a shortcut to it wears the generic
+REM Windows one and is indistinguishable from everything else on a desktop. The
+REM .ico lives HERE rather than beside a release because the exe path changes
+REM with every version and this one does not.
+REM
 REM WHICH BUILD IT RUNS: AN INSTALLED RELEASE IF THERE IS ONE, ELSE THE DEV
 REM BUILD.
 REM
