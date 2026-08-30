@@ -47,6 +47,7 @@
 #include <holocron/audio_frame.hpp>
 #include <holocron/companion_server.hpp>
 #include <holocron/compositor.hpp>
+#include <holocron/control_url.hpp>
 #include <holocron/crystal.hpp>
 #include <holocron/final_pass.hpp>
 #include <holocron/image_decode.hpp>
@@ -2291,9 +2292,21 @@ extern "C" void on_interrupt(int)
 void register_with_account(const Gatekeeper& cfg, const PlexDevice& device)
 {
     if (cfg.plex_token.empty()) {
-        std::printf("holocron: no Plex token -- discoverable on this network, but NOT\n"
-                    "  offered as a cast target in Plexamp or Plex Web. Run\n"
-                    "  `holocron --link` once to fix that.\n");
+        // `say`, NOT `std::printf`, and the difference is the whole reason this
+        // was hard to diagnose once.
+        //
+        // This is THE line that explains "it is not a cast target", and it was
+        // going to stdout only -- so the durable run log, which is the first
+        // thing anybody reads when a device stops appearing, showed a healthy
+        // startup with no registration line and no reason given. A player
+        // launched from a directory with no `gatekeeper.toml` produced exactly
+        // that: no token, no registration, and nothing on the record saying so.
+        //
+        // Worse on Android, where stdout IS logcat and logcat is a ring buffer,
+        // which is the same reasoning issue 338 used to move the cast line.
+        say("holocron: no Plex token -- discoverable on this network, but NOT\n"
+            "  offered as a cast target in Plexamp or Plex Web. Run\n"
+            "  `holocron --link` once to fix that.\n");
         return;
     }
 
@@ -2604,7 +2617,16 @@ int main(int argc, char** argv)
             return 1;
         }
         if (gerr == GatekeeperError::kNotFound) {
-            std::printf("holocron: %s\n", cfg_detail.c_str());
+            // ON THE RECORD, for the same reason the found case is. A run with
+            // no configuration file otherwise looks identical in the run log to
+            // a run with one -- the `config <path>` line simply does not appear,
+            // and an absent line is not something anybody notices.
+            //
+            // It is the shape of issue 308: `gatekeeper.toml` resolves against
+            // the CALLER's working directory, so an executable started from its
+            // own build directory silently gets no token, no trim and no
+            // herald, and reports none of it. Use `scripts/holocron.cmd`.
+            say("holocron: %s\n", cfg_detail.c_str());
         } else {
             config_found = true;
             say("holocron: config %s\n", config_path.c_str());
@@ -3121,16 +3143,20 @@ int main(int argc, char** argv)
     }
 
     if (companion.bound_port() != 0) {
-        // Printed with the address rather than just the port, because the whole
-        // point is to type it into a phone in another room.
-        // The LAN address rather than the port alone, because the whole point is
-        // to type it into a phone in another room. Falls back to localhost when
-        // the routing table will not say -- still correct, just only useful from
-        // this machine.
+        // The whole point of this line is to be typed into a phone in another
+        // room, so it carries an address rather than a port on its own, and a
+        // NAME rather than an address where the site has given the player one.
+        //
+        // `[plex] control_url` is display only. It changes nothing about what
+        // this process binds or announces -- see control_url.hpp, which is also
+        // where the trailing-slash and missing-scheme corrections live.
+        //
+        // Falls back to the routing table and then to localhost, which is still
+        // correct and useful only from this machine.
         const std::string host = local_address_towards("192.168.1.1");
-        say("holocron: control page at http://%s:%u/control\n",
-                    host.empty() ? "127.0.0.1" : host.c_str(),
-                    static_cast<unsigned>(companion.bound_port()));
+        const std::string url  = control_page_url(cfg.plex_control_url, host,
+                                                  static_cast<unsigned>(companion.bound_port()));
+        say("holocron: control page at %s\n", url.c_str());
         std::fflush(stdout);
     }
 

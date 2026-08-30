@@ -278,6 +278,32 @@ struct Gatekeeper {
     // control may not want it advertising itself.
     bool plex_discovery = true;
 
+    // What to CALL the control page when telling a human where it is.
+    //
+    // Empty means "work it out from the routing table", which is what this
+    // always did and what every install without this key keeps doing. Set it to
+    // a name -- `https://holocron-pc.aero4ge.com` -- and that is what the
+    // startup line prints instead of `http://192.168.68.54:32500`.
+    //
+    // DISPLAY ONLY, AND THAT IS THE WHOLE POINT OF THE NAME. It changes nothing
+    // about what this process BINDS and nothing about what is announced over
+    // GDM. Plex must keep reaching the player at an address and a port it
+    // learned from the announcement; a controller cannot be handed a name that
+    // resolves to a reverse proxy, because the proxy answers the control page
+    // and knows nothing about the Companion protocol.
+    //
+    // So a key here is a claim about what somebody ELSE is serving. Holocron
+    // cannot verify it and does not try -- it cannot see the DNS record, the
+    // proxy or the certificate, and a check that consults any of them would be
+    // wrong the moment the network changed underneath it. Wrong here means one
+    // wrong line of terminal output on a machine in another room, which is the
+    // cheapest failure in this file.
+    //
+    // No trailing slash and no `/control`; both are appended. A value that
+    // carries either is corrected rather than refused, because the failure is
+    // cosmetic and refusing to start over a spare slash is not.
+    std::string plex_control_url;
+
     // What appears in Plexamp's device list.
     //
     // The default is PLATFORM-DERIVED -- "Theater PC" on the desktop build and

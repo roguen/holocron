@@ -174,7 +174,7 @@ bool json_number_field(const std::string& json, const std::string& key, std::str
 // account grows a second Holocron that nothing can reach.
 //
 // `connection_uri` is the LAN address a controller should connect to, e.g.
-// "http://192.168.68.144:32500". Use local_address_towards() to find it.
+// "http://192.168.68.54:32500". Use local_address_towards() to find it.
 LinkError register_player(const std::string& token, const std::string& client_identifier,
                           const std::string& device_name, const std::string& product,
                           const std::string& version, const std::string& connection_uri,
