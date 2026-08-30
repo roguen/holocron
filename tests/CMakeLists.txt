@@ -36,6 +36,7 @@ add_executable(holocron_tests
     test_pending_cast.cpp
     test_foreground_ask.cpp
     test_control_url.cpp
+    test_registration_watch.cpp
     test_eiscp.cpp
     test_herald.cpp
     test_companion_server.cpp
