@@ -2292,9 +2292,21 @@ extern "C" void on_interrupt(int)
 void register_with_account(const Gatekeeper& cfg, const PlexDevice& device)
 {
     if (cfg.plex_token.empty()) {
-        std::printf("holocron: no Plex token -- discoverable on this network, but NOT\n"
-                    "  offered as a cast target in Plexamp or Plex Web. Run\n"
-                    "  `holocron --link` once to fix that.\n");
+        // `say`, NOT `std::printf`, and the difference is the whole reason this
+        // was hard to diagnose once.
+        //
+        // This is THE line that explains "it is not a cast target", and it was
+        // going to stdout only -- so the durable run log, which is the first
+        // thing anybody reads when a device stops appearing, showed a healthy
+        // startup with no registration line and no reason given. A player
+        // launched from a directory with no `gatekeeper.toml` produced exactly
+        // that: no token, no registration, and nothing on the record saying so.
+        //
+        // Worse on Android, where stdout IS logcat and logcat is a ring buffer,
+        // which is the same reasoning issue 338 used to move the cast line.
+        say("holocron: no Plex token -- discoverable on this network, but NOT\n"
+            "  offered as a cast target in Plexamp or Plex Web. Run\n"
+            "  `holocron --link` once to fix that.\n");
         return;
     }
 
@@ -2605,7 +2617,16 @@ int main(int argc, char** argv)
             return 1;
         }
         if (gerr == GatekeeperError::kNotFound) {
-            std::printf("holocron: %s\n", cfg_detail.c_str());
+            // ON THE RECORD, for the same reason the found case is. A run with
+            // no configuration file otherwise looks identical in the run log to
+            // a run with one -- the `config <path>` line simply does not appear,
+            // and an absent line is not something anybody notices.
+            //
+            // It is the shape of issue 308: `gatekeeper.toml` resolves against
+            // the CALLER's working directory, so an executable started from its
+            // own build directory silently gets no token, no trim and no
+            // herald, and reports none of it. Use `scripts/holocron.cmd`.
+            say("holocron: %s\n", cfg_detail.c_str());
         } else {
             config_found = true;
             say("holocron: config %s\n", config_path.c_str());
