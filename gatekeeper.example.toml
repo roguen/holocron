@@ -579,6 +579,27 @@ mesh_y = 32
 # LIVE. Today also: --discover to test it on its own, --no-discover for one run.
 discovery = true
 
+# What to CALL the control page when telling a human where it is.
+#
+# Empty is the default and means "work it out from the routing table", which
+# prints http://<this machine>:<port>/control -- correct, ugly, and wrong the
+# moment a DHCP lease moves.
+#
+# DISPLAY ONLY. It changes nothing about what this process binds and nothing
+# about what is announced over GDM, and it must not: Plex reaches the player at
+# the address and port it learned from the announcement, and a controller handed
+# a name that resolves to a reverse proxy would be talking to something that
+# serves the control page and has never heard of the Companion protocol.
+#
+# So this is a claim about what something ELSE serves. Holocron cannot see the
+# DNS record, the proxy or the certificate and does not try; being wrong costs
+# one line of terminal output.
+#
+# A trailing slash, a `/control` already on the end, and a missing scheme are
+# all corrected rather than refused. See docs/control-page-names.md.
+#
+# control_url = "https://holocron-pc.aero4ge.com"
+
 # What appears in Plexamp's device list. LIVE.
 #
 # THE DEFAULT DIFFERS PER PLATFORM AND THAT IS THE POINT: "Theater PC" on the

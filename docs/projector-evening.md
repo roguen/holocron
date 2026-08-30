@@ -104,7 +104,7 @@ all. `--windowed` overrides the config for one run.
 | **F1** | the colophon |
 | **↑ ↓** | trim, in `--calibrate` only |
 | **Esc** | quit |
-| **Phone** | `http://192.168.68.144:32500/control` |
+| **Phone** | `https://holocron-pc.aero4ge.com/control`, or `http://192.168.68.54:32500/control` |
 
 The phone page switches crystals and toggles the now-playing card, the lyrics and
 the colophon. It is plain form posts with no JavaScript, so a reload always shows
