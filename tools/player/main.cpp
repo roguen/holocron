@@ -47,6 +47,7 @@
 #include <holocron/audio_frame.hpp>
 #include <holocron/companion_server.hpp>
 #include <holocron/compositor.hpp>
+#include <holocron/control_url.hpp>
 #include <holocron/crystal.hpp>
 #include <holocron/final_pass.hpp>
 #include <holocron/image_decode.hpp>
@@ -3121,16 +3122,20 @@ int main(int argc, char** argv)
     }
 
     if (companion.bound_port() != 0) {
-        // Printed with the address rather than just the port, because the whole
-        // point is to type it into a phone in another room.
-        // The LAN address rather than the port alone, because the whole point is
-        // to type it into a phone in another room. Falls back to localhost when
-        // the routing table will not say -- still correct, just only useful from
-        // this machine.
+        // The whole point of this line is to be typed into a phone in another
+        // room, so it carries an address rather than a port on its own, and a
+        // NAME rather than an address where the site has given the player one.
+        //
+        // `[plex] control_url` is display only. It changes nothing about what
+        // this process binds or announces -- see control_url.hpp, which is also
+        // where the trailing-slash and missing-scheme corrections live.
+        //
+        // Falls back to the routing table and then to localhost, which is still
+        // correct and useful only from this machine.
         const std::string host = local_address_towards("192.168.1.1");
-        say("holocron: control page at http://%s:%u/control\n",
-                    host.empty() ? "127.0.0.1" : host.c_str(),
-                    static_cast<unsigned>(companion.bound_port()));
+        const std::string url  = control_page_url(cfg.plex_control_url, host,
+                                                  static_cast<unsigned>(companion.bound_port()));
+        say("holocron: control page at %s\n", url.c_str());
         std::fflush(stdout);
     }
 
